@@ -41,6 +41,32 @@ test('un sí con una corrección detrás NO confirma: lleva un cambio de día u 
   assert.equal(isAffirmative('claro, aunque prefiero más tarde'), false);
 });
 
+/*
+ * El 25/09 un lead eligió "10.00 a.m", el bot pidió confirmación y él
+ * contestó "Si esta bien." — el bot lo tomó como corrección y le soltó el
+ * horario que acababa de aceptar. Le costó cuatro turnos más volver al mismo
+ * bloque. Lo que descalifica un sí es traer una CORRECCIÓN detrás, no traer
+ * palabras detrás.
+ */
+test('un sí con refuerzo detrás sigue siendo un sí', () => {
+  for (const yes of [
+    'Si esta bien.', 'Sí, está bien', 'está bien', 'Así está bien',
+    'ok perfecto', 'sí claro gracias', 'si por favor', 'dale pues',
+    'listo gracias', 'claro que sí', 'si confirmo', 'perfecto gracias', 'sí sí'
+  ]) {
+    assert.equal(isAffirmative(yes), true, `"${yes}" debería contar como sí`);
+  }
+});
+
+// El refuerzo no puede abrir la puerta a cualquier cosa: una palabra fuera
+// de la lista rompe la coincidencia, y ahí vuelve a mandar la regla de oro.
+test('un sí seguido de otra cosa que no es refuerzo NO confirma', () => {
+  assert.equal(isAffirmative('si tengo una duda'), false);
+  assert.equal(isAffirmative('Si esta bien pero mejor el jueves'), false);
+  assert.equal(isAffirmative('sí me puedes llamar mañana'), false);
+  assert.equal(isAffirmative('estoy bien'), false);
+});
+
 test('un mensaje vacío o ambiguo no confirma', () => {
   assert.equal(isAffirmative(''), false);
   assert.equal(isAffirmative('   '), false);

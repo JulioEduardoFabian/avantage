@@ -143,12 +143,26 @@ export function modeLabel(mode) {
 }
 
 /**
- * ¿El contacto dijo que sí? Se exige una afirmación reconocible: ante la duda
- * NO se reserva, porque el paso de confirmación existe precisamente para no
- * agendar sobre una interpretación. "sí, pero el jueves" no cuenta como sí —
- * lleva una corrección detrás, y se trata como tal.
+ * ¿El contacto dijo que sí? Ante la duda NO se reserva: el paso de
+ * confirmación existe precisamente para no agendar sobre una interpretación.
+ *
+ * Lo que descalifica un sí es que traiga una CORRECCIÓN detrás ("sí, pero el
+ * jueves"), no que traiga palabras detrás. Antes se exigía que el mensaje
+ * entero fuera la afirmación, y con eso "Si esta bien." —un sí redondo— caía
+ * al camino de corrección: el 25/09 el bot le soltó a un lead el horario que
+ * acababa de aceptar y le costó cuatro turnos más volver al mismo bloque.
+ *
+ * Por eso son dos piezas: una CABEZA que afirma y una cola de refuerzos que
+ * no cambian el sentido ("sí, está bien", "ok perfecto", "sí claro gracias").
+ * Cualquier palabra fuera de esas dos listas rompe la coincidencia, así que
+ * "sí tengo una duda" o "sí, pero mejor el jueves" siguen sin ser un sí —
+ * este último además lo veta `SCHEDULE_CHANGE_HINT_RE`.
  */
-const AFFIRMATIVE_RE = /^(?:s[ií]+|sip|sipi|si\s*por\s*favor|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|confirmo|confirmado|de\s*acuerdo|va|ya|as[ií]\s*es|me\s*parece|excelente|genial)[\s!.,😊🙌👍✅]*$/i;
+const AFFIRMATIVE_HEAD = String.raw`(?:s[ií]+|sip|sipi|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|confirmo|confirmado|de\s+acuerdo|va|ya|as[ií]\s+es|me\s+parece|excelente|genial|(?:as[ií]\s+)?est[aá]\s+bien)`;
+
+const AFFIRMATIVE_TAIL = String.raw`(?:s[ií]|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|excelente|genial|va|ya|pues|entonces|que\s+s[ií]|bien|todo\s+bien|de\s+acuerdo|as[ií]\s+es|(?:as[ií]\s+)?est[aá]\s+bien|me\s+parece|sin\s+problema|adelante|confirmo|confirmado|por\s+favor|porfa|porfis|gracias|muchas\s+gracias)`;
+
+const AFFIRMATIVE_RE = new RegExp(String.raw`^${AFFIRMATIVE_HEAD}(?:\s+${AFFIRMATIVE_TAIL})*$`, 'i');
 
 export function isAffirmative(text) {
   const clean = normalize((text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -896,10 +910,40 @@ export function looksLikeGarbageValue(text) {
   return false;
 }
 
-function firstNameOf(fullName) {
+/**
+ * "ROMINA" -> "Romina", "milciades" -> "Milciades". Los formularios de Meta
+ * llegan como los escribió el lead, y devolverle su nombre en mayúsculas
+ * ("¡Hola, ROMINA!", caso real del 25/09) se lee como un correo masivo.
+ */
+function capitalizeName(name) {
+  return String(name).replace(/\p{L}+/gu, (word) => word[0].toLocaleUpperCase('es') + word.slice(1).toLocaleLowerCase('es'));
+}
+
+export function firstNameOf(fullName) {
   if (!fullName || fullName === GENERIC_CONTACT_NAME) return null;
   const first = fullName.trim().split(/\s+/)[0] || '';
-  return looksLikeRealFirstName(first) ? first : null;
+  return looksLikeRealFirstName(first) ? capitalizeName(first) : null;
+}
+
+/**
+ * Con qué nombre saludar a un lead que llegó del formulario de un anuncio, y
+ * si ese nombre debe reemplazar al que quedó en la ficha.
+ *
+ * El del formulario gana: lo escribió el propio estudiante. El de la ficha
+ * viene del perfil de WhatsApp, o sea de cómo se llama el TELÉFONO, que
+ * muchas veces no es suyo — el 25/09 el bot saludó "¡Hola, Areli!" a un
+ * formulario a nombre de Milciades, y "¡Hola, Fabricio!" a uno de Paulo
+ * César. Solo se le hace caso si de ahí sale un nombre de pila creíble
+ * (`firstNameOf`): un "Full name" con basura no pisa nada.
+ */
+export function resolveFormLeadName(formName, contactName) {
+  const formFirstName = firstNameOf(formName);
+  return {
+    greetName: formFirstName || contactName || null,
+    // Un panel que dice "Areli" mientras el bot saluda "Milciades" deja al
+    // asesor sin saber con quién está hablando.
+    storeFormName: !!formName && (!contactName || (!!formFirstName && formFirstName !== contactName))
+  };
 }
 
 /**
@@ -926,6 +970,19 @@ export function meetingEventTitle({ leadName, contactPhone = null, waId = '', is
     ? name
     : (contactPhone || (waIdIsPhone(waId) ? formatPhoneForAdvisor(waId) : null) || waId || 'Contacto');
   return `${isPhone ? '📞' : '💻'} ${who} — Asesoría de tesis`;
+}
+
+/**
+ * El horario que se le nombró al lead en el recordatorio de inactividad, si
+ * todavía se puede agendar. Entre que sale el mensaje y llega su "sí" pueden
+ * pasar horas: reservar un bloque que ya empezó (o que arranca en diez
+ * minutos) le crea al asesor una reunión imposible. Si venció, se devuelve
+ * null y el lead vuelve al camino normal, que le muestra la lista al día.
+ */
+export function usableProposedSlot(slot) {
+  const startsAt = slot?.startTime ? new Date(slot.startTime).getTime() : NaN;
+  if (!Number.isFinite(startsAt)) return null;
+  return startsAt > Date.now() + MIN_BOOKING_LEAD_MINUTES * 60 * 1000 ? slot : null;
 }
 
 function sleep(ms) {
@@ -1538,6 +1595,7 @@ export class WhatsappBotService {
     const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
     const previous = answers.__frozenFrom;
     delete answers.__frozenFrom;
+    delete answers.__warmupSlot;
 
     let status = 'active';
     if (SCHEDULING_STATUSES.includes(previous) && answers.__scheduling) {
@@ -1818,14 +1876,20 @@ export class WhatsappBotService {
         if (formFields.urgency) answers.urgency = formFields.urgency;
         await this.updateSession(waId, { answers: JSON.stringify(answers) });
 
-        // El nombre del formulario gana sobre el del perfil de WhatsApp, que
-        // en los anuncios es casi siempre un alias del que no sale un nombre
-        // de pila ("La Vida Continua....", "😎"). Solo se pisa el que ya
-        // había si ese no daba ninguno: un nombre real guardado a mano por un
-        // asesor no lo tiene que sobrescribir el formulario.
+        // El nombre del formulario gana sobre el del perfil de WhatsApp. El
+        // formulario lo escribió el propio estudiante; el perfil es como se
+        // llama el TELÉFONO, que muchas veces no es suyo (el 25/09 el bot
+        // saludó "¡Hola, Areli!" a un formulario a nombre de Milciades, y
+        // "¡Hola, Fabricio!" a uno de Paulo César) o ni siquiera es un nombre
+        // ("La Vida Continua....", "😎").
+        //
+        // Antes era al revés y el comentario decía justo esto, así que el
+        // código contradecía su propia intención. Acá no hay riesgo de pisar
+        // una corrección de un asesor: esto es el PRIMER turno de la sesión,
+        // y el nombre guardado salió del perfil al crear el lead.
         const formName = formFields.fullName || null;
-        const greetName = contactName || firstNameOf(formName);
-        if (formName && !contactName && lead?.id) {
+        const { greetName, storeFormName } = resolveFormLeadName(formName, contactName);
+        if (storeFormName && lead?.id) {
           try {
             await this.leadService.updateLead(lead.id, { fullName: formName });
           } catch (error) {
@@ -2094,7 +2158,7 @@ export class WhatsappBotService {
    * equipo tenga un reporte de respaldo. Un fallo en la evaluación con IA no
    * debe impedir ofrecer la llamada, que es lo que realmente importa aquí.
    */
-  async finalize(waId, answers, { warmedUp = false } = {}) {
+  async finalize(waId, answers, { warmedUp = false, proposedSlot = null } = {}) {
     if (await this._qualificationGate(waId, answers, { askMissing: true })) return;
 
     const settings = await this.settingsService.get();
@@ -2174,7 +2238,7 @@ export class WhatsappBotService {
       console.error(`❌ [WhatsApp Bot] Error al registrar el lead de ${waId}:`, error);
     }
 
-    await this.offerScheduling(waId, { topic: synthesizedTopic, email, when: answers.__when || null, warmedUp });
+    await this.offerScheduling(waId, { topic: synthesizedTopic, email, when: answers.__when || null, warmedUp, proposedSlot });
   }
 
   /**
@@ -2191,31 +2255,71 @@ export class WhatsappBotService {
    * por el mismo camino que cualquier otra confirmación (y cualquier otra
    * respuesta se sigue tratando como corrección, no como confirmación).
    *
+   * Lo mismo vale —y más— para el lead que se quedó mudo en `warmup`, frente
+   * al "respóndeme *sí* y te paso los horarios": es el punto del embudo donde
+   * más se pierde (el 25/09, cinco de diez leads del formulario murieron ahí
+   * y ninguno contestó el genérico). Ahí no hay `__scheduling` todavía, así
+   * que el horario se deja en `answers.__warmupSlot` y lo recoge
+   * `handleWarmupTurn`, que lo pasa por finalize() hasta `confirmSlot`.
+   *
    * Si algo falla al buscar el horario, cae al texto genérico: el recordatorio
    * ya está reservado en la fila y quedarse sin mandar nada es peor.
    */
   async _inactivityNudgeText(session, nudgesSent) {
     const generic = INACTIVITY_NUDGE_TEXTS[Math.min(nudgesSent, INACTIVITY_NUDGE_TEXTS.length - 1)];
-    if (!['scheduling_date', 'scheduling_time'].includes(session.status)) return generic;
+    const isWarmup = session.status === WARMUP_STATUS;
+    if (!isWarmup && !['scheduling_date', 'scheduling_time'].includes(session.status)) return generic;
 
     try {
       const { answers, scheduling } = this._readScheduling(session);
-      if (!scheduling) return generic;
+      // En `warmup` todavía no existe `answers.__scheduling`: el lead ni
+      // siquiera dijo que quiere la reunión. Eso no lo deja fuera — es justo
+      // el paso donde más se pierde.
+      if (!scheduling && !isWarmup) return generic;
 
       const [slot] = await this.googleCalendarService.getUpcomingFreeSlots(
         BOOKING_ADVISOR_USER_ID, { limit: 1, days: BOOKING_WINDOW_DAYS }
       );
       if (!slot) return generic;
 
-      scheduling.awaitingConfirm = slot;
-      await this.updateSession(session.wa_id, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
-      this.logActivity({ type: 'inactivity_nudge_slot_offer', waId: session.wa_id, slot: slot.label });
+      if (isWarmup) {
+        // No se puede pasar a `scheduling_confirm` sin haber pasado por
+        // finalize(), que es quien registra el lead y arma `__scheduling`.
+        // El horario queda anotado y `handleWarmupTurn` lo toma cuando
+        // conteste que sí, para que ese sí reserve ESTE bloque y no le
+        // devuelva una lista distinta de la que aceptó.
+        answers.__warmupSlot = slot;
+        await this.updateSession(session.wa_id, { answers: JSON.stringify(answers) });
+      } else {
+        scheduling.awaitingConfirm = slot;
+        await this.updateSession(session.wa_id, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
+      }
+      this.logActivity({ type: 'inactivity_nudge_slot_offer', waId: session.wa_id, slot: slot.label, step: session.status });
 
       return `¿Te reservo *${slot.label}* con el asesor? Respóndeme *sí* y te llega la confirmación 🙌 ` +
         'Si te viene mejor otro día u hora, dímelo y lo busco.';
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] No se pudo armar el recordatorio con horario para ${session.wa_id}:`, error.message);
       return generic;
+    }
+  }
+
+  /**
+   * Borra el horario que el recordatorio iba a proponerle al lead cuando el
+   * mensaje NO llegó a salir (típicamente su ventana de 24 h ya cerrada). Sin
+   * esto quedaría anotado un bloque que el lead nunca vio, y un "sí" suyo más
+   * tarde —contestando a la pregunta original del warmup— se lo reservaría.
+   */
+  async _discardProposedSlot(waId) {
+    try {
+      const session = await this.getSession(waId);
+      if (!session) return;
+      const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
+      if (answers.__warmupSlot === undefined) return;
+      delete answers.__warmupSlot;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+    } catch (error) {
+      console.error(`❌ [WhatsApp Bot] No se pudo descartar el horario propuesto a ${waId}:`, error.message);
     }
   }
 
@@ -2269,12 +2373,19 @@ export class WhatsappBotService {
     const text = String(incomingText || '').trim();
 
     if (isAffirmative(text)) {
-      this.logActivity({ type: 'warmup_accepted', waId });
+      // Si el recordatorio de inactividad le nombró un horario concreto, su
+      // "sí" es a ESE horario: se agenda ese y no se le vuelve a mostrar la
+      // lista (ver `_inactivityNudgeText`). Si venció mientras no respondía,
+      // `usableProposedSlot` lo descarta y sigue el camino normal.
+      const proposedSlot = usableProposedSlot(answers.__warmupSlot);
+      delete answers.__warmupSlot;
+      this.logActivity({ type: 'warmup_accepted', waId, slot: proposedSlot?.label || null });
       await this.updateSession(waId, { status: 'active', answers: JSON.stringify(answers) });
-      return this.finalize(waId, answers, { warmedUp: true });
+      return this.finalize(waId, answers, { warmedUp: true, proposedSlot });
     }
 
     if (isExplicitNo(text)) {
+      delete answers.__warmupSlot;
       this.logActivity({ type: 'warmup_declined', waId });
       const lead = await this.leadService.findByPhone(waId);
       // Vuelve a conversación libre, NO a 'completed': dijo que no a la
@@ -2285,6 +2396,9 @@ export class WhatsappBotService {
       return;
     }
 
+    // Se va a conversación libre: el horario propuesto ya no aplica — cuando
+    // vuelva a agendar se le recalculan los bloques.
+    delete answers.__warmupSlot;
     await this.updateSession(waId, { status: 'active', answers: JSON.stringify(answers) });
     return this.runConversationTurn(waId, incomingText, inboundMark);
   }
@@ -2569,7 +2683,7 @@ export class WhatsappBotService {
    * Si Calendar no está listo o no hay bloques libres, se transfiere a
    * seguimiento manual sin bloquear la conversación.
    */
-  async offerScheduling(waId, { topic, email, when = null, warmedUp = false }) {
+  async offerScheduling(waId, { topic, email, when = null, warmedUp = false, proposedSlot = null }) {
     try {
       if (!this.googleCalendarService?.isConfigured()) throw new Error('Google Calendar no configurado en el servidor');
 
@@ -2619,6 +2733,12 @@ export class WhatsappBotService {
           : `${opener}${urgencyOpener(answers.urgency)} una reunión por Google Meet con nuestro asesor para ${purpose} 🙌 ` +
             `Por Google Meet tienes ${MEET_DISCOUNT_PCT}% de descuento sobre el precio final; si prefieres una llamada telefónica, solo dímelo.`
       );
+      // El lead ya aceptó un horario concreto (se lo nombró el recordatorio de
+      // inactividad): mostrarle ahora la lista sería cambiarle la oferta
+      // después de que dijo que sí. Su sí vale como confirmación, así que se
+      // reserva directo — el paso "¿Confirmo…?" existe para cuando el horario
+      // salió de una interpretación, y acá no hay ninguna.
+      if (proposedSlot) return this.confirmSlot(waId, proposedSlot);
       await this.promptForDate(waId);
     } catch (error) {
       // Si la conexión de Google Calendar del asesor caducó, avisar al equipo
@@ -4266,6 +4386,7 @@ ${numberedList(fullSlotLabels(offer))}
         // Incluye la ventana de 24 h cerrada: el seguimiento se da por
         // gastado igual (la fila ya quedó reservada arriba) en vez de
         // reintentarse en cada barrido contra un error que no se arregla solo.
+        await this._discardProposedSlot(session.wa_id);
         console.error(`❌ [WhatsApp Bot] Error al mandar el recordatorio de inactividad a ${session.wa_id}:`, error.message);
       }
     }
