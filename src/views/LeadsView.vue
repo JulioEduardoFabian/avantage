@@ -815,6 +815,30 @@
             <form v-if="showQuoteForm" class="quote-form-section" @submit.prevent="submitQuote">
               <h4 class="quote-heading">💰 Nueva Cotización Comercial</h4>
 
+              <!-- Tipo de trabajo: elige qué se cotiza y con eso cambian los
+                   entregables y los textos base del documento. -->
+              <div class="form-group">
+                <label class="form-label">¿Qué se está cotizando?</label>
+                <div class="quote-type-switch" role="radiogroup" aria-label="Tipo de trabajo a cotizar">
+                  <button
+                    v-for="pkg in QUOTE_PACKAGES"
+                    :key="pkg.key"
+                    type="button"
+                    role="radio"
+                    :aria-checked="quotePackage === pkg.key"
+                    class="quote-type-option"
+                    :class="{ 'is-active': quotePackage === pkg.key }"
+                    @click="selectQuotePackage(pkg.key)"
+                  >
+                    <span class="quote-type-icon">{{ pkg.icon }}</span>
+                    <span class="quote-type-text">
+                      <strong>{{ pkg.label }}</strong>
+                      <em>{{ pkg.hint }}</em>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               <div class="form-group">
                 <label class="form-label">Servicio *</label>
                 <input v-model="quoteConcept" type="text" class="form-input custom-input" required />
@@ -826,19 +850,29 @@
 
               <!-- Entregables: se marcan o desmarcan y así salen impresos. -->
               <div class="form-group">
-                <label class="form-label">
-                  Entregables incluidos
-                  <span class="quote-check-count">{{ quoteDeliverables.length }} de {{ QUOTE_DELIVERABLES.length }}</span>
-                </label>
-                <div class="quote-check-actions">
-                  <button type="button" class="quote-check-link" @click="toggleAllDeliverables(true)">Marcar todos</button>
-                  <button type="button" class="quote-check-link" @click="toggleAllDeliverables(false)">Ninguno</button>
+                <div class="quote-check-head">
+                  <span class="form-label quote-check-title">
+                    Entregables incluidos
+                    <span class="quote-check-count">{{ quoteDeliverables.length }} de {{ activeDeliverables.length }}</span>
+                  </span>
+                  <label class="quote-check-all" :class="{ 'is-on': allDeliverablesChecked }">
+                    <input
+                      type="checkbox"
+                      class="quote-check-input"
+                      :checked="allDeliverablesChecked"
+                      :indeterminate.prop="someDeliverablesChecked"
+                      @change="toggleAllDeliverables($event.target.checked)"
+                    />
+                    <span class="quote-check-box" aria-hidden="true"></span>
+                    <span>{{ allDeliverablesChecked ? 'Quitar todos' : 'Marcar todos' }}</span>
+                  </label>
                 </div>
                 <ul class="quote-check-list">
-                  <li v-for="item in QUOTE_DELIVERABLES" :key="item.key">
-                    <label class="quote-check">
-                      <input type="checkbox" :value="item.key" v-model="quoteDeliverables" />
-                      <span>
+                  <li v-for="item in activeDeliverables" :key="item.key">
+                    <label class="quote-check" :class="{ 'is-checked': quoteDeliverables.includes(item.key) }">
+                      <input type="checkbox" class="quote-check-input" :value="item.key" v-model="quoteDeliverables" />
+                      <span class="quote-check-box" aria-hidden="true"></span>
+                      <span class="quote-check-text">
                         <strong>{{ item.label }}</strong>
                         <em>{{ item.description }}</em>
                       </span>
@@ -1017,7 +1051,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { apiFetch } from '../apiClient.js';
-import { QUOTE_DELIVERABLES, QUOTE_SERVICE_DEFAULTS, deliverableLine } from '../data/quoteDeliverables.js';
+import { QUOTE_PACKAGES, DEFAULT_QUOTE_PACKAGE, findQuotePackage, deliverableLine } from '../data/quoteDeliverables.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
 import WinDealModal from '../components/WinDealModal.vue';
@@ -1166,21 +1200,25 @@ const ACADEMIC_LEVELS = ['Pregrado (Bachiller/Título)', 'Posgrado (Maestría)',
 
 // Cotización
 const showQuoteForm = ref(false);
-const quoteConcept = ref(QUOTE_SERVICE_DEFAULTS.conceptTitle);
-const quoteServiceSubtitle = ref(QUOTE_SERVICE_DEFAULTS.serviceSubtitle);
+// Paquete que se está cotizando (tesis / artículo científico): define la lista
+// de entregables y los textos con los que abre el formulario.
+const quotePackage = ref(DEFAULT_QUOTE_PACKAGE);
+const INITIAL_QUOTE_DEFAULTS = findQuotePackage(DEFAULT_QUOTE_PACKAGE).defaults;
+const quoteConcept = ref(INITIAL_QUOTE_DEFAULTS.conceptTitle);
+const quoteServiceSubtitle = ref(INITIAL_QUOTE_DEFAULTS.serviceSubtitle);
 const quoteAmount = ref('');
 const quoteRegularAmount = ref('');
 const quoteCurrency = ref('PEN');
 // Entregables marcados (claves del catálogo): arrancan todos incluidos, que es
 // el paquete que se vende; quitar uno es la excepción.
-const quoteDeliverables = ref(QUOTE_DELIVERABLES.map((item) => item.key));
+const quoteDeliverables = ref(findQuotePackage(DEFAULT_QUOTE_PACKAGE).deliverables.map((item) => item.key));
 const quoteScope = ref('');
 const quoteCode = ref('');
-const quoteEstimatedTime = ref(QUOTE_SERVICE_DEFAULTS.estimatedTime);
-const quoteStatusLabel = ref(QUOTE_SERVICE_DEFAULTS.statusLabel);
+const quoteEstimatedTime = ref(INITIAL_QUOTE_DEFAULTS.estimatedTime);
+const quoteStatusLabel = ref(INITIAL_QUOTE_DEFAULTS.statusLabel);
 const quoteValidUntil = ref('');
-const quoteWarranty = ref(QUOTE_SERVICE_DEFAULTS.warrantyText);
-const quoteTerms = ref(QUOTE_SERVICE_DEFAULTS.commercialTerms);
+const quoteWarranty = ref(INITIAL_QUOTE_DEFAULTS.warrantyText);
+const quoteTerms = ref(INITIAL_QUOTE_DEFAULTS.commercialTerms);
 const quoteNotes = ref('');
 const quoteSubmitting = ref(false);
 const quoteSuccess = ref(null);
@@ -1866,24 +1904,69 @@ function defaultValidUntil() {
 }
 
 function resetQuoteForm() {
-  quoteConcept.value = QUOTE_SERVICE_DEFAULTS.conceptTitle;
-  quoteServiceSubtitle.value = QUOTE_SERVICE_DEFAULTS.serviceSubtitle;
+  quotePackage.value = DEFAULT_QUOTE_PACKAGE;
+  const defaults = findQuotePackage(DEFAULT_QUOTE_PACKAGE).defaults;
+  quoteConcept.value = defaults.conceptTitle;
+  quoteServiceSubtitle.value = defaults.serviceSubtitle;
   quoteAmount.value = '';
   quoteRegularAmount.value = '';
   quoteCurrency.value = 'PEN';
-  quoteDeliverables.value = QUOTE_DELIVERABLES.map((item) => item.key);
+  quoteDeliverables.value = activeDeliverables.value.map((item) => item.key);
   quoteScope.value = '';
   quoteCode.value = '';
-  quoteEstimatedTime.value = QUOTE_SERVICE_DEFAULTS.estimatedTime;
-  quoteStatusLabel.value = QUOTE_SERVICE_DEFAULTS.statusLabel;
+  quoteEstimatedTime.value = defaults.estimatedTime;
+  quoteStatusLabel.value = defaults.statusLabel;
   quoteValidUntil.value = defaultValidUntil();
-  quoteWarranty.value = QUOTE_SERVICE_DEFAULTS.warrantyText;
-  quoteTerms.value = QUOTE_SERVICE_DEFAULTS.commercialTerms;
+  quoteWarranty.value = defaults.warrantyText;
+  quoteTerms.value = defaults.commercialTerms;
   quoteNotes.value = '';
 }
 
+/** Entregables del paquete que se está cotizando. */
+const activeDeliverables = computed(() => findQuotePackage(quotePackage.value).deliverables);
+
+const allDeliverablesChecked = computed(
+  () => activeDeliverables.value.length > 0 && quoteDeliverables.value.length === activeDeliverables.value.length
+);
+
+/** Algunos sí y otros no: el check maestro se dibuja en estado intermedio. */
+const someDeliverablesChecked = computed(
+  () => quoteDeliverables.value.length > 0 && !allDeliverablesChecked.value
+);
+
 function toggleAllDeliverables(selectAll) {
-  quoteDeliverables.value = selectAll ? QUOTE_DELIVERABLES.map((item) => item.key) : [];
+  quoteDeliverables.value = selectAll ? activeDeliverables.value.map((item) => item.key) : [];
+}
+
+/**
+ * Cambia el tipo de trabajo cotizado. Los textos por defecto siguen al paquete
+ * nuevo, pero solo si nadie los editó a mano (si el asesor escribió su propio
+ * título, se respeta). Las marcas de los entregables compartidos se conservan,
+ * y el entregable propio del paquete nuevo entra marcado.
+ */
+function selectQuotePackage(key) {
+  if (key === quotePackage.value) return;
+  const prev = findQuotePackage(quotePackage.value);
+  const next = findQuotePackage(key);
+
+  const fields = [
+    [quoteConcept, 'conceptTitle'],
+    [quoteServiceSubtitle, 'serviceSubtitle'],
+    [quoteEstimatedTime, 'estimatedTime'],
+    [quoteStatusLabel, 'statusLabel'],
+    [quoteWarranty, 'warrantyText'],
+    [quoteTerms, 'commercialTerms']
+  ];
+  for (const [field, name] of fields) {
+    if (field.value === prev.defaults[name]) field.value = next.defaults[name];
+  }
+
+  const sharedKeys = new Set(prev.deliverables.map((item) => item.key));
+  quoteDeliverables.value = next.deliverables
+    .filter((item) => !sharedKeys.has(item.key) || quoteDeliverables.value.includes(item.key))
+    .map((item) => item.key);
+
+  quotePackage.value = key;
 }
 
 /** El descuento no se escribe: es la diferencia entre el regular y el final. */
@@ -1898,7 +1981,7 @@ const quoteDiscount = computed(() => {
  * catálogo, más las líneas sueltas que se hayan escrito.
  */
 const quoteScopeItems = computed(() => {
-  const checked = QUOTE_DELIVERABLES
+  const checked = activeDeliverables.value
     .filter((item) => quoteDeliverables.value.includes(item.key))
     .map(deliverableLine);
   const extras = quoteScope.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -2072,32 +2155,88 @@ onMounted(() => {
   margin-top: 0.8rem;
 }
 
+/* ── Tipo de trabajo cotizado (tesis / artículo científico) ── */
+.quote-type-switch {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.5rem;
+}
+
+.quote-type-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.quote-type-option:hover { border-color: var(--primary); }
+
+.quote-type-option.is-active {
+  border-color: var(--primary);
+  background: rgba(111, 129, 37, 0.1);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.quote-type-icon { font-size: 1.15rem; line-height: 1; flex-shrink: 0; }
+.quote-type-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.quote-type-text strong { font-size: 0.8rem; font-weight: 700; color: var(--text-main); }
+.quote-type-text em { font-size: 0.7rem; font-style: normal; color: var(--text-muted); line-height: 1.35; }
+.quote-type-option.is-active .quote-type-text strong { color: var(--primary); }
+
 /* ── Entregables de la cotización (checks) ── */
+.quote-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.quote-check-title { margin: 0; }
+
 .quote-check-count {
   margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(111, 129, 37, 0.14);
   font-family: var(--font-mono);
   font-size: 0.68rem;
   font-weight: 700;
   color: var(--primary);
 }
 
-.quote-check-actions { display: flex; gap: 0.75rem; margin-bottom: 0.4rem; }
-
-.quote-check-link {
-  background: none;
-  border: none;
-  padding: 0;
+/* El check maestro: marca o desmarca la lista completa de un golpe. */
+.quote-check-all {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--primary);
+  color: var(--text-muted);
   cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
+
+.quote-check-all:hover { border-color: var(--primary); color: var(--primary); }
+.quote-check-all.is-on { border-color: var(--primary); color: var(--primary); }
 
 .quote-check-list {
   list-style: none;
   display: grid;
   gap: 0.25rem;
-  max-height: 210px;
+  max-height: 230px;
   overflow-y: auto;
   padding: 0.5rem;
   margin-bottom: 0.5rem;
@@ -2107,19 +2246,88 @@ onMounted(() => {
 }
 
 .quote-check {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.3rem 0.35rem;
+  gap: 0.55rem;
+  padding: 0.4rem 0.45rem;
   border-radius: 8px;
+  border: 1px solid transparent;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .quote-check:hover { background: var(--surface-2); }
-.quote-check input { margin-top: 0.15rem; flex-shrink: 0; }
-.quote-check span { display: flex; flex-direction: column; gap: 0.05rem; }
-.quote-check strong { font-size: 0.78rem; color: var(--text-main); font-weight: 600; }
-.quote-check em { font-size: 0.72rem; color: var(--text-muted); font-style: normal; line-height: 1.4; }
+
+.quote-check.is-checked {
+  border-color: rgba(111, 129, 37, 0.35);
+  background: rgba(111, 129, 37, 0.07);
+}
+
+/* Checkbox nativo oculto pero operable con teclado; lo visible es .quote-check-box. */
+.quote-check-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+}
+
+.quote-check-box {
+  position: relative;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 0.1rem;
+  border: 1.5px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-card);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.quote-check-box::after {
+  content: '';
+  position: absolute;
+  left: 4.5px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.12s ease;
+}
+
+.quote-check-input:checked + .quote-check-box,
+.quote-check-input:indeterminate + .quote-check-box {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.quote-check-input:checked + .quote-check-box::after { transform: rotate(45deg) scale(1); }
+
+/* Estado intermedio del maestro: una barra, no un tilde. */
+.quote-check-input:indeterminate + .quote-check-box::after {
+  left: 3px;
+  top: 6px;
+  width: 8px;
+  height: 0;
+  border-width: 0 0 2px 0;
+  transform: none;
+}
+
+.quote-check-input:focus-visible + .quote-check-box {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.quote-check-all .quote-check-box { width: 14px; height: 14px; margin-top: 0; }
+.quote-check-all .quote-check-box::after { left: 3.8px; top: 0.5px; width: 3.5px; height: 7px; }
+
+.quote-check-text { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
+.quote-check-text strong { font-size: 0.78rem; color: var(--text-main); font-weight: 600; }
+.quote-check-text em { font-size: 0.72rem; color: var(--text-muted); font-style: normal; line-height: 1.4; }
+.quote-check.is-checked .quote-check-text strong { color: var(--primary); }
 
 .quote-field-row {
   display: flex;
