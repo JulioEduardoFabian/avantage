@@ -128,6 +128,11 @@ antes de tocar el arranque de producción.
   texto plano, extraído solo con `zlib`, sin dependencias nuevas — o los primeros bytes si es una
   imagen. El recorte se hace en el servidor: el archivo completo nunca viaja al navegador antes de
   que el pago esté verificado.
+- La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
+  registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
+  `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los
+  totales ni en el flujo de caja de `getOverview()`. Guarda la persona como texto libre (se paga a
+  gente sin cuenta en el panel) y la fecha del pago es el dato que ordena la planilla.
 - Los **documentos de marca** (cotización, contrato, comprobante de pago) comparten paleta, logo e
   iconos desde `quotationDocument.js`: si cambia la marca, cambian los tres juntos. El comprobante
   tiene además una versión **PDF** (`paymentReceiptPdf.js`, dibujada con `pdf-lib` en JavaScript

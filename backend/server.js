@@ -47,6 +47,7 @@ import { ScheduledMeetingService } from './services/scheduledMeetingService.js';
 import { NotificationService } from './services/notificationService.js';
 import { FinanceService } from './services/financeService.js';
 import { FinanceLedgerService } from './services/financeLedgerService.js';
+import { FinanceSalaryService } from './services/financeSalaryService.js';
 import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
 import { signToken, requireAuth, requirePermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
@@ -138,6 +139,8 @@ const scheduledMeetingService = new ScheduledMeetingService();
 const notificationService = new NotificationService();
 const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
+// La planilla de salarios es un registro aparte: no suma en ingresos ni egresos.
+const financeSalaryService = new FinanceSalaryService();
 // El cronograma de pagos del contrato son las cuotas reales de Finanzas.
 const contractService = new ContractService({ financeLedgerService });
 const documentService = new DocumentService({ quoteService, contractService });
@@ -1342,6 +1345,57 @@ app.delete('/api/finance/fixed-expenses/:id', requireAuth, requirePermission('fi
   } catch (error) {
     console.error('❌ Error al eliminar el gasto fijo:', error);
     res.status(500).json({ error: 'Error al eliminar el gasto fijo.', details: error.message });
+  }
+});
+
+// --- Salarios ---
+// Registro de pagos al personal. Deliberadamente NO toca `finance_journal` ni
+// `finance_income`: un salario no entra en los ingresos ni en los egresos de
+// la empresa, solo queda como historial con su fecha.
+app.get('/api/finance/salaries', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const salaries = await financeSalaryService.listSalaries();
+    res.json({ salaries });
+  } catch (error) {
+    console.error('❌ Error al obtener los salarios:', error);
+    res.status(500).json({ error: 'Error al obtener los salarios.', details: error.message });
+  }
+});
+
+app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const { persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle } = req.body || {};
+    const salary = await financeSalaryService.createSalary({
+      persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle, createdBy: req.user.id
+    });
+    res.status(201).json({ salary });
+  } catch (error) {
+    console.error('❌ Error al registrar el salario:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar el salario.' });
+  }
+});
+
+app.put('/api/finance/salaries/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const { persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle } = req.body || {};
+    const salary = await financeSalaryService.updateSalary(req.params.id, {
+      persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle
+    });
+    if (!salary) return res.status(404).json({ error: 'Salario no encontrado.' });
+    res.json({ salary });
+  } catch (error) {
+    console.error('❌ Error al actualizar el salario:', error);
+    res.status(400).json({ error: error.message || 'Error al actualizar el salario.' });
+  }
+});
+
+app.delete('/api/finance/salaries/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    await financeSalaryService.deleteSalary(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error al eliminar el salario:', error);
+    res.status(500).json({ error: 'Error al eliminar el salario.', details: error.message });
   }
 });
 

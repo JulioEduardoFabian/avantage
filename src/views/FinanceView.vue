@@ -74,19 +74,22 @@ import OverviewTab from './finance/OverviewTab.vue';
 import IncomeTab from './finance/IncomeTab.vue';
 import JournalTab from './finance/JournalTab.vue';
 import FixedExpensesTab from './finance/FixedExpensesTab.vue';
+import SalariesTab from './finance/SalariesTab.vue';
 
 const TABS = [
   { key: 'overview', label: 'Resumen Financiero', icon: '📊', component: OverviewTab },
   { key: 'income', label: 'Ingresos y Cierres', icon: '📥', component: IncomeTab },
   { key: 'journal', label: 'Libro Diario', icon: '📖', component: JournalTab },
-  { key: 'fixed', label: 'Gastos Fijos', icon: '🏢', component: FixedExpensesTab }
+  { key: 'fixed', label: 'Gastos Fijos', icon: '🏢', component: FixedExpensesTab },
+  { key: 'salaries', label: 'Salarios', icon: '🧾', component: SalariesTab }
 ];
 
 const activeTab = ref('overview');
 const tabTrigger = reactive({
   income: 0,
   journal: 0,
-  fixed: 0
+  fixed: 0,
+  salaries: 0
 });
 
 const activeComponent = computed(() => TABS.find((t) => t.key === activeTab.value)?.component);
