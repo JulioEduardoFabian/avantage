@@ -37,6 +37,12 @@ const DEFAULT_MESSAGE_GAP_MS = (Number(process.env.WHATSAPP_BOT_MESSAGE_GAP_SECO
 // instantáneo tras una operación lenta como la llamada al LLM).
 const TYPING_PAUSE_MS = 1500;
 
+// Segundo extra que se suma a la espera de CADA mensaje, encima del gap
+// configurado y del tiempo de tecleo. Con la campaña entrando muchos leads a
+// la vez, las respuestas salían demasiado rápidas y se sentían automáticas;
+// este margen fijo hace que Avan se tome un poco más entre mensaje y mensaje.
+const EXTRA_MESSAGE_DELAY_MS = (Number(process.env.WHATSAPP_BOT_EXTRA_DELAY_SECONDS) || 1) * 1000;
+
 // Cuánto "tarda en escribir" Avan, por palabra. El gap configurable de arriba
 // existe por otra razón (no parecer spam ante WhatsApp) y es el mismo para
 // todos los mensajes; esto es lo que hace que el ritmo se sienta de una
@@ -1438,7 +1444,7 @@ export class WhatsappBotService {
     // se hace esperar más que un acuse corto, que es como se comporta alguien
     // del otro lado. El indicador de "escribiendo..." se manda justo abajo,
     // antes de la espera, para que ese rato se vea como lo que simula ser.
-    const gapMs = Math.max(configuredGapMs, typingTimeFor(text));
+    const gapMs = Math.max(configuredGapMs, typingTimeFor(text)) + EXTRA_MESSAGE_DELAY_MS;
 
     // Reserva el momento del próximo envío ANTES de esperar: si dos send()
     // corren casi a la vez, el segundo ve el timestamp reservado por el
@@ -1448,7 +1454,7 @@ export class WhatsappBotService {
     const reserved = this.lastSentAt.get(waId) || 0;
     const sendAt = reserved === 0
       ? now + gapMs
-      : Math.max(now + TYPING_PAUSE_MS, reserved + gapMs);
+      : Math.max(now + TYPING_PAUSE_MS + EXTRA_MESSAGE_DELAY_MS, reserved + gapMs);
     this.lastSentAt.set(waId, sendAt);
     const waitMs = sendAt - now;
 
