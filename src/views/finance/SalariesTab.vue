@@ -1,9 +1,9 @@
 <template>
   <section class="ledger-tab">
     <p class="ledger-hint">
-      Pagos al personal con su fecha. Este registro es <strong>independiente</strong> de la
-      contabilidad: un salario no se suma como ingreso ni como egreso de la empresa, así que
-      no aparece en el resumen financiero, en el libro diario ni en los gastos fijos.
+      Pagos al personal con su fecha y su estado. Cada salario es un egreso y se registra en
+      <strong>negativo</strong>. Este registro es <strong>independiente</strong> de la
+      contabilidad: no aparece en el resumen financiero, en el libro diario ni en los gastos fijos.
     </p>
 
     <div class="ledger-controls">
@@ -17,6 +17,11 @@
           aria-label="Buscar salarios"
         />
       </label>
+      <select v-model="estadoFilter" class="ledger-filter" aria-label="Filtrar por estado">
+        <option value="">Todo estado</option>
+        <option value="pagado">Pagado</option>
+        <option value="pendiente">Pendiente</option>
+      </select>
       <select v-model="bancoFilter" class="ledger-filter" aria-label="Filtrar por banco">
         <option value="">Todo banco</option>
         <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
@@ -55,8 +60,15 @@
             </datalist>
           </div>
           <div class="form-group">
-            <label class="form-label">Monto</label>
+            <label class="form-label">Monto (se registra como egreso, en negativo)</label>
             <input v-model="form.monto" type="number" step="0.01" min="0.01" class="form-input" placeholder="0.00" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Estado</label>
+            <select v-model="form.estado" class="form-select">
+              <option value="pagado">Pagado</option>
+              <option value="pendiente">Pendiente</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label">Moneda</label>
@@ -111,11 +123,15 @@
           <dt>Personas</dt>
           <dd>{{ totals.personas }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Suma de los pagos en soles">
+        <div class="ledger-summary-item" title="Pagos que todavía no se hicieron">
+          <dt>Pendientes</dt>
+          <dd>{{ totals.pendientes }}</dd>
+        </div>
+        <div class="ledger-summary-item" title="Suma de los salarios en soles (egreso)">
           <dt>Total soles</dt>
           <dd class="is-out">S/ {{ formatAmount(totals.soles) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Suma de los pagos en dólares">
+        <div class="ledger-summary-item" title="Suma de los salarios en dólares (egreso)">
           <dt>Total dólares</dt>
           <dd class="is-out">US$ {{ formatAmount(totals.dolares) }}</dd>
         </div>
@@ -150,6 +166,7 @@
                     Monto <span class="ledger-sort-caret">{{ sortCaret('monto') }}</span>
                   </button>
                 </th>
+                <th>Estado</th>
                 <th>Método</th>
                 <th>Banco</th>
                 <th>Detalle</th>
@@ -167,9 +184,21 @@
                   <span v-if="row.periodo">{{ row.periodo }}</span>
                   <span v-else class="ledger-muted">—</span>
                 </td>
-                <td class="ledger-num">
+                <td class="ledger-num salary-amount-out">
                   <span class="ledger-amount-cur">{{ currencySymbol(row.moneda) }}</span>
                   <span class="ledger-amount">{{ formatAmount(row.monto) }}</span>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    class="pill salary-status-pill"
+                    :class="row.estado === 'pendiente' ? 'pill-warning' : 'pill-success'"
+                    :disabled="statusSavingId === row.id"
+                    :title="row.estado === 'pendiente' ? 'Marcar como pagado' : 'Marcar como pendiente'"
+                    @click="toggleStatus(row)"
+                  >
+                    {{ row.estado === 'pendiente' ? 'Pendiente' : '✓ Pagado' }}
+                  </button>
                 </td>
                 <td>
                   <span v-if="row.metodo_pago">{{ row.metodo_pago }}</span>
@@ -238,13 +267,14 @@ const successMessage = ref('');
 
 const rows = ref([]);
 const editingRow = ref(null);
+const statusSavingId = ref(null);
 
 watch(() => props.openFormTrigger, (val) => {
   if (val > 0) openCreate();
 });
 
 const {
-  search, banco: bancoFilter, sort, page, pageSize,
+  search, estado: estadoFilter, banco: bancoFilter, sort, page, pageSize,
   filtered, paged, totalPages, range, toggleSort, sortCaret, clearFilters
 } = useLedgerTable(rows, {
   searchText: (row) => [row.persona, row.cargo, row.periodo, row.detalle, row.metodo_pago, row.banco]
@@ -252,7 +282,9 @@ const {
   sorters: {
     fecha: (row) => dayOnly(row.fecha),
     persona: (row) => row.persona || '',
-    monto: (row) => Number(row.monto) || 0
+    // El monto se guarda en negativo: se ordena por su magnitud para que
+    // "mayor primero" siga siendo el salario más alto.
+    monto: (row) => Math.abs(Number(row.monto) || 0)
   },
   defaultSort: { key: 'fecha', dir: 'desc' }
 });
@@ -264,14 +296,16 @@ const {
 const totals = computed(() => {
   let soles = 0;
   let dolares = 0;
+  let pendientes = 0;
   const personas = new Set();
   for (const row of filtered.value) {
     const monto = Number(row.monto) || 0;
     if (row.moneda === 'dolares') dolares += monto;
     else soles += monto;
+    if (row.estado === 'pendiente') pendientes += 1;
     if (row.persona) personas.add(row.persona.toLowerCase());
   }
-  return { soles, dolares, personas: personas.size };
+  return { soles, dolares, pendientes, personas: personas.size };
 });
 
 /** Los tres últimos meses como sugerencia de periodo, el actual primero. */
@@ -294,6 +328,7 @@ function emptyForm() {
     periodo: '',
     monto: '',
     moneda: 'soles',
+    estado: 'pagado',
     metodoPago: '',
     banco: '',
     detalle: ''
@@ -322,8 +357,10 @@ function startEdit(row) {
     cargo: row.cargo || '',
     fecha: dayOnly(row.fecha),
     periodo: row.periodo || '',
-    monto: row.monto ?? '',
+    // Se edita en positivo; el servidor le vuelve a poner el signo de egreso.
+    monto: row.monto != null ? Math.abs(Number(row.monto)) : '',
     moneda: row.moneda || 'soles',
+    estado: row.estado || 'pagado',
     metodoPago: row.metodo_pago || '',
     banco: row.banco || '',
     detalle: row.detalle || ''
@@ -380,6 +417,26 @@ async function submit() {
   }
 }
 
+async function toggleStatus(row) {
+  const nextEstado = row.estado === 'pendiente' ? 'pagado' : 'pendiente';
+  statusSavingId.value = row.id;
+  errorMessage.value = '';
+  try {
+    const response = await apiFetch(`/api/finance/salaries/${row.id}/estado`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estado: nextEstado })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo cambiar el estado del salario.');
+    row.estado = data.salary?.estado ?? nextEstado;
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    statusSavingId.value = null;
+  }
+}
+
 async function removeRow(row) {
   if (!confirm(`¿Eliminar el salario de ${row.persona} del ${formatDate(row.fecha)}? Esta acción no se puede deshacer.`)) return;
   errorMessage.value = '';
@@ -396,3 +453,18 @@ async function removeRow(row) {
 
 onMounted(fetchRows);
 </script>
+
+<style scoped>
+.salary-amount-out { color: #EF4444; }
+
+.salary-status-pill {
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  border: none;
+  white-space: nowrap;
+}
+
+.salary-status-pill:hover { filter: brightness(0.97); }
+.salary-status-pill:disabled { opacity: 0.6; cursor: wait; }
+</style>

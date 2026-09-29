@@ -1350,8 +1350,8 @@ app.delete('/api/finance/fixed-expenses/:id', requireAuth, requirePermission('fi
 
 // --- Salarios ---
 // Registro de pagos al personal. Deliberadamente NO toca `finance_journal` ni
-// `finance_income`: un salario no entra en los ingresos ni en los egresos de
-// la empresa, solo queda como historial con su fecha.
+// `finance_income`: queda como historial propio, con su fecha, su estado
+// (pagado/pendiente) y el monto en negativo por ser una salida de dinero.
 app.get('/api/finance/salaries', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
     const salaries = await financeSalaryService.listSalaries();
@@ -1364,9 +1364,9 @@ app.get('/api/finance/salaries', requireAuth, requirePermission('finance.view'),
 
 app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
-    const { persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle } = req.body || {};
+    const { persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle } = req.body || {};
     const salary = await financeSalaryService.createSalary({
-      persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle, createdBy: req.user.id
+      persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle, createdBy: req.user.id
     });
     res.status(201).json({ salary });
   } catch (error) {
@@ -1377,15 +1377,27 @@ app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view')
 
 app.put('/api/finance/salaries/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
-    const { persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle } = req.body || {};
+    const { persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle } = req.body || {};
     const salary = await financeSalaryService.updateSalary(req.params.id, {
-      persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle
+      persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle
     });
     if (!salary) return res.status(404).json({ error: 'Salario no encontrado.' });
     res.json({ salary });
   } catch (error) {
     console.error('❌ Error al actualizar el salario:', error);
     res.status(400).json({ error: error.message || 'Error al actualizar el salario.' });
+  }
+});
+
+// Alterna pagado ↔ pendiente desde la tabla, sin abrir el formulario.
+app.patch('/api/finance/salaries/:id/estado', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const salary = await financeSalaryService.setSalaryStatus(req.params.id, req.body?.estado);
+    if (!salary) return res.status(404).json({ error: 'Salario no encontrado.' });
+    res.json({ salary });
+  } catch (error) {
+    console.error('❌ Error al cambiar el estado del salario:', error);
+    res.status(400).json({ error: error.message || 'Error al cambiar el estado del salario.' });
   }
 });
 

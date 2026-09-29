@@ -132,7 +132,9 @@ antes de tocar el arranque de producción.
   registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
   `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los
   totales ni en el flujo de caja de `getOverview()`. Guarda la persona como texto libre (se paga a
-  gente sin cuenta en el panel) y la fecha del pago es el dato que ordena la planilla.
+  gente sin cuenta en el panel) y la fecha del pago es el dato que ordena la planilla. Cada fila
+  tiene `estado` (`pagado`/`pendiente`) y el `monto` se guarda en **negativo** por ser un egreso
+  (el formulario lo pide en positivo y `normalize()` le pone el signo).
 - Los **documentos de marca** (cotización, contrato, comprobante de pago) comparten paleta, logo e
   iconos desde `quotationDocument.js`: si cambia la marca, cambian los tres juntos. El comprobante
   tiene además una versión **PDF** (`paymentReceiptPdf.js`, dibujada con `pdf-lib` en JavaScript

@@ -4,15 +4,18 @@ import { db } from '../db/connection.js';
  * Planilla de salarios.
  *
  * Vive en su propio servicio y no dentro de `financeLedgerService` a propósito:
- * un salario **no es** un ingreso ni un egreso de la empresa. No entra en
- * `finance_journal`, no toca `finance_income` y no aparece en los totales ni en
- * el flujo de caja de `getOverview()` — es un historial de pagos al personal,
- * con su fecha, y nada más. Mantenerlo separado evita que una suma futura del
- * libro contable lo arrastre sin querer.
+ * no entra en `finance_journal`, no toca `finance_income` y no aparece en los
+ * totales ni en el flujo de caja de `getOverview()` — es un historial de pagos
+ * al personal, con su fecha y su estado (pagado/pendiente). Mantenerlo separado
+ * evita que una suma futura del libro contable lo arrastre sin querer.
+ *
+ * El `monto` se guarda en **negativo** porque es dinero que sale; el
+ * formulario lo pide en positivo y `normalize()` le pone el signo.
  */
 
 export const MONEDAS = ['soles', 'dolares'];
 export const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
+export const ESTADOS = ['pagado', 'pendiente'];
 
 /**
  * mysql2 devuelve las columnas DATE como un Date a medianoche LOCAL; pasarlo
@@ -30,13 +33,16 @@ function withIsoDates(row) {
 }
 
 /** Valida y normaliza lo que llega del formulario, para alta y para edición. */
-function normalize({ persona, cargo, fecha, periodo, monto, moneda, metodoPago, banco, detalle }) {
+function normalize({ persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle }) {
   if (!persona || !persona.trim()) throw new Error('El nombre de la persona es obligatorio.');
   if (!fecha) throw new Error('La fecha es obligatoria.');
 
-  const importe = Number(monto);
-  if (!Number.isFinite(importe) || importe <= 0) {
-    throw new Error('El monto debe ser un número mayor que cero.');
+  // Un salario es un egreso: se guarda siempre en negativo. Se acepta el monto
+  // con o sin signo (el formulario lo pide en positivo) y se toma su valor
+  // absoluto, así nunca queda un salario "a favor" por un signo mal puesto.
+  const importe = Math.abs(Number(monto));
+  if (!Number.isFinite(importe) || importe === 0) {
+    throw new Error('El monto debe ser un número distinto de cero.');
   }
 
   return {
@@ -44,8 +50,9 @@ function normalize({ persona, cargo, fecha, periodo, monto, moneda, metodoPago, 
     cargo: cargo?.trim() || null,
     fecha: String(fecha).slice(0, 10),
     periodo: periodo?.trim() || null,
-    monto: Math.round(importe * 100) / 100,
+    monto: -Math.round(importe * 100) / 100,
     moneda: MONEDAS.includes(moneda) ? moneda : 'soles',
+    estado: ESTADOS.includes(estado) ? estado : 'pagado',
     metodo_pago: metodoPago?.trim() || null,
     banco: banco?.trim() || null,
     detalle: detalle?.trim() || null
@@ -76,6 +83,13 @@ export class FinanceSalaryService {
     if (!existing) return null;
     await db('finance_salaries').where({ id }).update(normalize(payload));
     return this.getSalary(id);
+  }
+
+  /** Cambia solo el estado (pagado ↔ pendiente) sin reenviar todo el formulario. */
+  async setSalaryStatus(id, estado) {
+    if (!ESTADOS.includes(estado)) throw new Error('Estado inválido: debe ser "pagado" o "pendiente".');
+    const updated = await db('finance_salaries').where({ id }).update({ estado });
+    return updated ? this.getSalary(id) : null;
   }
 
   async getSalary(id) {
