@@ -49,10 +49,7 @@ export const PAYMENT_METHODS = [
     short: 'Interbank',
     accent: '#0aa05a',
     holder: 'Julio Fabián Ninamango — Gerente General',
-    // PENDIENTE: confirmar número de cuenta y CCI de esta cuenta. En la
-    // captura del 29/09 se leía "100-3004188825", distinto del que está acá.
-    // Se dejan los valores actuales hasta que lleguen los definitivos.
-    account: 'Cuenta Corriente (S/): 8983515374983',
+    account: 'Cuenta Corriente (S/): 500-3004188829',
     cci: 'CCI: 00389801351537498347'
   }
 ];

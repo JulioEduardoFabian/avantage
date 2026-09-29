@@ -164,6 +164,23 @@ test('la cuenta de Interbank se imprime a nombre de su titular, no de la empresa
   assert.match(html, /Avantage Group S\.A\.C\. Cuenta Corriente/);
 });
 
+// Los números van fijados en una prueba a propósito: un dígito cambiado acá
+// manda el dinero del cliente a una cuenta que no existe, y no hay nada en el
+// documento que lo delate. Si cambia la cuenta, esta prueba se actualiza a
+// mano y queda el registro de cuándo cambió.
+test('las cuentas de abono son exactamente las vigentes', () => {
+  const html = buildContractDocument({
+    id: 25,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [{ title: 'PAGO', body: '{{cuentas_bancarias}}' }]
+  });
+  assert.match(html, /Cuenta Corriente \(S\/\): 3557413863061/);
+  assert.match(html, /CCI: 002 335 007413863061 66/);
+  assert.match(html, /Cuenta Corriente \(S\/\): 500-3004188829/);
+  assert.match(html, /CCI: 00389801351537498347/);
+});
+
 test('{{cronograma_entregas}} imprime las entregas pactadas como tabla', () => {
   const html = buildContractDocument({
     id: 22,
