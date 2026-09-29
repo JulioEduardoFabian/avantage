@@ -210,3 +210,16 @@ export function notInterestedFarewell(contactName) {
   return `Entendido${name}, gracias por avisarme 🙌 Cierro por acá para no molestarte más. ` +
     'Si más adelante retomas tu tesis, escríbeme a este mismo número y te atiendo al toque.';
 }
+
+/**
+ * El lead sí quiere la asesoría, pero no ahora ("el próximo ciclo", "cuando
+ * junte el dinero"). Se cierra sin insistir y SIN prometerle que alguien lo va
+ * a contactar: quien decide cuándo retomar es él. Es distinto de
+ * `notInterestedFarewell` en que no da por perdido el interés, y distinto del
+ * texto de transferencia en que nadie lo va a llamar hoy.
+ */
+export function postponedFarewell(contactName) {
+  const name = contactName ? `, ${contactName}` : '';
+  return `Perfecto${name}, lo dejamos para cuando te acomode 🙌 No te escribo más por ahora. ` +
+    'Cuando quieras retomarlo me avisas por acá y seguimos desde donde lo dejamos.';
+}

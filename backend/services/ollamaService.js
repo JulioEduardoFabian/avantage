@@ -364,6 +364,34 @@ const UNIVERSITY_SCHEMA = {
   required: ['name', 'confident']
 };
 
+const CONFIRMATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    decision: { type: 'string' },
+    extraRequest: { type: ['string', 'null'] }
+  },
+  required: ['decision', 'extraRequest']
+};
+
+const REFUSAL_SCHEMA = {
+  type: 'object',
+  properties: {
+    refusing: { type: 'boolean' },
+    kind: { type: ['string', 'null'] }
+  },
+  required: ['refusing', 'kind']
+};
+
+const SLOT_CONSTRAINT_SCHEMA = {
+  type: 'object',
+  properties: {
+    understood: { type: 'boolean' },
+    fits: { type: 'array', items: { type: 'integer' } },
+    constraint: { type: ['string', 'null'] }
+  },
+  required: ['understood', 'fits', 'constraint']
+};
+
 /**
  * Servicio de integración con Ollama Cloud API / Local Ollama
  */
@@ -1112,6 +1140,185 @@ Responde ÚNICAMENTE en JSON válido: {"index": <número de 1 a ${optionLabels.l
 
     const index = Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= optionLabels.length ? asNumber - 1 : null;
     return { index, preferredTime: null, source: 'fallback' };
+  }
+
+  /**
+   * Respuesta al "¿Confirmo <modalidad>, <horario>?". El regex de
+   * afirmaciones (`isAffirmative`) exige que TODO el mensaje sea un sí, así
+   * que un sí que venga con un pedido pegado —"Si esta bien.. Me envía enlace
+   * por este numero porfavor"— no coincidía y el bloque ya elegido se
+   * soltaba: el caso real del 28/09 en que una reunión confirmada a las 6:30
+   * p.m. se perdió y el lead tuvo que agendar de nuevo una hora después.
+   *
+   * Acá el mensaje se lee entero:
+   *   - `confirm`: dice que sí, aunque además pida algo ("mándame el link",
+   *     "me confirmas por correo"). Ese pedido extra vuelve en `extraRequest`
+   *     para poder atenderlo DESPUÉS de reservar, no en vez de reservar.
+   *   - `refuse`: no quiere la reunión.
+   *   - `change`: quiere otro día u otra hora.
+   *   - `unclear`: no se puede afirmar ninguna de las tres. Ante la duda NO se
+   *     reserva — es la misma regla que ya tenía este paso.
+   *
+   * Sin LLM devuelve `unclear`, que es exactamente el comportamiento
+   * histórico: quien llama ya probó el regex antes de preguntar acá.
+   */
+  async parseConfirmationReply(text, slotLabel) {
+    if (!this.hasLLM()) return { decision: 'unclear', extraRequest: null, source: 'fallback' };
+
+    const prompt = `A alguien se le propuso este horario para una reunión: "${slotLabel}".
+Se le preguntó: "¿Confirmo ${slotLabel}? Responde Sí o dime qué cambiar".
+
+Respondió esto: """${text}"""
+
+Si ese texto trae varios renglones, son burbujas seguidas de WhatsApp: una sola intención partida en pedazos, no respuestas distintas. Únelas antes de interpretar.
+
+Clasifica su respuesta en "decision", con UNO de estos cuatro valores:
+- "confirm": acepta el horario propuesto. IMPORTANTE: sigue siendo "confirm" aunque junto al sí pida algo más ("sí, mándame el link", "está bien, me lo confirmas por acá", "ok pero avísame antes"). Un sí con un pedido pegado es un sí.
+- "refuse": no quiere la reunión, o quiere dejarla para después sin proponer otro momento.
+- "change": quiere reunirse, pero en otro día u otra hora (nombre otro momento o solo diga que ese no le va).
+- "unclear": no se puede saber cuál de los tres es. Úsalo solo si de verdad no hay señal: si dudas entre "confirm" y "unclear", responde "unclear" (reservar por error es peor que volver a preguntar), pero un sí evidente con un pedido al lado NO es unclear.
+
+Si además del sí/no pidió algo concreto (el link, una confirmación por otro medio, avisarle antes, etc.), descríbelo en pocas palabras en "extraRequest". Si no pidió nada extra, deja "extraRequest" en null.
+
+Responde ÚNICAMENTE en JSON válido: {"decision": "confirm" | "refuse" | "change" | "unclear", "extraRequest": "<texto corto o null>"}`;
+
+    try {
+      const parsed = await this._generateJSON(prompt, { timeoutMs: 15000, ollamaFormat: CONFIRMATION_SCHEMA });
+      const decision = ['confirm', 'refuse', 'change', 'unclear'].includes(parsed.decision) ? parsed.decision : 'unclear';
+      const extraRequest = typeof parsed.extraRequest === 'string' && parsed.extraRequest.trim()
+        ? parsed.extraRequest.trim()
+        : null;
+      return { decision, extraRequest, source: 'llm' };
+    } catch (err) {
+      console.warn(`${this.provider} LLM confirmation notice:`, err.message);
+      return { decision: 'unclear', extraRequest: null, source: 'fallback' };
+    }
+  }
+
+  /**
+   * ¿El contacto está diciendo que ya no quiere seguir? El regex
+   * `saysNotInterested` solo reconoce la despedida cuando ocupa el mensaje
+   * entero ("no gracias", "ya no me interesa"), y por eso el 28/09 se le
+   * ofrecieron horarios a alguien que había escrito "Buscaré en otro lado
+   * gracias igual" y después "Ya le comenté que no": ninguna de las dos
+   * coincide, así que el bot siguió con el guion tres mensajes más.
+   *
+   * Acá lo decide el LLM leyendo la frase completa. `kind` distingue qué hacer
+   * después, porque no todos los "no" se cierran igual:
+   *   - `not_interested`: ya no quiere el servicio → se cierra y no se le
+   *     vuelve a escribir.
+   *   - `postpone`: quiere retomarlo después → se cierra amable, sin insistir.
+   *   - `wants_human`: no rechaza, quiere hablar con una persona → se transfiere.
+   *
+   * Sin LLM devuelve `refusing: false` y quien llama se queda con el regex de
+   * siempre: este método solo agrega casos, nunca quita los que ya funcionaban.
+   */
+  async detectRefusal(text, { stepQuestion = null } = {}) {
+    if (!this.hasLLM()) return { refusing: false, kind: null, source: 'fallback' };
+
+    const asked = stepQuestion ? `\nLo último que se le preguntó fue: "${stepQuestion}"` : '';
+    const prompt = `Un bot de WhatsApp está conversando con alguien interesado en asesoría de tesis, con el objetivo de agendarle una reunión con un asesor.${asked}
+
+La persona respondió esto: """${text}"""
+
+¿Está diciendo que NO quiere seguir? Responde "refusing": true solo si se está retirando de la conversación o rechazando el servicio o la reunión.
+
+Ejemplos de "refusing": true — "buscaré en otro lado", "ya le comenté que no", "no gracias", "ya conseguí a alguien", "déjalo así", "no me interesa", "mejor lo dejo".
+Ejemplos de "refusing": FALSE — cualquier cosa que siga la conversación, aunque tenga la palabra "no": "no sé si el jueves pueda", "no entendí", "no tengo tema todavía", "no puedo a esa hora" (está negociando el horario, no retirándose), "no he empezado". Una objeción, una duda o una pega sobre el horario NO es un rechazo.
+
+Si "refusing" es true, clasifica en "kind":
+- "not_interested": ya no quiere el servicio, o ya lo resolvió por otro lado.
+- "postpone": sí le interesa pero no ahora ("más adelante", "el próximo ciclo", "cuando junte el dinero").
+- "wants_human": no está rechazando nada, pide hablar con una persona en vez del bot.
+Si "refusing" es false, deja "kind" en null.
+
+Ante la duda responde false: tratar a un lead que sigue conversando como si se hubiera despedido cierra la conversación sin motivo.
+
+Responde ÚNICAMENTE en JSON válido: {"refusing": true o false, "kind": "not_interested" | "postpone" | "wants_human" | null}`;
+
+    try {
+      const parsed = await this._generateJSON(prompt, { timeoutMs: 12000, ollamaFormat: REFUSAL_SCHEMA });
+      const refusing = !!parsed.refusing;
+      const kind = refusing && ['not_interested', 'postpone', 'wants_human'].includes(parsed.kind)
+        ? parsed.kind
+        : (refusing ? 'not_interested' : null);
+      return { refusing, kind, source: 'llm' };
+    } catch (err) {
+      console.warn(`${this.provider} LLM refusal notice:`, err.message);
+      return { refusing: false, kind: null, source: 'fallback' };
+    }
+  }
+
+  /**
+   * El contacto no eligió un horario de la lista ni nombró un día o una hora,
+   * pero SÍ dijo algo sobre cuándo puede: "salgo de la universidad un poco
+   * tarde", "trabajo en la mañana", "después de mis clases", "recién llego a
+   * las 8". Eso no es un "no te entendí": es la respuesta, dicha como la dice
+   * cualquiera.
+   *
+   * El 28/09 un lead escribió justo eso —"salgo de la universidad un poco
+   * tarde"— con el bloque de 6:30 p.m. en la lista que tenía delante, y
+   * recibió "No te entendí bien 🤔" con la misma lista de nuevo; dos mensajes
+   * después se perdió. `parseSchedulingDate` y `parseSchedulingChoice` no lo
+   * ven porque ninguno de los dos devuelve día ni hora para una frase así.
+   *
+   * Este método le pasa al LLM la restricción junto con los horarios que el
+   * contacto tiene a la vista y le pide que diga CUÁLES le sirven:
+   *   - `fits`: índices (base 0) de los horarios compatibles, en orden de
+   *     preferencia.
+   *   - `constraint`: la restricción redactada en segunda persona ("sales
+   *     tarde de la universidad"), para poder nombrarla al responder en vez
+   *     de contestar con una lista muda.
+   *   - `understood: false` cuando el mensaje de verdad no dice nada sobre
+   *     cuándo puede; ahí sí corresponde el "no te entendí".
+   */
+  async matchSlotsToConstraint(text, optionLabels) {
+    if (!this.hasLLM() || !(optionLabels || []).length) {
+      return { understood: false, fits: [], constraint: null, source: 'fallback' };
+    }
+
+    const numbered = optionLabels.map((label, i) => `${i + 1}. ${label}`).join('\n');
+    const prompt = `Le mostraste a alguien esta lista numerada de horarios para una reunión:
+${numbered}
+
+Y respondió esto: """${text}"""
+
+No eligió ninguna opción por su número ni nombró un día o una hora exacta. La pregunta es si en su mensaje dice algo sobre CUÁNDO PUEDE, aunque lo diga de forma indirecta.
+
+Ejemplos de mensajes que SÍ dicen cuándo puede ("understood": true):
+- "salgo de la universidad un poco tarde" → solo le sirven los horarios de la tarde/noche
+- "trabajo en la mañana" → solo los de la tarde
+- "después de mis clases, como a las 7" → los de la noche
+- "en la mañana mejor" / "algo más temprano" → los de la mañana
+- "solo puedo fines de semana" → ninguno de los ofrecidos, pero SÍ se entendió la restricción
+
+Ejemplos que NO dicen nada sobre cuándo ("understood": false): "ok", "gracias", "cuánto cuesta", "[Imagen]", un emoji suelto, "no entendí".
+
+Si "understood" es true, pon en "fits" los NÚMEROS de la lista que cumplen su restricción, ordenados del que mejor le calza al que menos. Si su restricción se entiende pero NINGÚN horario de la lista la cumple, deja "fits" como lista vacía (eso es una respuesta útil: se le dirá que no hay nada en ese rango).
+
+En "constraint" escribe su restricción en segunda persona y en pocas palabras, como para usarla en una frase ("sales tarde de la universidad", "trabajas en la mañana", "solo puedes de noche"). Si "understood" es false, deja "constraint" en null.
+
+Responde ÚNICAMENTE en JSON válido: {"understood": true o false, "fits": [<números de la lista>], "constraint": "<texto corto o null>"}`;
+
+    try {
+      const parsed = await this._generateJSON(prompt, { timeoutMs: 15000, ollamaFormat: SLOT_CONSTRAINT_SCHEMA });
+      const understood = !!parsed.understood;
+      // Se filtran los índices fuera de rango y los repetidos: el modelo a
+      // veces devuelve un número de más cuando la lista es corta, y un índice
+      // inventado haría ofrecer un bloque que no existe.
+      const fits = [...new Set(
+        (Array.isArray(parsed.fits) ? parsed.fits : [])
+          .filter((n) => Number.isInteger(n) && n >= 1 && n <= optionLabels.length)
+          .map((n) => n - 1)
+      )];
+      const constraint = understood && typeof parsed.constraint === 'string' && parsed.constraint.trim()
+        ? parsed.constraint.trim()
+        : null;
+      return { understood, fits: understood ? fits : [], constraint, source: 'llm' };
+    } catch (err) {
+      console.warn(`${this.provider} LLM slot constraint notice:`, err.message);
+      return { understood: false, fits: [], constraint: null, source: 'fallback' };
+    }
   }
 
   /**

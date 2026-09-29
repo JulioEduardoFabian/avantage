@@ -6,7 +6,7 @@ import { MIN_BOOKING_LEAD_MINUTES } from './googleCalendarService.js';
 import { normalizeUniversity } from './universityNormalizer.js';
 import { normalizeCareer } from './careerNormalizer.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
-import { criticalSignal, isTrustDoubt, saysNotInterested } from './leadSignals.js';
+import { criticalSignal, isTrustDoubt, mayBeRefusal, saysNotInterested } from './leadSignals.js';
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
@@ -211,6 +211,15 @@ const MESSAGE_DEBOUNCE_MS = Number(process.env.WHATSAPP_BOT_FIRST_MESSAGE_DEBOUN
 // libre para confirmarle algo que ya eligió se siente lento.
 const SCHEDULING_DEBOUNCE_MS = Number(process.env.WHATSAPP_BOT_SCHEDULING_DEBOUNCE_MS) || 5000;
 const POST_BOOKING_DEBOUNCE_MS = Number(process.env.WHATSAPP_BOT_POST_BOOKING_DEBOUNCE_MS) || 5000;
+
+// El "¿Confirmo <horario>?" es la excepción: ahí la respuesta llega partida
+// mucho más seguido que en el resto del agendamiento, porque al sí se le pega
+// un pedido ("Si esta bien.." + "Me envía enlace por este numero porfavor").
+// Con los 5 s del resto de los pasos cada burbuja abría su propio turno y la
+// reunión ya aceptada se perdía (caso real del 28/09). Es el único paso donde
+// esperar de más no cuesta nada: el contacto acaba de decir que sí y lo que
+// sigue es la confirmación, no una pregunta que lo tenga esperando.
+const CONFIRM_DEBOUNCE_MS = Number(process.env.WHATSAPP_BOT_CONFIRM_DEBOUNCE_MS) || 12000;
 
 // Cuando lo único que llegó es un saludo suelto ("hola", "buenas tardes"), la
 // espera se amplía UNA vez por este tiempo extra. Un saludo no aporta ningún
@@ -1295,6 +1304,10 @@ export class WhatsappBotService {
     // mensaje inmediatamente anterior, y tras un reinicio no hay duplicado
     // que evitar porque tampoco hay turno en curso.
     this.lastSentText = new Map();
+    // wa_id -> cuántos mensajes se le han enviado en total. Solo se usa para
+    // comparar el contador antes y después de un turno y así saber si el turno
+    // le respondió ALGO: es la red de seguridad de `_runTurnGuarded`.
+    this.sendCounter = new Map();
     // wa_id -> Promise del turno en curso. TODO lo que le responde al contacto
     // pasa por esta cola: nunca corren dos turnos en paralelo para el mismo
     // contacto (eso duplicaba mensajes y rompía la espera entre ellos).
@@ -1480,12 +1493,17 @@ export class WhatsappBotService {
     // solo se calla el duplicado real, no una reformulación.
     const previous = this.lastSentText.get(waId);
     if (previous && messageSimilarity(text, previous) >= 0.9) {
+      // Cuenta como respuesta a efectos de `_runTurnGuarded`: el turno sí tenía
+      // algo que decir, y lo que se calla es solo la repetición literal de lo
+      // que el contacto ya tiene en pantalla.
+      this.sendCounter.set(waId, (this.sendCounter.get(waId) || 0) + 1);
       this.logActivity({ type: 'send_skipped_duplicate', waId, text });
       return;
     }
 
     try {
       await this.whatsappMessageService.sendTextMessage(waId, text);
+      this.sendCounter.set(waId, (this.sendCounter.get(waId) || 0) + 1);
       this.lastSentText.set(waId, text);
       // Ancla el próximo gap al envío real (por si el sleep se desvió), sin
       // bajar de lo ya reservado.
@@ -1630,6 +1648,7 @@ export class WhatsappBotService {
     // El calentamiento espera un "sí" suelto, del mismo tamaño que la
     // respuesta a cualquier paso del agendamiento: le toca la misma espera
     // corta y no la de la conversación libre.
+    if (status === 'scheduling_confirm') return CONFIRM_DEBOUNCE_MS;
     if (status === WARMUP_STATUS || SCHEDULING_STATUSES.includes(status)) return SCHEDULING_DEBOUNCE_MS;
     if (status === 'completed') return POST_BOOKING_DEBOUNCE_MS;
     return MESSAGE_DEBOUNCE_MS;
@@ -1649,10 +1668,11 @@ export class WhatsappBotService {
     // turno. Sin esto la sesión seguía "active", el modelo improvisaba una
     // despedida y una hora después el barrido de inactividad le mandaba
     // "¿Sigues por ahí?" a alguien que acababa de decir que no le interesa.
-    if (saysNotInterested(text)) {
-      await this.closeAsNotInterested(waId, text);
-      return;
-    }
+    //
+    // En 'active' no se comprueba acá: ese caso enruta a runConversationTurn(),
+    // que ya lo hace al entrar. Comprobarlo dos veces gastaría dos consultas al
+    // LLM por el mismo mensaje.
+    if (session.status !== 'active' && await this._closedAfterRefusal(waId, text)) return;
 
     switch (session.status) {
       case 'scheduling_mode': return this.handleSchedulingModeReply(waId, session, text);
@@ -1742,7 +1762,7 @@ export class WhatsappBotService {
       // A la cola serializada: si todavía hay un turno anterior en curso para
       // este contacto, este espera a que termine (y re-evalúa el estado)
       // en vez de correr en paralelo y duplicar mensajes.
-      this.runSerialized(waId, () => this.runConversationTurn(waId, joined, mark)).then(done, (error) => {
+      this.runSerialized(waId, () => this._runTurnGuarded(waId, joined, mark)).then(done, (error) => {
         this.logActivity({ type: 'conversation_turn_failed', waId, error: error.message });
         console.error(`❌ [WhatsApp Bot] Error en el turno de conversación con ${waId}:`, error);
         done();
@@ -1777,6 +1797,74 @@ export class WhatsappBotService {
    * siguiente respuesta natural y los datos que pudo extraer, los guarda, y
    * si ya reunió lo mínimo (tema + correo) pasa a evaluar y ofrecer agendar.
    */
+  /**
+   * Corre un turno y garantiza que el contacto reciba SIEMPRE una respuesta si
+   * estaba en pleno agendamiento.
+   *
+   * El 28/09 el lead más maduro del día (bachiller, con jurados, pidiendo
+   * agendar) escribió "Jueves a las 9 am" y la conversación terminó ahí: nunca
+   * llegó una respuesta. El paso de agendamiento consulta Google Calendar y al
+   * LLM, y si cualquiera de esas llamadas revienta —token vencido, timeout de
+   * red— la excepción subía hasta el buffer, que la registraba en la bitácora y
+   * no mandaba nada. Para el lead eso es indistinguible de que lo dejaran en
+   * visto, y es peor que cualquier respuesta imperfecta.
+   *
+   * La red solo se activa si (a) el turno falló o no envió nada y (b) el
+   * contacto quedó en un paso de agendamiento, que es donde el silencio deja
+   * una pregunta sin contestar. Los muchos caminos que callan a propósito
+   * (bot pausado, sesión cerrada, turno obsoleto) no están en un paso de
+   * agendamiento y no disparan nada.
+   */
+  async _runTurnGuarded(waId, incomingText, inboundMark = null) {
+    const sentBefore = this.sendCounter.get(waId) || 0;
+    let failure = null;
+
+    try {
+      await this.runConversationTurn(waId, incomingText, inboundMark);
+    } catch (error) {
+      failure = error;
+      this.logActivity({ type: 'turn_error_recovering', waId, text: incomingText, error: error.message });
+      console.error(`❌ [WhatsApp Bot] El turno con ${waId} falló; se intenta responder igual:`, error);
+    }
+
+    if ((this.sendCounter.get(waId) || 0) > sentBefore) {
+      if (failure) throw failure;
+      return;
+    }
+
+    // Nada enviado. ¿Se le debía una respuesta?
+    let session = null;
+    try {
+      session = await this.getSession(waId);
+    } catch (error) {
+      this.logActivity({ type: 'turn_recovery_session_failed', waId, error: error.message });
+    }
+
+    const owesReply = session?.bot_enabled && SCHEDULING_STATUSES.includes(session.status);
+    if (!owesReply) {
+      if (failure) throw failure;
+      return;
+    }
+
+    this.logActivity({ type: 'silent_turn_recovered', waId, status: session.status, text: incomingText, error: failure?.message || null });
+
+    // A partir de acá el fallo se considera atendido y NO se vuelve a lanzar:
+    // ya quedó en la bitácora (`turn_error_recovering` con el error completo) y
+    // en la consola, y el contacto recibió una respuesta. Propagarlo además
+    // haría que el buffer lo registre una segunda vez como turno fallido.
+    try {
+      // El "quiero hablar con alguien" que se le sugiere es literal a propósito:
+      // es una de las frases que `criticalSignal` reconoce y transfiere al toque.
+      await this.send(waId, 'Se me cruzaron los cables un segundo 🙈 ¿Me repites qué día y a qué hora te viene mejor? Si prefieres, dime "quiero hablar con alguien" y te paso con una persona.');
+    } catch (error) {
+      // Si tampoco se puede enviar, el problema es el canal: se transfiere para
+      // que un asesor lo vea en el panel en vez de perderlo en la bitácora.
+      this.logActivity({ type: 'turn_recovery_send_failed', waId, error: error.message });
+      await this.notifySalesperson(waId, 'El bot no pudo responderle a este lead (falló el turno y el envío de recuperación). Revisar la conversación.')
+        .catch(() => {});
+    }
+  }
+
   async runConversationTurn(waId, incomingText, inboundMark = null) {
     let session = await this.getSession(waId);
 
@@ -1819,6 +1907,15 @@ export class WhatsappBotService {
       return;
     }
     if (session && !session.bot_enabled) return;
+
+    // La despedida en plena conversación libre: acá es donde faltaba
+    // comprobarla. `dispatchByStatus` ya la miraba, pero la conversación libre
+    // entra por este método directo desde el buffer sin pasar por ahí, así que
+    // un "buscaré en otro lado" en pleno perfilamiento no cruzaba ninguna
+    // comprobación y el turno siguiente ofrecía la reunión con cinco horarios.
+    // Va DESPUÉS del enrutado por estado para no gastar dos consultas al LLM
+    // con el mismo mensaje (los pasos de agendamiento ya la comprueban ellos).
+    if (session && await this._closedAfterRefusal(waId, incomingText)) return;
 
     // Marca del contador de entrantes (ver `inboundCounter`): si al final del
     // turno cambió, el contacto siguió escribiendo y este turno quedó
@@ -3047,7 +3144,14 @@ export class WhatsappBotService {
     // horario más cercano a lo que pidió, en vez de insistir con el día que ya
     // rechazó.
     if (!date) {
-      if (!parsed?.preferredTime) return false;
+      // Ni día ni hora, pero puede haber dicho CUÁNDO PUEDE con sus palabras
+      // ("salgo de la universidad un poco tarde", "trabajo en la mañana"). Eso
+      // lo interpreta el LLM contra los horarios que tiene a la vista: antes
+      // caía al "No te entendí bien 🤔" con el bloque que le servía en la
+      // misma lista que acababa de recibir.
+      if (!parsed?.preferredTime) {
+        return this._answerAvailabilityConstraint(waId, answers, scheduling, text);
+      }
 
       const ranked = await this.googleCalendarService.getFreeSlotsNearTime(
         BOOKING_ADVISOR_USER_ID, parsed.preferredTime, { limit: SLOTS_TO_OFFER, days: BOOKING_WINDOW_DAYS }
@@ -3177,6 +3281,99 @@ export class WhatsappBotService {
   }
 
   /**
+   * El contacto dijo cuándo puede, pero no con un día ni con una hora: lo dijo
+   * como lo dice cualquiera —"salgo de la universidad un poco tarde",
+   * "trabajo en la mañana", "después de mis clases"—. Ni
+   * `parseSchedulingChoice` ni `parseSchedulingDate` devuelven nada para una
+   * frase así, y hasta ahora el resultado era "No te entendí bien 🤔" con la
+   * misma lista de cinco horarios repetida. El 28/09 pasó con el bloque de las
+   * 6:30 p.m. dentro de esa misma lista: el lead había elegido, y dos mensajes
+   * después se fue.
+   *
+   * Acá la restricción se la interpreta el LLM contra los horarios que el
+   * contacto tiene delante (`matchSlotsToConstraint`) y se responde nombrándola:
+   *
+   *   - un solo horario le calza → se le propone ese y pasa a confirmar, sin
+   *     hacerlo elegir de una lista de uno;
+   *   - varios → se le muestran SOLO esos, no la lista entera de nuevo;
+   *   - ninguno → se le dice que en ese rango no hay, que es información útil,
+   *     y se le ofrece lo más cercano.
+   *
+   * Devuelve true si ya respondió; false si el mensaje de verdad no decía nada
+   * sobre cuándo puede (ahí sí corresponde el "no te entendí" de quien llama).
+   */
+  async _answerAvailabilityConstraint(waId, answers, scheduling, text) {
+    const offered = scheduling.slots || [];
+    if (offered.length === 0) return false;
+
+    let read;
+    try {
+      read = await this.ollamaService.matchSlotsToConstraint(text, offered.map((s) => s.label));
+    } catch (error) {
+      this.logActivity({ type: 'constraint_parse_failed', waId, text, error: error.message });
+      return false;
+    }
+
+    this.logActivity({ type: 'availability_constraint', waId, text, understood: read.understood, fits: read.fits, constraint: read.constraint, source: read.source });
+    if (!read.understood) return false;
+
+    const because = read.constraint ? `Si ${read.constraint}, ` : '';
+
+    // Ningún bloque ofrecido le sirve. Se busca en el resto de la agenda antes
+    // de darle una negativa: la lista que tenía delante son solo los primeros
+    // bloques, no todo lo que hay.
+    if (read.fits.length === 0) {
+      const fresh = await this.googleCalendarService.getUpcomingFreeSlots(
+        BOOKING_ADVISOR_USER_ID, { limit: UPCOMING_SLOTS_LIMIT, days: BOOKING_WINDOW_DAYS }
+      );
+      const others = orderSlotsForDisplay(fresh.filter((s) => !offered.some((o) => o.startTime === s.startTime)));
+
+      if (others.length === 0) {
+        delete answers.__scheduling;
+        await this.updateSession(waId, { answers: JSON.stringify(answers) });
+        // Solo el motivo: el "te paso con un asesor" lo dice `handOffToAdvisor`
+        // en su propio mensaje, y repetirlo acá lo diría dos veces seguidas.
+        await this.send(waId, `${because}no me queda ningún bloque que te calce 🙏`);
+        await this.handOffToAdvisor(waId, `No hay bloques compatibles con la disponibilidad del lead (${read.constraint || text}).`);
+        return true;
+      }
+
+      scheduling.slots = others.slice(0, SLOTS_TO_OFFER);
+      scheduling.attempts = 0;
+      await this.updateSession(waId, { status: 'scheduling_time', answers: JSON.stringify(answers) });
+      await this.send(
+        waId,
+        `${because}de los que te mandé ninguno te sirve. Estos son los otros que tengo:\n\n` +
+        `${numberedList(slotOptionLabels(scheduling.slots))}\n\n${slotMenuFooter(scheduling.slots, scheduling.availableDays)}`
+      );
+      return true;
+    }
+
+    const fitting = read.fits.map((i) => offered[i]).filter(Boolean);
+
+    // Uno solo: se le propone directo. Pedirle que elija con un número de una
+    // lista de un elemento es una vuelta de más sobre algo que ya dijo.
+    if (fitting.length === 1) {
+      scheduling.slots = fitting;
+      scheduling.attempts = 0;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'constraint_single_match', waId, slot: fitting[0].label });
+      await this.bookSlot(waId, fitting[0]);
+      return true;
+    }
+
+    scheduling.slots = fitting;
+    scheduling.attempts = 0;
+    await this.updateSession(waId, { status: 'scheduling_time', answers: JSON.stringify(answers) });
+    await this.send(
+      waId,
+      `${because}estos son los que te calzan:\n\n${numberedList(slotOptionLabels(fitting))}\n\n` +
+      slotMenuFooter(fitting, scheduling.availableDays)
+    );
+    return true;
+  }
+
+  /**
    * Por qué no se puede agendar en el día que pidió el contacto. El motivo
    * importa: si el día SÍ tenía bloques y lo único que sobra es la
    * anticipación mínima, decirle "no hay agenda" suena a mentira (él sabe que
@@ -3204,6 +3401,130 @@ export class WhatsappBotService {
   /** Frase común que aborta el agendamiento si el lead dice "no"/"después". */
   _isSchedulingRefusal(text) {
     return ['no', 'omitir', 'despues', 'después', 'luego', 'mas tarde', 'más tarde'].includes(normalize((text || '').trim()));
+  }
+
+  /**
+   * Un "no" durante el agendamiento no siempre significa lo mismo, y hasta
+   * ahora los tres casos recibían el mismo texto: "Te paso con un asesor 🙌 En
+   * breve te escribe por aquí". A alguien que acababa de decir que no tres
+   * veces se le anunciaba que ahora lo iba a llamar una persona (caso real del
+   * 28/09). Acá se separan:
+   *
+   *   - ya no le interesa → se cierra y no se le vuelve a escribir;
+   *   - lo quiere para más adelante → se cierra amable, sin meterlo en la cola
+   *     del closer para que nadie lo llame a insistirle;
+   *   - quiere hablar con una persona → eso sí se transfiere.
+   *
+   * El "no" suelto (regex) es ambiguo por sí mismo —contestado a "¿confirmo
+   * las 10?" puede ser solo ese horario—, así que se le pregunta al LLM qué
+   * tipo de no es. Si no hay LLM o no lo tiene claro, se mantiene el
+   * comportamiento histórico (transferir a un asesor): ahí sí hay algo que
+   * coordinar y alguien lo revisa.
+   */
+  async _resolveRefusal(waId, text, fallbackReason) {
+    const { refusing, kind, source } = await this.ollamaService.detectRefusal(text);
+    this.logActivity({ type: 'refusal_resolved', waId, text, refusing, kind, source });
+
+    if (refusing && kind === 'not_interested') return this.closeAsNotInterested(waId, text);
+    if (refusing && kind === 'postpone') return this.closeAsPostponed(waId, text);
+    return this.handOffToAdvisor(waId, fallbackReason);
+  }
+
+  /**
+   * ¿El contacto se está despidiendo? Si sí, se cierra la conversación acá y
+   * el turno no sigue.
+   *
+   * Es la compuerta que faltaba: `offerScheduling()` se llama en cuanto el
+   * perfil está completo, sin mirar si la persona todavía quiere algo, así que
+   * el 28/09 un lead escribió "Buscaré en otro lado gracias igual" y el
+   * siguiente mensaje del bot fue "Coordinemos una reunión" con cinco
+   * horarios; después "Ya le comenté que no" recibió "No te entendí bien 🤔"
+   * con la misma lista, y el "No" final terminó en "te paso con un asesor".
+   * Tres insistencias sobre un rechazo explícito — además del lead, es lo que
+   * baja la calificación de calidad del número en WhatsApp Business.
+   *
+   * Dos pasadas, de lo barato a lo caro: el regex estricto de siempre
+   * (`saysNotInterested`) cierra sin consultar nada; si no coincide pero el
+   * mensaje huele a despedida (`mayBeRefusal`), lo decide el LLM. Un mensaje
+   * que no dispara ninguno de los dos no gasta ninguna llamada.
+   * Devuelve true si ya cerró (el turno no debe continuar).
+   */
+  async _closedAfterRefusal(waId, text) {
+    // "No quiero hablar con un bot" y "no quiero que me atienda una máquina"
+    // los reconocen LOS DOS regex: el de pedir una persona y el de desinterés
+    // (por el "no quiero"). Pedir una persona gana. En la conversación libre el
+    // orden ya lo resolvía `_handleCriticalSignal`, que corre antes, pero
+    // `dispatchByStatus` llega acá sin pasar por él: sin este desempate, a
+    // alguien que pide un humano se le cerraba la conversación.
+    if (criticalSignal(text) === 'humanRequest') {
+      await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.');
+      return true;
+    }
+
+    if (saysNotInterested(text)) {
+      await this.closeAsNotInterested(waId, text);
+      return true;
+    }
+
+    if (!mayBeRefusal(text)) return false;
+
+    const { refusing, kind, source } = await this.ollamaService.detectRefusal(text);
+    this.logActivity({ type: 'refusal_checked', waId, text, refusing, kind, source });
+    if (!refusing) return false;
+
+    // "Quiero hablar con una persona" no es un rechazo: se transfiere, que es
+    // exactamente lo que pidió.
+    if (kind === 'wants_human') {
+      await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.');
+      return true;
+    }
+
+    if (kind === 'postpone') await this.closeAsPostponed(waId, text);
+    else await this.closeAsNotInterested(waId, text);
+    return true;
+  }
+
+  /**
+   * El lead quiere la asesoría pero no ahora ("el próximo ciclo", "cuando
+   * junte el dinero"). Se cierra la sesión igual que con `closeAsNotInterested`
+   * —para que el barrido de inactividad no le escriba— pero el lead NO pasa a
+   * "descartado": queda donde está, con la nota de que lo retoma después, para
+   * que el equipo pueda buscarlo más adelante sin que nadie lo llame hoy.
+   */
+  async closeAsPostponed(waId, text) {
+    const session = await this.getSession(waId);
+    const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
+    delete answers.__scheduling;
+    answers.__closedAt = new Date().toISOString();
+    answers.__closedReason = 'pospuesto';
+
+    const lead = await this.leadService.findByPhone(waId);
+    await this.send(waId, whatsappBotCopy.postponedFarewell(firstNameOf(lead?.full_name)));
+    await this.updateSession(waId, { status: 'completed', answers: JSON.stringify(answers) });
+    this.logActivity({ type: 'lead_postponed', waId, text });
+  }
+
+  /**
+   * Rescata el bloque que se le propuso en el turno anterior cuando su "sí"
+   * llegó tarde, en su propia burbuja. Pasa cuando el contacto parte la
+   * respuesta ("Si esta bien.." / "Me envía enlace por acá") y cada pedazo
+   * abre su propio turno: el primero suelta el bloque y el segundo llegaba a
+   * un paso que ya no sabía de qué horario le estaban hablando. Sin esto la
+   * reunión se perdía y había que agendar de cero.
+   *
+   * Solo se usa con una afirmación clara y mientras el bloque siga vigente
+   * (`usableProposedSlot` descarta el que ya pasó de hora).
+   * Devuelve true si ya reservó.
+   */
+  async _bookLastProposedIfAffirmative(waId, answers, scheduling, text) {
+    const slot = usableProposedSlot(scheduling.lastProposed);
+    if (!slot || !isAffirmative(text)) return false;
+
+    delete scheduling.lastProposed;
+    await this.updateSession(waId, { answers: JSON.stringify(answers) });
+    this.logActivity({ type: 'late_confirmation_recovered', waId, slot: slot.label, text });
+    await this.confirmSlot(waId, slot);
+    return true;
   }
 
   /**
@@ -3633,9 +3954,14 @@ ${numberedList(fullSlotLabels(offer))}
     if (['no', 'omitir', 'despues', 'después'].includes(normalize(trimmed))) {
       delete answers.__scheduling;
       await this.updateSession(waId, { answers: JSON.stringify(answers) });
-      await this.handOffToAdvisor(waId, 'El lead prefirió no agendar.');
+      await this._resolveRefusal(waId, trimmed, 'El lead prefirió no agendar.');
       return;
     }
+
+    // Su "sí" al último horario propuesto pudo llegar en una burbuja aparte y
+    // caer acá. Se reserva ese bloque antes de tratarlo como una elección de
+    // día nueva: es la reunión que ya había aceptado.
+    if (await this._bookLastProposedIfAffirmative(waId, answers, scheduling, trimmed)) return;
 
     // Pedir la llamada telefónica mientras elige el día es tan válido como
     // pedirla al elegir la hora: si solo se atiende en el paso de horario, el
@@ -3705,6 +4031,9 @@ ${numberedList(fullSlotLabels(offer))}
     }
 
     if (!date) {
+      // Antes de admitir que no se entendió: pudo decir cuándo puede con sus
+      // palabras ("salgo tarde de la universidad") en vez de nombrar un día.
+      if (await this._answerAvailabilityConstraint(waId, answers, scheduling, trimmed)) return;
       if (await this._registerStepMiss(waId, answers, scheduling, 'No se logró identificar el día que quería el lead.')) return;
       await this.send(waId, `No identifiqué el día 🤔 Tenemos agenda ${endSentence(daysPhrase)} ¿Cuál prefieres?`);
       return;
@@ -3791,9 +4120,13 @@ ${numberedList(fullSlotLabels(offer))}
     if (['no', 'omitir', 'despues', 'después'].includes(normalize(trimmed))) {
       delete answers.__scheduling;
       await this.updateSession(waId, { answers: JSON.stringify(answers) });
-      await this.handOffToAdvisor(waId, 'El lead prefirió no agendar.');
+      await this._resolveRefusal(waId, trimmed, 'El lead prefirió no agendar.');
       return;
     }
+
+    // Igual que en el paso del día: un "sí" que llega en su propia burbuja es
+    // la confirmación del bloque que ya se le había propuesto.
+    if (await this._bookLastProposedIfAffirmative(waId, answers, scheduling, trimmed)) return;
 
     if (await this._switchToPhoneIfAsked(waId, answers, scheduling, trimmed)) return;
 
@@ -3936,6 +4269,15 @@ ${numberedList(fullSlotLabels(offer))}
    * hora se reinterpreta ahí mismo, y si no, se vuelve a ofrecer la lista.
    * Ante la duda NO se reserva: ese es justo el error que este paso existe
    * para evitar.
+   *
+   * El "sí" se reconoce en dos pasadas: primero el regex (gratis e
+   * instantáneo) y, si no coincide, el LLM
+   * (`ollamaService.parseConfirmationReply`). Hace falta la segunda porque el
+   * regex exige que TODO el mensaje sea la afirmación, y un sí con un pedido
+   * pegado —"Si esta bien.. Me envía enlace por este numero porfavor"— caía
+   * al final de este método, soltaba el bloque y le preguntaba el día otra
+   * vez: así se perdió una reunión ya confirmada el 28/09. El pedido extra se
+   * atiende DESPUÉS de reservar, nunca en vez de reservar.
    */
   async handleSchedulingConfirmReply(waId, session, text) {
     const { answers, scheduling } = this._readScheduling(session);
@@ -3949,21 +4291,43 @@ ${numberedList(fullSlotLabels(offer))}
 
     const trimmed = (text || '').trim();
 
-    if (isAffirmative(trimmed)) {
+    let decision = isAffirmative(trimmed) ? 'confirm' : null;
+    let extraRequest = null;
+
+    // Solo se le pregunta al LLM lo que el regex no resolvió, y solo si el
+    // mensaje no es ya un rechazo obvio. `refuse` se ignora acá a propósito:
+    // un "no" a ESTE horario no dice nada sobre el servicio, y decidir el
+    // cierre definitivo lo hace `_resolveRefusal` más abajo.
+    if (!decision && !this._isSchedulingRefusal(trimmed)) {
+      const read = await this.ollamaService.parseConfirmationReply(trimmed, slot.label);
+      this.logActivity({ type: 'confirm_reply_read', waId, text: trimmed, decision: read.decision, extraRequest: read.extraRequest, source: read.source });
+      if (read.decision === 'confirm' || read.decision === 'change') decision = read.decision;
+      extraRequest = read.extraRequest;
+    }
+
+    if (decision === 'confirm') {
       delete scheduling.awaitingConfirm;
       await this.updateSession(waId, { answers: JSON.stringify(answers) });
-      this.logActivity({ type: 'booking_confirmed', waId, slot: slot.label });
+      // El pedido que venía pegado al sí queda en la bitácora del panel. No
+      // hace falta contestarlo aparte: `confirmSlot` manda el link y los datos
+      // de la reunión, que es lo que se pide en la enorme mayoría de los casos.
+      this.logActivity({ type: 'booking_confirmed', waId, slot: slot.label, extraRequest });
       return this.confirmSlot(waId, slot);
     }
 
     // Dijo que no, o pidió otra cosa. El horario tentativo se suelta antes de
-    // reinterpretar: si no, una corrección a medias lo dejaría reservado.
+    // reinterpretar: si no, una corrección a medias lo dejaría reservado. Pero
+    // se recuerda como "el último que se le propuso": si su siguiente mensaje
+    // es el sí que faltaba (porque partió la respuesta en dos burbujas y cada
+    // una abrió su propio turno), se reserva ESE bloque en vez de volver a
+    // empezar. Ver `_bookLastProposedIfAffirmative`.
     delete scheduling.awaitingConfirm;
+    scheduling.lastProposed = slot;
 
     if (this._isSchedulingRefusal(trimmed)) {
       delete answers.__scheduling;
       await this.updateSession(waId, { answers: JSON.stringify(answers) });
-      await this.handOffToAdvisor(waId, 'El lead no confirmó el horario propuesto.');
+      await this._resolveRefusal(waId, trimmed, 'El lead no confirmó el horario propuesto.');
       return;
     }
 

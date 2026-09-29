@@ -106,6 +106,29 @@ export function saysNotInterested(text) {
   return NOT_INTERESTED_RE.test(clean);
 }
 
+/**
+ * Palabras que hacen SOSPECHAR una despedida, para decidir si vale la pena
+ * gastar una consulta al LLM (`ollamaService.detectRefusal`) en este mensaje.
+ *
+ * `saysNotInterested` es deliberadamente estricto —exige que la despedida
+ * ocupe el mensaje entero— y por eso el 28/09 se le siguieron ofreciendo
+ * horarios a alguien que escribió "Buscaré en otro lado gracias igual" y
+ * después "Ya le comenté que no": ninguna de las dos coincide con el regex, y
+ * el bot insistió tres mensajes más.
+ *
+ * Este filtro es lo contrario: amplio a propósito, con muchos falsos positivos
+ * ("no sé si el jueves pueda" lo dispara). No decide nada — solo evita
+ * preguntarle al LLM por cada "ok" y cada correo. Quien decide de verdad es el
+ * LLM, que sí distingue una objeción de una despedida.
+ */
+const MAYBE_REFUSAL_RE = /\bno\b|\bnop\b|\bnah\b|otro\s+lado|otra\s+parte|otro\s+sitio|por\s+mi\s+cuenta|deja(?:lo|me)?\s+as[ií]|olvida(?:lo)?|ya\s+(?:consegui|contrate|encontre|resolvi|tengo)|gracias\s+igual|igual\s+gracias|mas\s+adelante|otro\s+ciclo|proximo\s+ciclo|despues\s+vemos|lo\s+dejo|lo\s+dejamos|no\s+gracias|ya\s+no/;
+
+export function mayBeRefusal(text) {
+  const clean = normalize(text);
+  if (!clean || clean.length > 160) return false;
+  return MAYBE_REFUSAL_RE.test(clean);
+}
+
 export function detectLeadSignals(text) {
   const clean = normalize(text);
   const signals = {};
