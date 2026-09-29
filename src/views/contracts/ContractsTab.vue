@@ -85,7 +85,7 @@
           <div class="form-group ct-wide"><label class="form-label">Domicilio</label><input v-model="editing.client_address" class="form-input" /></div>
           <div class="form-group"><label class="form-label">Correo</label><input v-model="editing.client_email" type="email" class="form-input" /></div>
           <div class="form-group"><label class="form-label">Teléfono</label><input v-model="editing.client_phone" class="form-input" /></div>
-          <div class="form-group"><label class="form-label">Representante de la empresa</label><input v-model="editing.representative_name" class="form-input" placeholder="Por defecto: Fabian Ninamango Julio Eduardo, Gerente General" /></div>
+          <div class="form-group"><label class="form-label">Representante de la empresa</label><input v-model="editing.representative_name" class="form-input" placeholder="Por defecto: Julio Fabián Ninamango, Gerente General" /></div>
           <div class="form-group"><label class="form-label">Ciudad</label><input v-model="editing.city" class="form-input" /></div>
           <div class="form-group"><label class="form-label">Fecha del contrato</label><input v-model="editing.contract_date" type="date" class="form-input" /></div>
           <div class="form-group">
@@ -119,6 +119,14 @@
           Escribe <code v-pre>{{cronograma_pagos}}</code> en una cláusula para imprimir esta tabla.
         </p>
 
+        <h3 class="ct-section-title">Cronograma de entregas</h3>
+        <DeliveryScheduleEditor v-model="deliverables" />
+        <p class="ct-schedule-note">
+          Las entregas pactadas con el cliente. A diferencia de las cuotas, viven solo en el
+          contrato: no pasan por Finanzas.
+          Escribe <code v-pre>{{cronograma_entregas}}</code> en una cláusula para imprimir esta tabla.
+        </p>
+
         <details class="ct-details">
           <summary>Apertura y cierre del contrato</summary>
           <div class="form-group">
@@ -149,6 +157,7 @@ import { useRoute } from 'vue-router';
 import { apiFetch } from '../../apiClient.js';
 import ClauseEditor from '../../components/ClauseEditor.vue';
 import PaymentScheduleEditor from '../../components/PaymentScheduleEditor.vue';
+import DeliveryScheduleEditor from '../../components/DeliveryScheduleEditor.vue';
 import { contractNumber, request, stripKeys, withKeys } from './contractsApi.js';
 
 const STATUS_LABELS = { borrador: 'Borrador', firmado: 'Firmado', anulado: 'Anulado' };
@@ -168,6 +177,7 @@ const clientLeads = ref([]);
 const templates = ref([]);
 const editing = ref(null);
 const installments = ref([]);
+const deliverables = ref([]);
 const savedSnapshot = ref('');
 const search = ref('');
 const newContract = ref({ leadId: route.query.leadId ? Number(route.query.leadId) : '', templateId: '' });
@@ -194,6 +204,18 @@ function schedulePayload() {
     id: row.id || undefined,
     monto: Number(row.monto) || 0,
     dueDate: row.dueDate
+  }));
+}
+
+/**
+ * Las entregas se reemplazan enteras en cada guardado (no hay `id` que
+ * conservar): el orden de la lista es el orden en que se imprimen, y el
+ * backend descarta las filas sin descripción.
+ */
+function deliverablesPayload() {
+  return deliverables.value.map((row) => ({
+    dueDate: row.dueDate || null,
+    avance: row.avance || ''
   }));
 }
 
@@ -227,6 +249,10 @@ function load(contract) {
     // el dinero entró y el asiento tiene que seguir cuadrando con el banco.
     locked: row.estado !== 'pendiente' || (row.receipts || []).length > 0,
     estado: row.estado
+  }));
+  deliverables.value = (contract.deliverables || []).map((row) => ({
+    dueDate: (row.due_date || '').slice(0, 10),
+    avance: row.avance || ''
   }));
   savedSnapshot.value = snapshot(editing.value);
 }
@@ -267,6 +293,7 @@ async function save() {
     const payload = Object.fromEntries(FIELDS.map(([col, field]) => [field, editing.value[col]]));
     payload.clauses = stripKeys(editing.value.clauses);
     if (editing.value.lead_id) payload.installments = schedulePayload();
+    payload.deliverables = deliverablesPayload();
     load(await request(`/api/contracts/${editing.value.id}`, { method: 'PUT', body: JSON.stringify(payload) }));
     await refreshList();
     return true;

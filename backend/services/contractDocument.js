@@ -21,7 +21,7 @@ import { readFileSync } from 'fs';
 // Firmante que aparece en la imagen de firma y sello: se usa como
 // representante de EL LOCADOR cuando el contrato no indica otro, para que la
 // apertura ("debidamente representada por...") coincida con la firma.
-const LESSOR_SIGNER = 'Fabian Ninamango Julio Eduardo, Gerente General';
+const LESSOR_SIGNER = 'Julio Fabián Ninamango, Gerente General';
 
 const LESSOR_SIGNATURE = (() => {
   try {
@@ -64,6 +64,27 @@ export function clauseOrdinal(n) {
   const tens = Math.floor(n / 10) * 10;
   if (!TENS_ORDINALS[tens]) return `CLÁUSULA ${n}`;
   return n % 10 ? `${TENS_ORDINALS[tens]} ${ORDINALS[(n % 10) - 1]}` : TENS_ORDINALS[tens];
+}
+
+/**
+ * El título de la cláusula, sin el "CLÁUSULA PRIMERA:" que el encabezado ya
+ * pone por su cuenta.
+ *
+ * El encabezado se arma con el ordinal calculado por la POSICIÓN de la
+ * cláusula, así que mover o insertar una cláusula renumera todo solo. Pero el
+ * campo del título es libre y varias cláusulas quedaron escritas a mano como
+ * "CLÁUSULA PRIMERA: FINALIDAD DEL CONTRATO", y el resultado impreso era
+ * "PRIMERA: CLÁUSULA PRIMERA: FINALIDAD DEL CONTRATO". Peor: ese ordinal
+ * escrito a mano NO se renumera, así que movida la cláusula decía una cosa en
+ * el prefijo y otra en el título.
+ *
+ * Se limpia al imprimir y no en la base de datos a propósito: lo que el
+ * usuario escribió se conserva tal cual en el editor.
+ */
+const TYPED_ORDINAL_RE = /^\s*(?:cl[áa]usula\s+)?(?:primera|segunda|tercera|cuarta|quinta|sexta|s[ée]ptima|octava|novena|d[ée]cima|vig[ée]sima|trig[ée]sima)(?:\s+(?:primera|segunda|tercera|cuarta|quinta|sexta|s[ée]ptima|octava|novena))?\s*[:.\-–]\s*/i;
+
+export function clauseHeadingTitle(title) {
+  return String(title || '').replace(TYPED_ORDINAL_RE, '').trim() || String(title || '').trim();
 }
 
 const UNITS = [
@@ -130,7 +151,12 @@ export function contractPlaceholders(contract) {
   return {
     empresa: COMPANY.legalName,
     ruc: COMPANY.ruc,
-    domicilio_empresa: `${COMPANY.address}, ${COMPANY.addressCity}`,
+    // Solo la calle: la comparecencia sigue con ", representada legalmente por
+    // {{representante}}", y repetir ahí la ciudad ("Calle Neptuno 185,
+    // Huancayo, Huancayo - Perú, representada legalmente por…") alargaba la
+    // frase sin aportar nada. La ciudad completa se mantiene en `COMPANY` para
+    // la cotización, el comprobante y la base de conocimiento del bot.
+    domicilio_empresa: COMPANY.address,
     representante: contract.representative_name || (LESSOR_SIGNATURE ? LESSOR_SIGNER : null),
     cliente: contract.client_name,
     dni: contract.client_dni,
@@ -160,7 +186,7 @@ export function contractPlaceholders(contract) {
 const BLOCK_PLACEHOLDERS = {
   cuentas_bancarias: () => [
     'Banco | Moneda | Titular y número de cuenta',
-    ...PAYMENT_METHODS.map((m) => `${m.bank} | Soles | ${COMPANY.legalName} ${m.account}${m.cci ? ` — ${m.cci}` : ''}`)
+    ...PAYMENT_METHODS.map((m) => `${m.bank} | Soles | ${m.holder || COMPANY.legalName} ${m.account}${m.cci ? ` — ${m.cci}` : ''}`)
   ].join('\n'),
 
   /**
@@ -171,13 +197,31 @@ const BLOCK_PLACEHOLDERS = {
   cronograma_pagos: (contract) => {
     const rows = contract?.installments || [];
     const symbol = contract?.currency === 'USD' ? 'US$' : 'S/';
-    if (rows.length === 0) return 'Cuota | Vencimiento | Monto\n | A convenir entre las partes | ';
+    if (rows.length === 0) return 'Fecha | Monto en soles\nA convenir entre las partes | ';
     return [
-      'Cuota | Vencimiento | Monto',
+      'Fecha | Monto en soles',
       ...rows.map((r) => {
+        // Siempre con los dos decimales: "S/ 750" en un contrato se presta a
+        // discusión sobre los céntimos, "S/ 750.00" no.
         const amount = Number(r.monto).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        return `${r.cuota} | ${formatLongDate(r.due_date || r.fecha) || 'Por definir'} | ${symbol} ${amount}`;
+        return `${formatLongDate(r.due_date || r.fecha) || 'Por definir'} | ${symbol} ${amount}`;
       })
+    ].join('\n');
+  },
+
+  /**
+   * El cronograma de entregas de la cláusula quinta. Son filas propias del
+   * contrato (`contract_deliverables`): se escriben en el mismo formulario que
+   * las cuotas y se imprimen acá, en vez de teclear la tabla dentro del texto
+   * de la cláusula —que era lo que se hacía y lo que dejaba contratos con la
+   * tabla vacía o con fechas que ya no coincidían con lo pactado.
+   */
+  cronograma_entregas: (contract) => {
+    const rows = contract?.deliverables || [];
+    if (rows.length === 0) return 'Fecha | Avance\nPor definir | ';
+    return [
+      'Fecha | Avance',
+      ...rows.map((r) => `${formatLongDate(r.due_date) || 'Por definir'} | ${r.avance || ''}`)
     ].join('\n');
   }
 };
@@ -276,7 +320,7 @@ export function buildContractDocument(contract) {
 
   const clauses = (contract.clauses || []).map((clause, i) => `
     <section class="c-clause">
-      <h3><span>${clauseOrdinal(i + 1)}:</span> ${esc(clause.title)}</h3>
+      <h3><span>CLÁUSULA ${clauseOrdinal(i + 1)}:</span> ${esc(clauseHeadingTitle(clause.title))}</h3>
       ${paragraphs(clause.body, values, contract)}
     </section>`).join('');
 

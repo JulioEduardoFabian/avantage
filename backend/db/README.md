@@ -85,6 +85,16 @@ Una cuota ya cobrada (`estado` distinto de `pendiente`, o con comprobantes subid
 bloqueada: no se puede borrar del cronograma ni cambiarle el monto, porque el asiento tiene que
 seguir cuadrando con el banco. La suma del plan nunca puede superar `leads.total_amount`.
 
+El **cronograma de entregas** del contrato es otra cosa y por eso tiene su propia tabla,
+`contract_deliverables` (`contract_id`, `position`, `due_date`, `avance`): una entrega es un
+compromiso escrito en el contrato, no dinero que Finanzas cobre, así que no se relaciona con
+`finance_income` ni con la contabilidad. Se edita en el mismo formulario del contrato y se
+imprime con el marcador `{{cronograma_entregas}}`. `due_date` es nullable a propósito —"Firma de
+contrato" no tiene fecha propia y el documento imprime "Por definir"—, y una fila sin `avance` se
+descarta al guardar. Las dos tablas del contrato salen de marcador y no se teclean dentro del
+texto de la cláusula: cuando se escribían a mano quedaban contratos emitidos con la tabla vacía, o
+con fechas que ya no coincidían porque alguien reprogramó un pago en Finanzas.
+
 El ciclo completo de un entregable retenido:
 
 ```

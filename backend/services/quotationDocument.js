@@ -26,11 +26,21 @@ export const COMPANY = {
   tagline: 'INNOVACIÓN · INVESTIGACIÓN · SOFTWARE · MARKETING'
 };
 
+/**
+ * `holder` es el titular de la cuenta y NO siempre es la empresa: la de
+ * Interbank está a nombre del gerente general, no de Avantage Group S.A.C.
+ * Antes el contrato imprimía `COMPANY.legalName` para las dos por igual, así
+ * que la tabla de cuentas decía que la de Interbank era de la empresa.
+ *
+ * Solo lo usa la tabla de cuentas del contrato: la cotización imprime el
+ * número y el CCI sin titular.
+ */
 export const PAYMENT_METHODS = [
   {
     bank: 'Banco de Crédito del Perú',
     short: 'BCP',
     accent: '#c0392b',
+    holder: 'Avantage Group S.A.C.',
     account: 'Cuenta Corriente (S/): 3557413863061',
     cci: 'CCI: 002 335 007413863061 66'
   },
@@ -38,6 +48,10 @@ export const PAYMENT_METHODS = [
     bank: 'INTERBANK Perú',
     short: 'Interbank',
     accent: '#0aa05a',
+    holder: 'Julio Fabián Ninamango — Gerente General',
+    // PENDIENTE: confirmar número de cuenta y CCI de esta cuenta. En la
+    // captura del 29/09 se leía "100-3004188825", distinto del que está acá.
+    // Se dejan los valores actuales hasta que lleguen los definitivos.
     account: 'Cuenta Corriente (S/): 8983515374983',
     cci: 'CCI: 00389801351537498347'
   }

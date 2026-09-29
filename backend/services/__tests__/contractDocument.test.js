@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildContractDocument,
+  clauseHeadingTitle,
   clauseOrdinal,
+  contractPlaceholders,
   fillPlaceholders,
   formatAmountLegal,
   numberToWords
@@ -73,10 +75,26 @@ test('{{cronograma_pagos}} imprime las cuotas pactadas como tabla', () => {
     ],
     clauses: [{ title: 'CONTRAPRESTACIÓN', body: 'Se pagará así:\n\n{{cronograma_pagos}}' }]
   });
-  assert.match(html, /<th>Vencimiento<\/th>/);
-  assert.match(html, /<td>1era<\/td>/);
+  // Las columnas son las del modelo legal: fecha y monto, sin el número de
+  // cuota (la tabla va dentro de una cláusula que ya habla de los tramos).
+  assert.match(html, /<th>Fecha<\/th>/);
+  assert.match(html, /<th>Monto en soles<\/th>/);
   assert.match(html, /22 de se(p)?tiembre de 2026/);
   assert.match(html, /S\/ 2,000\.00/);
+});
+
+// Un contrato que dice "S/ 750" se presta a discusión sobre los céntimos.
+test('{{cronograma_pagos}} imprime siempre los dos decimales', () => {
+  const html = buildContractDocument({
+    id: 81,
+    title: 'CONTRATO',
+    status: 'firmado',
+    currency: 'PEN',
+    installments: [{ cuota: '1era', monto: '750', due_date: '2026-09-20' }],
+    clauses: [{ title: 'CONTRAPRESTACIÓN', body: '{{cronograma_pagos}}' }]
+  });
+  assert.match(html, /S\/ 750\.00/);
+  assert.doesNotMatch(html, /S\/ 750</);
 });
 
 test('{{cronograma_pagos}} deja la fila a convenir cuando no hay cuotas pactadas', () => {
@@ -95,4 +113,92 @@ test('buildContractDocument incluye la firma del locador salvo en contratos anul
   assert.match(buildContractDocument({ ...base, status: 'borrador' }), /<img src="data:image\/png;base64,/);
   assert.match(buildContractDocument({ ...base, status: 'firmado' }), /<img src="data:image\/png;base64,/);
   assert.doesNotMatch(buildContractDocument({ ...base, status: 'anulado' }), /<img src="data:image/);
+});
+
+// ---------------------------------------------------------------------------
+// Correcciones pedidas por gerencia el 29/09/2026
+// ---------------------------------------------------------------------------
+
+test('el encabezado dice "CLÁUSULA PRIMERA" y no repite el ordinal escrito a mano', () => {
+  const html = buildContractDocument({
+    id: 20,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [
+      { title: 'CLÁUSULA PRIMERA: FINALIDAD DEL CONTRATO', body: 'Texto.' },
+      { title: 'COMPROMISOS DEL LOCADOR', body: 'Texto.' }
+    ]
+  });
+  assert.match(html, /CLÁUSULA PRIMERA:<\/span> FINALIDAD DEL CONTRATO/);
+  assert.match(html, /CLÁUSULA SEGUNDA:<\/span> COMPROMISOS DEL LOCADOR/);
+  assert.doesNotMatch(html, /PRIMERA:<\/span> CLÁUSULA PRIMERA/);
+});
+
+test('clauseHeadingTitle quita el ordinal escrito a mano en sus formas habituales', () => {
+  assert.equal(clauseHeadingTitle('CLÁUSULA PRIMERA: FINALIDAD'), 'FINALIDAD');
+  assert.equal(clauseHeadingTitle('CLAUSULA DÉCIMA SEGUNDA - SANCIONES'), 'SANCIONES');
+  assert.equal(clauseHeadingTitle('SEGUNDA: COMPROMISOS'), 'COMPROMISOS');
+  assert.equal(clauseHeadingTitle('OBJETO DEL CONTRATO'), 'OBJETO DEL CONTRATO');
+});
+
+// Un título que es SOLO el ordinal no debe quedar vacío en el encabezado.
+test('clauseHeadingTitle no vacía un título que no tiene nada más', () => {
+  assert.equal(clauseHeadingTitle('CLÁUSULA PRIMERA:'), 'CLÁUSULA PRIMERA:');
+});
+
+test('{{domicilio_empresa}} es solo la calle: la comparecencia sigue con el representante', () => {
+  const values = contractPlaceholders({ id: 1 });
+  assert.equal(values.domicilio_empresa, 'Calle Neptuno 185');
+  assert.doesNotMatch(values.domicilio_empresa, /Huancayo/);
+});
+
+test('la cuenta de Interbank se imprime a nombre de su titular, no de la empresa', () => {
+  const html = buildContractDocument({
+    id: 21,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [{ title: 'PAGO', body: '{{cuentas_bancarias}}' }]
+  });
+  assert.match(html, /Julio Fabián Ninamango — Gerente General/);
+  // La de BCP sigue a nombre de la empresa.
+  assert.match(html, /Avantage Group S\.A\.C\. Cuenta Corriente/);
+});
+
+test('{{cronograma_entregas}} imprime las entregas pactadas como tabla', () => {
+  const html = buildContractDocument({
+    id: 22,
+    title: 'CONTRATO',
+    status: 'firmado',
+    deliverables: [
+      { due_date: '2026-09-20', avance: 'Firma de contrato' },
+      { due_date: '2026-10-05', avance: 'Capítulo I y II' }
+    ],
+    clauses: [{ title: 'ENTREGAS', body: 'Se entregará así:\n\n{{cronograma_entregas}}' }]
+  });
+  assert.match(html, /<th>Fecha<\/th>/);
+  assert.match(html, /<th>Avance<\/th>/);
+  assert.match(html, /<td>Firma de contrato<\/td>/);
+  assert.match(html, /5 de octubre de 2026/);
+});
+
+test('una entrega sin fecha se imprime "Por definir" en vez de dejar la celda vacía', () => {
+  const html = buildContractDocument({
+    id: 23,
+    title: 'CONTRATO',
+    status: 'borrador',
+    deliverables: [{ due_date: null, avance: 'Firma de contrato' }],
+    clauses: [{ title: 'ENTREGAS', body: '{{cronograma_entregas}}' }]
+  });
+  assert.match(html, /Por definir/);
+  assert.match(html, /Firma de contrato/);
+});
+
+test('{{cronograma_entregas}} sin entregas no rompe el documento', () => {
+  const html = buildContractDocument({
+    id: 24,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [{ title: 'ENTREGAS', body: '{{cronograma_entregas}}' }]
+  });
+  assert.match(html, /Por definir/);
 });

@@ -47,7 +47,12 @@
             <li><code>{{universidad}}</code> <code>{{carrera}}</code> <code>{{servicio}}</code> <code>{{monto}}</code></li>
             <li><code>{{empresa}}</code> <code>{{ruc}}</code> <code>{{domicilio_empresa}}</code> <code>{{representante}}</code></li>
             <li><code>{{ciudad}}</code> <code>{{fecha}}</code></li>
-            <li><code>{{cuentas_bancarias}}</code> — imprime la tabla completa de cuentas de la empresa.</li>
+          </ul>
+          <p><b>Tablas que se arman solas.</b> No las escribas a mano: pon el marcador y la tabla sale con lo que esté pactado en el contrato al momento de imprimirlo.</p>
+          <ul>
+            <li><code>{{cuentas_bancarias}}</code> — las cuentas de abono de la empresa.</li>
+            <li><code>{{cronograma_pagos}}</code> — las cuotas del contrato (las mismas que cobra Finanzas). Si alguien reprograma un pago, el contrato reimpreso ya sale con la fecha nueva.</li>
+            <li><code>{{cronograma_entregas}}</code> — las entregas pactadas, tal como se escriban en el contrato.</li>
           </ul>
           <p><b>Formato.</b> Separa los bloques con una línea en blanco:</p>
           <ul>

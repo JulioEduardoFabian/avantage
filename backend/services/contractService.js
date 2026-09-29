@@ -46,6 +46,25 @@ export function cleanClauses(clauses) {
     .map((c, index) => ({ position: index + 1, title: c.title || 'CLÁUSULA', body: c.body }));
 }
 
+/**
+ * Filas del cronograma de entregas, listas para guardar. Lo que manda el
+ * formulario se numera acá por su orden en la lista, así que mover una fila
+ * arriba o abajo cambia el orden en que se imprime sin tocar nada más.
+ *
+ * Una fila sin descripción se descarta: una entrega con fecha pero sin decir
+ * QUÉ se entrega no significa nada en el contrato. Al revés sí vale —
+ * "Firma de contrato" no necesita fecha propia y se imprime "Por definir".
+ */
+export function cleanDeliverables(rows) {
+  return (rows || [])
+    .map((r) => ({
+      due_date: r.dueDate || r.due_date || null,
+      avance: String(r.avance || '').trim().slice(0, 500)
+    }))
+    .filter((r) => r.avance)
+    .map((r, index) => ({ position: index + 1, due_date: r.due_date || null, avance: r.avance }));
+}
+
 export class ContractService {
   /**
    * `financeLedgerService` se inyecta porque el cronograma de pagos del
@@ -85,6 +104,12 @@ export class ContractService {
     contract.installments = contract.lead_id && this.financeLedgerService
       ? await this.financeLedgerService.listScheduleByLead(contract.lead_id)
       : [];
+    // Las entregas son del contrato y no dependen del lead: un contrato sin
+    // lead asociado también puede tener su cronograma de entregas.
+    contract.deliverables = await db('contract_deliverables')
+      .where({ contract_id: id })
+      .orderBy('position')
+      .select('id', 'due_date', 'avance');
     return withIsoDate(contract);
   }
 
@@ -170,6 +195,11 @@ export class ContractService {
         await trx('contract_clauses').where({ contract_id: id }).del();
         const clauses = cleanClauses(data.clauses).map((c) => ({ ...c, contract_id: id }));
         if (clauses.length) await trx('contract_clauses').insert(clauses);
+      }
+      if (Array.isArray(data.deliverables)) {
+        await trx('contract_deliverables').where({ contract_id: id }).del();
+        const rows = cleanDeliverables(data.deliverables).map((d) => ({ ...d, contract_id: id }));
+        if (rows.length) await trx('contract_deliverables').insert(rows);
       }
       return true;
     });

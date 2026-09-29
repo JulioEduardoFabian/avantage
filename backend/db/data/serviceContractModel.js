@@ -18,7 +18,7 @@
  *   {{servicio}} {{monto}} {{ciudad}} {{fecha}} {{universidad}} {{carrera}}
  *
  * Marcadores de BLOQUE (se expanden a una tabla entera):
- *   {{cuentas_bancarias}}
+ *   {{cuentas_bancarias}} {{cronograma_pagos}} {{cronograma_entregas}}
  *
  * Formato del cuerpo de una cláusula (ver backend/services/contractDocument.js):
  *   - los bloques se separan con una línea en blanco;
@@ -27,9 +27,12 @@
  *   - un bloque cuyas líneas empiezan con "- " se imprime como viñetas;
  *   - el resto es un párrafo justificado.
  *
- * Las fechas y montos del cronograma van vacíos a propósito: son distintos en
- * cada contrato y se completan al emitirlo (las cláusulas se copian a cada
- * contrato y quedan editables ahí, sin tocar el tipo).
+ * Los dos cronogramas NO se escriben en el texto de la cláusula: van como
+ * marcador. Las cuotas salen de las mismas filas que Finanzas cobra y las
+ * entregas de `contract_deliverables`; las dos se editan en el formulario del
+ * contrato. Cuando se tecleaban a mano, la tabla quedaba vacía en la mitad de
+ * los contratos, o con fechas que ya no coincidían con lo pactado porque
+ * alguien reprogramó un pago en Finanzas y nadie volvió a tocar la cláusula.
  */
 export const SERVICE_CONTRACT_MODEL = {
   label: 'Contrato de locación de servicios (asesoría de tesis)',
@@ -38,7 +41,8 @@ export const SERVICE_CONTRACT_MODEL = {
     'Conste por el presente documento, EL CONTRATO DE LOCACIÓN DE SERVICIOS, (en adelante «EL CONTRATO») que, ' +
     'en virtud al artículo 1764° y siguientes del Código Civil peruano, celebran de una parte:\n\n' +
     '{{empresa}}, empresa identificada con RUC No. {{ruc}}, con domicilio para estos efectos en ' +
-    '{{domicilio_empresa}}; a quien en adelante se le denominará como «EL LOCADOR».\n\n' +
+    '{{domicilio_empresa}}, representada legalmente por {{representante}}; a quien en adelante se le ' +
+    'denominará como «EL LOCADOR».\n\n' +
     'Y, de la otra parte:\n\n' +
     '{{cliente}}, identificado con DNI N°. {{dni}}, con domicilio para estos efectos en {{domicilio}}; ' +
     'a quien en adelante se le denominará como «EL ASESORADO».\n\n' +
@@ -79,9 +83,7 @@ export const SERVICE_CONTRACT_MODEL = {
       body:
         'Como contraprestación al servicio prestado por EL LOCADOR, EL ASESORADO se compromete al abono de un monto ' +
         'total de {{monto}}, monto que será abonado en las siguientes fechas:\n\n' +
-        'Fecha | Monto en soles\n' +
-        ' | \n' +
-        ' | \n\n' +
+        '{{cronograma_pagos}}\n\n' +
         'El pago será abonado bajo las siguientes modalidades:\n\n' +
         '- Efectivo: estrictamente abonado en las oficinas de la empresa.\n' +
         '- Depósito o transferencia bancaria a las siguientes cuentas:\n\n' +
@@ -92,9 +94,7 @@ export const SERVICE_CONTRACT_MODEL = {
       body:
         'Las entregas que EL LOCADOR otorgará a favor de EL ASESORADO serán cargadas al correo y/o grupo de ' +
         'WhatsApp creado en los siguientes términos:\n\n' +
-        'Fecha | Avance\n' +
-        ' | Firma de contrato\n' +
-        ' | \n\n' +
+        '{{cronograma_entregas}}\n\n' +
         'Además, EL LOCADOR se compromete con entregar a favor de EL ASESORADO los siguientes beneficios adicionales:\n\n' +
         '- Asesoría de preparación metodológica y temática sobre la investigación para la sustentación.\n' +
         '- Balotario de preguntas de sustentación.\n' +
