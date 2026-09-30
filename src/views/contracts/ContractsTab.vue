@@ -57,6 +57,18 @@
             <span v-if="isDirty" class="ct-dirty">● Cambios sin guardar</span>
           </div>
           <div class="ct-actions">
+            <button
+              v-if="editing.status === 'borrador'"
+              type="button"
+              class="btn-secondary"
+              :disabled="isSaving || !editing.template_id"
+              :title="editing.template_id
+                ? 'Reemplaza el texto de este contrato por el del tipo de contrato actual'
+                : 'Este contrato no está asociado a ningún tipo de contrato'"
+              @click="resyncFromTemplate"
+            >
+              ⟳ Actualizar desde el tipo
+            </button>
             <button type="button" class="btn-secondary" :disabled="isSaving" @click="openDocument">🖨️ Imprimir / PDF</button>
             <button type="button" class="btn-primary" :disabled="isSaving || !isDirty" @click="save">
               {{ isSaving ? 'Guardando…' : 'Guardar' }}
@@ -300,6 +312,37 @@ async function save() {
   });
   isSaving.value = false;
   return !!ok;
+}
+
+/**
+ * Vuelve a traer el texto del tipo de contrato sobre este contrato.
+ *
+ * Un contrato guarda su propia copia del texto al crearse (por eso editar un
+ * tipo no altera lo ya emitido), así que uno creado antes de una mejora del
+ * modelo se queda con la versión vieja. Esto es la salida, y como pisa lo que
+ * se haya ajustado a mano en ESTE contrato, se confirma nombrando lo que se
+ * reemplaza y lo que no. Los cambios sin guardar se avisan aparte: se pierden
+ * igual y conviene decirlo antes, no después.
+ */
+async function resyncFromTemplate() {
+  const dirtyWarning = isDirty.value
+    ? '\n\nOJO: tienes cambios sin guardar en este contrato. También se perderán.'
+    : '';
+  const ok = confirm(
+    `¿Actualizar ${contractNumber(editing.value)} con el texto del tipo de contrato?\n\n` +
+    'SE REEMPLAZA: el título, la apertura, el cierre y las cláusulas. Si editaste alguna cláusula ' +
+    'a mano en este contrato, ese texto se pierde.\n\n' +
+    'SE CONSERVA: los datos de las partes, el monto, el cronograma de pagos y el de entregas.' +
+    dirtyWarning
+  );
+  if (!ok) return;
+
+  isSaving.value = true;
+  await run(async () => {
+    load(await request(`/api/contracts/${editing.value.id}/resync-template`, { method: 'POST' }));
+    await refreshList();
+  });
+  isSaving.value = false;
 }
 
 async function remove() {

@@ -206,6 +206,69 @@ export class ContractService {
     return updated ? this.getById(id) : null;
   }
 
+  /**
+   * Vuelve a copiar el texto del tipo de contrato sobre un contrato ya creado:
+   * título, apertura, cierre y cláusulas.
+   *
+   * Un contrato guarda su PROPIA copia del texto al crearse, y eso no se toca:
+   * es lo que impide que editar un tipo altere un contrato ya emitido. El
+   * efecto secundario es que un contrato creado antes de una mejora del modelo
+   * se queda con la versión vieja para siempre, y la única salida era
+   * recrearlo a mano (caso real: CTR-2026-0004 y CTR-2026-0005, cada uno con
+   * una redacción distinta de la cláusula primera).
+   *
+   * Por eso esto es una acción explícita y no algo que pase solo:
+   *   - solo en BORRADOR. Un contrato firmado o anulado no se reescribe nunca,
+   *     aunque el tipo haya cambiado: lo que se firmó es lo que dice el papel.
+   *   - solo el TEXTO. Los datos de las partes, el monto, el cronograma de
+   *     pagos y el de entregas se conservan enteros — no salen del tipo.
+   *   - pisa lo editado a mano en ESE contrato, que es justamente el punto, y
+   *     por eso quien llama tiene que confirmarlo antes.
+   */
+  async resyncFromTemplate(id) {
+    const contract = await db('contracts').where({ id }).first();
+    if (!contract) return null;
+
+    if (contract.status !== 'borrador') {
+      throw Object.assign(
+        new Error('Solo se puede actualizar un contrato en borrador: uno firmado o anulado conserva el texto con el que se emitió.'),
+        { status: 409 }
+      );
+    }
+    if (!contract.template_id) {
+      throw Object.assign(
+        new Error('Este contrato no está asociado a ningún tipo de contrato, así que no hay texto desde el cual actualizarlo.'),
+        { status: 409 }
+      );
+    }
+
+    const template = await db('contract_templates').where({ id: contract.template_id }).first();
+    if (!template) {
+      throw Object.assign(
+        new Error('El tipo de contrato del que salió este contrato ya no existe.'),
+        { status: 409 }
+      );
+    }
+
+    const templateClauses = await db('contract_template_clauses')
+      .where({ template_id: template.id })
+      .orderBy('position');
+
+    await db.transaction(async (trx) => {
+      await trx('contracts').where({ id }).update({
+        title: template.title,
+        intro: template.intro,
+        closing: template.closing,
+        updated_at: trx.fn.now()
+      });
+      await trx('contract_clauses').where({ contract_id: id }).del();
+      const clauses = cleanClauses(templateClauses).map((c) => ({ ...c, contract_id: id }));
+      if (clauses.length) await trx('contract_clauses').insert(clauses);
+    });
+
+    return this.getById(id);
+  }
+
   async remove(id) {
     return db('contracts').where({ id }).del();
   }

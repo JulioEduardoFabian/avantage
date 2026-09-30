@@ -3042,6 +3042,21 @@ app.put('/api/contracts/:id', requireAuth, requirePermission('contracts.manage')
   }
 });
 
+/**
+ * Vuelve a copiar el texto del tipo sobre un contrato en borrador. Es una
+ * acción aparte del PUT a propósito: no edita campos, REEMPLAZA el texto
+ * entero, y quien la dispara tiene que haberlo confirmado.
+ */
+app.post('/api/contracts/:id/resync-template', requireAuth, requirePermission('contracts.manage'), async (req, res) => {
+  try {
+    const contract = await contractService.resyncFromTemplate(req.params.id);
+    if (!contract) return res.status(404).json({ error: 'Contrato no encontrado.' });
+    res.json(contract);
+  } catch (error) {
+    sendContractError(res, error, 'Error al actualizar el contrato desde su tipo.');
+  }
+});
+
 app.delete('/api/contracts/:id', requireAuth, requirePermission('contracts.manage'), async (req, res) => {
   try {
     if (!await contractService.remove(req.params.id)) return res.status(404).json({ error: 'Contrato no encontrado.' });
