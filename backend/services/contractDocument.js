@@ -122,13 +122,22 @@ export function numberToWords(value) {
 }
 
 /** 5200 → "S/ 5,200.00 (CINCO MIL DOSCIENTOS CON 00/100 SOLES)". */
+/**
+ * El símbolo de moneda tal como lo escribe el área legal: "S/." con punto, no
+ * "S/". Va en un solo sitio para que el total de la cláusula cuarta y las filas
+ * de su cronograma no puedan quedar escritos distinto dentro del mismo párrafo.
+ */
+export function currencySymbol(currency = 'PEN') {
+  return currency === 'USD' ? 'US$' : 'S/.';
+}
+
 export function formatAmountLegal(amount, currency = 'PEN') {
   if (amount === null || amount === undefined || amount === '') return null;
   const value = Number(amount);
   if (!Number.isFinite(value)) return null;
   const totalCents = Math.round(value * 100);
   const cents = String(totalCents % 100).padStart(2, '0');
-  const symbol = currency === 'USD' ? 'US$' : 'S/';
+  const symbol = currencySymbol(currency);
   const currencyWords = currency === 'USD' ? 'DÓLARES AMERICANOS' : 'SOLES';
   const figure = (totalCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return `${symbol} ${figure} (${numberToWords(Math.floor(totalCents / 100)).toUpperCase()} CON ${cents}/100 ${currencyWords})`;
@@ -196,7 +205,7 @@ const BLOCK_PLACEHOLDERS = {
    */
   cronograma_pagos: (contract) => {
     const rows = contract?.installments || [];
-    const symbol = contract?.currency === 'USD' ? 'US$' : 'S/';
+    const symbol = currencySymbol(contract?.currency);
     if (rows.length === 0) return 'Fecha | Monto en soles\nA convenir entre las partes | ';
     return [
       'Fecha | Monto en soles',
@@ -275,15 +284,40 @@ function tableBlock(block, values) {
     + '</table>';
 }
 
-/** Bloque de viñetas: todas sus líneas empiezan con "- ". */
-function isListBlock(block) {
+/**
+ * Formas en que puede venir escrita una viñeta. El texto de las cláusulas se
+ * pega desde el Word del área legal, y ahí las viñetas NO son caracteres: Word
+ * las dibuja con una fuente de símbolos en la que la letra "o" se ve como un
+ * círculo hueco. Al pegar como texto plano se pierde la fuente y queda la letra
+ * literal, así que la cláusula llega con líneas "o Elaboración de la tesis…".
+ * Como solo se reconocía el guion, ese bloque se imprimía como un párrafo
+ * corrido con una "o" suelta delante de cada punto.
+ *
+ * El guion va primero por ser el que se escribe a mano en el panel.
+ */
+const LIST_MARKERS = [
+  /^\s*[-*]\s+/,
+  /^\s*[•·▪◦]\s*/,
+  // La "o" de Word. Lo que la distingue de la conjunción "o" es la exigencia
+  // de `listMarkerOf`: TODAS las líneas del bloque tienen que empezar igual.
+  /^\s*o\s+(?=\S)/i
+];
+
+/** El marcador con el que están escritas TODAS las líneas del bloque, o null. */
+function listMarkerOf(block) {
   const lines = block.split(/\n/).filter((l) => l.trim());
-  return lines.length > 0 && lines.every((l) => /^\s*-\s+/.test(l));
+  if (lines.length === 0) return null;
+  return LIST_MARKERS.find((re) => lines.every((l) => re.test(l))) || null;
+}
+
+function isListBlock(block) {
+  return listMarkerOf(block) !== null;
 }
 
 function listBlock(block, values) {
+  const marker = listMarkerOf(block);
   const items = block.split(/\n/).map((l) => l.trim()).filter(Boolean)
-    .map((l) => `<li>${fillPlaceholders(l.replace(/^-\s+/, ''), values)}</li>`).join('');
+    .map((l) => `<li>${fillPlaceholders(l.replace(marker, ''), values)}</li>`).join('');
   return `<ul class="c-list">${items}</ul>`;
 }
 

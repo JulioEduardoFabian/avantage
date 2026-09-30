@@ -22,9 +22,9 @@ test('numberToWords escribe montos en letras con las formas correctas', () => {
 });
 
 test('formatAmountLegal arma el monto en cifras y letras', () => {
-  assert.equal(formatAmountLegal(5200, 'PEN'), 'S/ 5,200.00 (CINCO MIL DOSCIENTOS CON 00/100 SOLES)');
+  assert.equal(formatAmountLegal(5200, 'PEN'), 'S/. 5,200.00 (CINCO MIL DOSCIENTOS CON 00/100 SOLES)');
   assert.equal(formatAmountLegal('1500.5', 'USD'), 'US$ 1,500.50 (MIL QUINIENTOS CON 50/100 DÓLARES AMERICANOS)');
-  assert.equal(formatAmountLegal(99.995), 'S/ 100.00 (CIEN CON 00/100 SOLES)');
+  assert.equal(formatAmountLegal(99.995), 'S/. 100.00 (CIEN CON 00/100 SOLES)');
   assert.equal(formatAmountLegal(null), null);
 });
 
@@ -80,10 +80,10 @@ test('{{cronograma_pagos}} imprime las cuotas pactadas como tabla', () => {
   assert.match(html, /<th>Fecha<\/th>/);
   assert.match(html, /<th>Monto en soles<\/th>/);
   assert.match(html, /22 de se(p)?tiembre de 2026/);
-  assert.match(html, /S\/ 2,000\.00/);
+  assert.match(html, /S\/\. 2,000\.00/);
 });
 
-// Un contrato que dice "S/ 750" se presta a discusión sobre los céntimos.
+// Un contrato que dice "S/. 750" se presta a discusión sobre los céntimos.
 test('{{cronograma_pagos}} imprime siempre los dos decimales', () => {
   const html = buildContractDocument({
     id: 81,
@@ -93,8 +93,25 @@ test('{{cronograma_pagos}} imprime siempre los dos decimales', () => {
     installments: [{ cuota: '1era', monto: '750', due_date: '2026-09-20' }],
     clauses: [{ title: 'CONTRAPRESTACIÓN', body: '{{cronograma_pagos}}' }]
   });
-  assert.match(html, /S\/ 750\.00/);
-  assert.doesNotMatch(html, /S\/ 750</);
+  assert.match(html, /S\/\. 750\.00/);
+  assert.doesNotMatch(html, /S\/\. 750</);
+});
+
+// El símbolo es el que usa el área legal, "S/." con punto, y tiene que ser el
+// mismo en el total de la cláusula y en las filas de su cronograma: dentro del
+// mismo párrafo se leen juntos.
+test('el símbolo de soles lleva punto en el total y en el cronograma', () => {
+  const html = buildContractDocument({
+    id: 82,
+    title: 'CONTRATO',
+    status: 'firmado',
+    currency: 'PEN',
+    total_amount: '1500.00',
+    installments: [{ cuota: '1era', monto: '750', due_date: '2026-09-20' }],
+    clauses: [{ title: 'PAGO', body: 'Monto total de {{monto}}.\n\n{{cronograma_pagos}}' }]
+  });
+  assert.match(html, /S\/\. 1,500\.00 \(MIL QUINIENTOS CON 00\/100 SOLES\)/);
+  assert.match(html, /S\/\. 750\.00/);
 });
 
 test('{{cronograma_pagos}} deja la fila a convenir cuando no hay cuotas pactadas', () => {
@@ -208,6 +225,53 @@ test('una entrega sin fecha se imprime "Por definir" en vez de dejar la celda va
   });
   assert.match(html, /Por definir/);
   assert.match(html, /Firma de contrato/);
+});
+
+// Caso real (CTR-2026-0004): la cláusula se pegó desde el Word del área legal
+// y las viñetas llegaron como la letra "o", porque Word las dibuja con una
+// fuente de símbolos que al pegar como texto plano se pierde. Se imprimían como
+// un párrafo corrido con una "o" suelta delante de cada punto.
+test('las viñetas pegadas desde Word se imprimen como lista', () => {
+  const html = buildContractDocument({
+    id: 30,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [{
+      title: 'COMPROMISOS DEL LOCADOR',
+      body: 'o Elaboración de la tesis, con rigor metodológico, hasta su aprobación.\no Corrección ilimitada de observaciones formuladas por el asesor y jurados.'
+    }]
+  });
+  assert.match(html, /<ul class="c-list">/);
+  assert.match(html, /<li>Elaboración de la tesis, con rigor metodológico, hasta su aprobación\.<\/li>/);
+  assert.doesNotMatch(html, /<li>o Elaboración/);
+});
+
+test('también se reconocen las viñetas reales pegadas desde Word', () => {
+  const html = buildContractDocument({
+    id: 31,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [{ title: 'X', body: '• Primero.\n• Segundo.' }]
+  });
+  assert.match(html, /<li>Primero\.<\/li>/);
+  assert.match(html, /<li>Segundo\.<\/li>/);
+});
+
+// La salvaguarda: "o" solo es viñeta cuando TODAS las líneas del bloque
+// empiezan igual. Un párrafo que arranca con la conjunción sigue siendo un
+// párrafo.
+test('un párrafo que empieza con la conjunción "o" no se convierte en lista', () => {
+  const html = buildContractDocument({
+    id: 32,
+    title: 'CONTRATO',
+    status: 'borrador',
+    clauses: [{
+      title: 'X',
+      body: 'o bien EL ASESORADO acepta la prórroga, o bien resuelve el contrato.\nEn cualquiera de los dos casos se notifica por escrito.'
+    }]
+  });
+  assert.doesNotMatch(html, /<ul class="c-list">/);
+  assert.match(html, /<p>o bien EL ASESORADO/);
 });
 
 test('{{cronograma_entregas}} sin entregas no rompe el documento', () => {
