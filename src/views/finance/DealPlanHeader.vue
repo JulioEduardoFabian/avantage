@@ -39,7 +39,18 @@
 
       <!-- Financial Progress Block -->
       <div v-if="group.leadId" class="deal-financial-block">
-        <div class="deal-price-row">
+        <!--
+          Con el filtro de banco puesto el bloque no habla del trato completo
+          sino de lo que entró por esa cuenta: el precio total no se reparte
+          entre bancos, así que se sustituye por lo cobrado ahí.
+        -->
+        <div v-if="group.bankScope" class="deal-price-row">
+          <span class="deal-price-label">Cobrado por {{ group.bankScope }}:</span>
+          <strong class="deal-total-value">S/ {{ formatAmount(group.registered) }}</strong>
+          <span class="deal-scope-tag">solo {{ group.bankScope }}</span>
+        </div>
+
+        <div v-else class="deal-price-row">
           <span class="deal-price-label">Precio Total:</span>
           <template v-if="editingTotal">
             <input
@@ -464,6 +475,15 @@ async function addPayment() {
   align-items: center;
   gap: 0.45rem;
   white-space: nowrap;
+}
+
+.deal-scope-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-3);
+  border-radius: 9999px;
+  padding: 0.1rem 0.5rem;
 }
 
 .deal-price-label {

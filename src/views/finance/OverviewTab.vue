@@ -365,21 +365,23 @@
             <h3 class="ov-section-title">Cuentas Bancarias & Caja</h3>
             <p class="ov-section-sub">Disponibilidad de fondos por entidad</p>
           </div>
-          <span class="wallet-badge">3 Cuentas activas</span>
+          <span class="wallet-badge">{{ BANCOS.length }} Cuentas activas</span>
         </div>
 
         <div class="bank-cards-stack">
-          <!-- BCP Card -->
+          <!-- Una tarjeta por cuenta bancaria (BCP, BCP Finanzas, Interbank) -->
           <div
-            class="bank-virtual-card card-bcp"
-            :class="{ 'is-selected': selectedBank === 'BCP' }"
-            @click="toggleBankFilter('BCP')"
+            v-for="card in ACCOUNT_CARDS"
+            :key="card.banco"
+            class="bank-virtual-card"
+            :class="[card.className, { 'is-selected': selectedBank === card.banco }]"
+            @click="toggleBankFilter(card.banco)"
           >
             <div class="card-bg-glow"></div>
             <div class="card-top">
               <div class="card-brand">
-                <span class="card-bank-name">BCP</span>
-                <span class="card-type-tag">Cta. Corriente Soles</span>
+                <span class="card-bank-name">{{ card.banco }}</span>
+                <span class="card-type-tag">{{ card.tipo }}</span>
               </div>
               <div class="card-contactless">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
@@ -398,7 +400,7 @@
             <div class="card-balance-block">
               <span class="card-balance-label">Saldo Disponible</span>
               <div class="card-balance-amount">
-                S/ {{ fmt(getBankStats('BCP').balance) }}
+                S/ {{ fmt(getBankStats(card.banco).balance) }}
               </div>
             </div>
 
@@ -408,53 +410,8 @@
                 <span class="card-holder-name">Avantage Group SAC</span>
               </div>
               <div class="card-stats-mini">
-                <span class="mini-in" title="Total ingresos">▲ S/ {{ fmtShort(getBankStats('BCP').ingresos) }}</span>
-                <span class="mini-out" title="Total egresos">▼ S/ {{ fmtShort(getBankStats('BCP').egresos) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Interbank Card -->
-          <div
-            class="bank-virtual-card card-interbank"
-            :class="{ 'is-selected': selectedBank === 'Interbank' }"
-            @click="toggleBankFilter('Interbank')"
-          >
-            <div class="card-bg-glow"></div>
-            <div class="card-top">
-              <div class="card-brand">
-                <span class="card-bank-name">Interbank</span>
-                <span class="card-type-tag">Cta. Empresa Soles</span>
-              </div>
-              <div class="card-contactless">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M5 9c2.5-2.5 6.5-2.5 9 0" />
-                  <path d="M2 6c4.5-4.5 11.5-4.5 16 0" />
-                  <path d="M8 12c1.2-1.2 3.2-1.2 4.4 0" />
-                </svg>
-              </div>
-            </div>
-
-            <div class="card-chip">
-              <div class="chip-line"></div>
-              <div class="chip-line"></div>
-            </div>
-
-            <div class="card-balance-block">
-              <span class="card-balance-label">Saldo Disponible</span>
-              <div class="card-balance-amount">
-                S/ {{ fmt(getBankStats('Interbank').balance) }}
-              </div>
-            </div>
-
-            <div class="card-footer">
-              <div class="card-holder-info">
-                <span class="card-holder-label">Titular</span>
-                <span class="card-holder-name">Avantage Group SAC</span>
-              </div>
-              <div class="card-stats-mini">
-                <span class="mini-in">▲ S/ {{ fmtShort(getBankStats('Interbank').ingresos) }}</span>
-                <span class="mini-out">▼ S/ {{ fmtShort(getBankStats('Interbank').egresos) }}</span>
+                <span class="mini-in" title="Total ingresos">▲ S/ {{ fmtShort(getBankStats(card.banco).ingresos) }}</span>
+                <span class="mini-out" title="Total egresos">▼ S/ {{ fmtShort(getBankStats(card.banco).egresos) }}</span>
               </div>
             </div>
           </div>
@@ -550,7 +507,7 @@
                 <td class="tx-bank-cell">
                   <span
                     class="bank-badge-pill"
-                    :class="`badge-bank-${tx.banco?.toLowerCase()}`"
+                    :class="`badge-bank-${bankSlug(tx.banco)}`"
                   >
                     {{ tx.banco }}
                   </span>
@@ -581,17 +538,17 @@
         <div class="gauge-wrapper">
           <svg viewBox="0 0 240 130" class="gauge-svg">
             <defs>
-              <linearGradient id="gaugeBcp" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stop-color="#1E40AF" />
-                <stop offset="100%" stop-color="#3B82F6" />
-              </linearGradient>
-              <linearGradient id="gaugeIbk" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stop-color="#059669" />
-                <stop offset="100%" stop-color="#10B981" />
-              </linearGradient>
-              <linearGradient id="gaugeCash" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stop-color="#D97706" />
-                <stop offset="100%" stop-color="#F59E0B" />
+              <linearGradient
+                v-for="grad in GAUGE_GRADIENTS"
+                :id="grad.id"
+                :key="grad.id"
+                x1="0"
+                y1="0"
+                x2="1"
+                y2="0"
+              >
+                <stop offset="0%" :stop-color="grad.from" />
+                <stop offset="100%" :stop-color="grad.to" />
               </linearGradient>
             </defs>
 
@@ -656,19 +613,48 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { apiFetch } from "../../apiClient.js";
+import { BANCOS, bankSlug } from "./incomeOptions.js";
 
 const emit = defineEmits(["navigate-tab"]);
 
 const RANGE_OPTIONS = [3, 6, 12];
 const BANK_COLORS = {
   BCP: "#2563EB",
+  "BCP Finanzas": "#6366F1",
   Interbank: "#10B981",
   Efectivo: "#F59E0B"
 };
 
+/** Degradado del arco de cada banco en el semidonut (oscuro → claro). */
+const GAUGE_GRADIENTS = BANCOS.map((banco) => ({
+  banco,
+  id: `gauge-${bankSlug(banco)}`,
+  ...({
+    BCP: { from: "#1E40AF", to: "#3B82F6" },
+    "BCP Finanzas": { from: "#4338CA", to: "#6366F1" },
+    Interbank: { from: "#059669", to: "#10B981" },
+    Efectivo: { from: "#D97706", to: "#F59E0B" }
+  }[banco] || { from: "#64748B", to: "#94A3B8" })
+}));
+
+/**
+ * Las cuentas bancarias de la billetera. El efectivo tiene su propia tarjeta
+ * (es caja física, no una cuenta), así que no entra en esta lista.
+ */
+const ACCOUNT_CARDS = BANCOS
+  .filter((banco) => banco !== "Efectivo")
+  .map((banco) => ({
+    banco,
+    className: `card-${bankSlug(banco)}`,
+    tipo: {
+      Interbank: "Cta. Empresa Soles",
+      "BCP Finanzas": "Cta. Finanzas Soles"
+    }[banco] || "Cta. Corriente Soles"
+  }));
+
 const months = ref(6);
 const chartMode = ref("spline"); // 'spline' | 'bars'
-const selectedBank = ref(""); // '' | 'BCP' | 'Interbank' | 'Efectivo'
+const selectedBank = ref(""); // "" (todos los bancos) o uno de BANCOS
 const isLoading = ref(false);
 const errorMessage = ref("");
 
@@ -677,7 +663,7 @@ const chartContainerRef = ref(null);
 
 const data = ref({
   months: [],
-  banks: ["BCP", "Interbank", "Efectivo"],
+  banks: [...BANCOS],
   ingresos: [],
   egresos: [],
   totals: {
@@ -685,11 +671,7 @@ const data = ref({
     egresos: 0,
     balance: 0,
     totalTransactions: 0,
-    byBank: [
-      { banco: "BCP", ingresos: 0, egresos: 0 },
-      { banco: "Interbank", ingresos: 0, egresos: 0 },
-      { banco: "Efectivo", ingresos: 0, egresos: 0 }
-    ]
+    byBank: BANCOS.map((banco) => ({ banco, ingresos: 0, egresos: 0 }))
   },
   recentTransactions: []
 });
@@ -875,44 +857,29 @@ function getBankPct(bankRow) {
 }
 
 const gaugeArcs = computed(() => {
-  const bcpPct = getBankPct(getBankStats("BCP"));
-  const ibkPct = getBankPct(getBankStats("Interbank"));
-  const cashPct = Math.max(0, 100 - bcpPct - ibkPct);
+  // Un arco por banco con saldo, en el orden de BANCOS. El último se queda con
+  // el resto del porcentaje para que los redondeos no dejen un hueco al final.
+  const conSaldo = BANCOS
+    .map((banco) => ({ banco, pct: getBankPct(getBankStats(banco)) }))
+    .filter((b) => b.pct > 0);
+  if (conSaldo.length > 0) {
+    const previos = conSaldo.slice(0, -1).reduce((sum, b) => sum + b.pct, 0);
+    conSaldo[conSaldo.length - 1].pct = Math.max(0, 100 - previos);
+  }
 
-  // Dashoffset starts at 0 (left)
+  // El dashoffset arranca en 0 (extremo izquierdo) y cada arco empuja al
+  // siguiente tanto como ocupa.
   let offset = 0;
-  const arcs = [];
-
-  if (bcpPct > 0) {
-    arcs.push({
-      key: "bcp",
-      dashLength: bcpPct,
+  return conSaldo.map((b) => {
+    const arc = {
+      key: bankSlug(b.banco),
+      dashLength: b.pct,
       dashOffset: -offset,
-      gradient: "url(#gaugeBcp)"
-    });
-    offset += bcpPct;
-  }
-
-  if (ibkPct > 0) {
-    arcs.push({
-      key: "ibk",
-      dashLength: ibkPct,
-      dashOffset: -offset,
-      gradient: "url(#gaugeIbk)"
-    });
-    offset += ibkPct;
-  }
-
-  if (cashPct > 0) {
-    arcs.push({
-      key: "cash",
-      dashLength: cashPct,
-      dashOffset: -offset,
-      gradient: "url(#gaugeCash)"
-    });
-  }
-
-  return arcs;
+      gradient: `url(#gauge-${bankSlug(b.banco)})`
+    };
+    offset += b.pct;
+    return arc;
+  });
 });
 
 // Formatters
@@ -1507,6 +1474,10 @@ onMounted(fetchOverview);
   background: linear-gradient(135deg, #0A2540 0%, #173B6C 50%, #002A54 100%);
 }
 
+.card-bcp-finanzas {
+  background: linear-gradient(135deg, #1E1B4B 0%, #3730A3 50%, #312E81 100%);
+}
+
 .card-interbank {
   background: linear-gradient(135deg, #064E3B 0%, #047857 50%, #065F46 100%);
 }
@@ -1750,6 +1721,11 @@ onMounted(fetchOverview);
 .badge-bank-bcp {
   background: rgba(37, 99, 235, 0.12);
   color: #2563EB;
+}
+
+.badge-bank-bcp-finanzas {
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366F1;
 }
 
 .badge-bank-interbank {

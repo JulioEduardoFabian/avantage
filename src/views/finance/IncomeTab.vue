@@ -193,17 +193,32 @@
     </div>
 
     <template v-else>
+      <p v-if="bancoFilter" class="ledger-hint income-bank-scope">
+        Filtrando por <strong>{{ bancoFilter }}</strong>: las cifras de abajo y las de cada
+        cierre cuentan <strong>solo</strong> las cuotas cobradas por esa cuenta. El precio
+        total del trato no se reparte por banco, así que queda fuera.
+      </p>
+
       <dl class="ledger-summary">
         <div class="ledger-summary-item" title="Leads con cuotas registradas">
           <dt>Cierres</dt>
           <dd>{{ range.total }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Suma de los precios totales de los cierres">
+        <div
+          v-if="!bancoFilter"
+          class="ledger-summary-item"
+          title="Suma de los precios totales de los cierres"
+        >
           <dt>Precio total</dt>
           <dd>S/ {{ formatAmount(totals.precioTotal) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Suma de las cuotas ya registradas, en cualquier estado">
-          <dt>Registrado</dt>
+        <div
+          class="ledger-summary-item"
+          :title="bancoFilter
+            ? `Suma de las cuotas cobradas por ${bancoFilter}, en cualquier estado`
+            : 'Suma de las cuotas ya registradas, en cualquier estado'"
+        >
+          <dt>{{ bancoFilter ? `Registrado en ${bancoFilter}` : "Registrado" }}</dt>
           <dd>S/ {{ formatAmount(totals.registrado) }}</dd>
         </div>
         <div class="ledger-summary-item" title="Verificado por Finanzas: es lo único que suma en las cifras del módulo">
@@ -214,7 +229,11 @@
           <dt>Por verificar</dt>
           <dd class="is-pending">S/ {{ formatAmount(totals.porVerificar) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Lo que falta del precio total: cuotas pendientes más lo que ni siquiera se ha registrado">
+        <div
+          v-if="!bancoFilter"
+          class="ledger-summary-item"
+          title="Lo que falta del precio total: cuotas pendientes más lo que ni siquiera se ha registrado"
+        >
           <dt>Por cobrar</dt>
           <dd class="is-out">S/ {{ formatAmount(totals.porCobrar) }}</dd>
         </div>
@@ -657,6 +676,44 @@ const plansByLead = computed(() => {
 });
 
 /**
+ * Cifras que se muestran del cierre.
+ *
+ * Con el **filtro de banco** puesto se calculan solo con las cuotas que
+ * pasaron el filtro: lo que se está mirando entonces es "cuánto entró por esa
+ * cuenta", no el trato completo, y el precio total se deja fuera porque no
+ * pertenece a ningún banco. Sin ese filtro se usa el plan entero del lead
+ * (`plansByLead`), aunque la búsqueda o el estado escondan alguna cuota.
+ */
+function figuresFor(group) {
+  if (!bancoFilter.value) {
+    return {
+      registered: 0, verificado: 0, porVerificar: 0, pendiente: 0, itf: 0,
+      total: null, saldo: null,
+      ...(plansByLead.value[group.key] || {}),
+    };
+  }
+
+  const figures = {
+    registered: 0, verificado: 0, porVerificar: 0, pendiente: 0, itf: 0,
+    total: null, saldo: null,
+    bankScope: bancoFilter.value,
+    code: plansByLead.value[group.key]?.code || group.code,
+  };
+  for (const row of group.payments) {
+    const monto = Number(row.monto) || 0;
+    figures.registered += monto;
+    figures.itf += Number(row.itf) || 0;
+    if (row.estado === "verificado") figures.verificado += monto;
+    else if (row.estado === "pagado") figures.porVerificar += monto;
+    else figures.pendiente += monto;
+  }
+  for (const key of ["registered", "verificado", "porVerificar", "pendiente", "itf"]) {
+    figures[key] = Math.round(figures[key] * 100) / 100;
+  }
+  return figures;
+}
+
+/**
  * La tabla muestra un registro por cierre (lead) con sus cuotas dentro, en vez
  * de una fila suelta por cuota: así el precio total y el avance del cobro se
  * ven una sola vez, junto a los pagos que los componen.
@@ -674,9 +731,6 @@ function groupByLead(payments) {
         leadDni: row.lead_dni || null,
         code: row.code,
         payments: [],
-        registered: 0, verificado: 0, porVerificar: 0, pendiente: 0, itf: 0,
-        total: null, saldo: null,
-        ...(plansByLead.value[key] || {}),
       };
       byKey.set(key, group);
     }
@@ -686,6 +740,7 @@ function groupByLead(payments) {
     group.payments.sort((a, b) => dayOnly(a.fecha).localeCompare(dayOnly(b.fecha)) || a.id - b.id);
     // El cierre se ordena por su cuota más reciente, no por la primera.
     group.lastFecha = group.payments.reduce((max, p) => (dayOnly(p.fecha) > max ? dayOnly(p.fecha) : max), "");
+    Object.assign(group, figuresFor(group));
   }
   return [...byKey.values()];
 }
@@ -1111,6 +1166,10 @@ onBeforeUnmount(releaseUrls);
 </script>
 
 <style scoped>
+.income-bank-scope {
+  margin-bottom: 0.5rem;
+}
+
 /* --------------------------------------------------- Registro por cierre */
 
 /* Cada <tbody> es un cierre: arriba su cabecera (lead, precio total y avance

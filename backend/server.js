@@ -1362,11 +1362,12 @@ app.get('/api/finance/salaries', requireAuth, requirePermission('finance.view'),
   }
 });
 
-app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view'), async (req, res) => {
+app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
     const { persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle } = req.body || {};
     const salary = await financeSalaryService.createSalary({
-      persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle, createdBy: req.user.id
+      persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle,
+      receipts: req.receipts, createdBy: req.user.id
     });
     res.status(201).json({ salary });
   } catch (error) {
@@ -1375,11 +1376,12 @@ app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view')
   }
 });
 
-app.put('/api/finance/salaries/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
+app.put('/api/finance/salaries/:id', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
     const { persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle } = req.body || {};
     const salary = await financeSalaryService.updateSalary(req.params.id, {
-      persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle
+      persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle,
+      receipts: req.receipts
     });
     if (!salary) return res.status(404).json({ error: 'Salario no encontrado.' });
     res.json({ salary });
@@ -1398,6 +1400,39 @@ app.patch('/api/finance/salaries/:id/estado', requireAuth, requirePermission('fi
   } catch (error) {
     console.error('❌ Error al cambiar el estado del salario:', error);
     res.status(400).json({ error: error.message || 'Error al cambiar el estado del salario.' });
+  }
+});
+
+// Los comprobantes de un salario son 1:N y viven en la misma carpeta que los
+// del libro diario; solo respaldan el pago, no entran en la contabilidad.
+app.post('/api/finance/salaries/:id/receipts', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
+  try {
+    const receipts = await financeSalaryService.addReceipts(req.params.id, req.receipts);
+    res.status(201).json({ receipts });
+  } catch (error) {
+    console.error('❌ Error al subir el comprobante del salario:', error);
+    res.status(400).json({ error: error.message || 'Error al subir el comprobante.' });
+  }
+});
+
+app.get('/api/finance/salary-receipts/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const receipt = await financeSalaryService.getReceiptById(req.params.id);
+    if (!receipt) return res.status(404).json({ error: 'Comprobante no encontrado.' });
+    sendFinanceFile(res, receipt.filename);
+  } catch (error) {
+    console.error('❌ Error al obtener el comprobante del salario:', error);
+    res.status(500).json({ error: 'Error al obtener el comprobante.', details: error.message });
+  }
+});
+
+app.delete('/api/finance/salary-receipts/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    await financeSalaryService.deleteReceipt(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error al eliminar el comprobante del salario:', error);
+    res.status(500).json({ error: 'Error al eliminar el comprobante.', details: error.message });
   }
 });
 

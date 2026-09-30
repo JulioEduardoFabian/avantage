@@ -98,6 +98,24 @@
             <label class="form-label">Detalle</label>
             <textarea v-model="form.detalle" class="form-textarea" rows="2" placeholder="Notas adicionales (opcional)"></textarea>
           </div>
+          <div class="form-group ledger-form-wide">
+            <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
+            <input
+              ref="fileInput"
+              type="file"
+              accept="image/*,application/pdf"
+              multiple
+              class="form-input"
+              @change="onFileChange"
+            />
+            <p class="ledger-receipt-hint">
+              Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
+              <template v-if="editingRow">
+                Se añaden a los {{ editingRow.receipts?.length || 0 }} que ya tiene; para
+                quitar alguno usa la ✕ de su miniatura en la tabla.
+              </template>
+            </p>
+          </div>
         </div>
 
         <button type="submit" class="btn-primary ledger-submit-btn" :disabled="isSaving">
@@ -170,6 +188,7 @@
                 <th>Método</th>
                 <th>Banco</th>
                 <th>Detalle</th>
+                <th>Comprobantes</th>
                 <th class="ledger-col-actions" aria-label="Acciones"></th>
               </tr>
             </thead>
@@ -212,6 +231,45 @@
                   <span v-if="row.detalle" class="ledger-detalle" :title="row.detalle">{{ row.detalle }}</span>
                   <span v-else class="ledger-muted">—</span>
                 </td>
+                <td>
+                  <div class="receipt-cell">
+                    <span
+                      v-for="rcpt in row.receipts"
+                      :key="rcpt.id"
+                      class="receipt-thumb"
+                      :title="receiptTitle(rcpt)"
+                    >
+                      <a
+                        v-if="receiptUrls[rcpt.id]"
+                        :href="receiptUrls[rcpt.id]"
+                        target="_blank"
+                        rel="noopener"
+                        class="receipt-thumb-link"
+                      >
+                        <span v-if="isPdfReceipt(rcpt.mime_type, rcpt.original_name)" class="receipt-thumb-pdf">PDF</span>
+                        <img v-else :src="receiptUrls[rcpt.id]" alt="Comprobante" />
+                      </a>
+                      <span v-else-if="rcpt.missing" class="receipt-thumb-missing">!</span>
+                      <span v-else class="receipt-thumb-loading">…</span>
+                      <button
+                        type="button"
+                        class="receipt-remove"
+                        title="Eliminar comprobante"
+                        @click="removeReceipt(rcpt.id)"
+                      >✕</button>
+                    </span>
+                    <label class="receipt-add" title="Agregar comprobantes (imágenes o PDF)">
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        multiple
+                        hidden
+                        @change="(e) => uploadReceipts(row.id, e)"
+                      />
+                      +
+                    </label>
+                  </div>
+                </td>
                 <td class="ledger-col-actions">
                   <div class="ledger-row-actions">
                     <button type="button" class="ledger-icon-btn" title="Editar salario" aria-label="Editar salario" @click="startEdit(row)">
@@ -246,9 +304,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { currencySymbol, dayOnly, formatAmount, formatDate } from './format.js';
+import { isPdfReceipt, loadReceiptUrl } from './receiptImage.js';
+import { BANCOS } from './incomeOptions.js';
 import { useLedgerTable } from './useLedgerTable.js';
 import LedgerPagination from './LedgerPagination.vue';
 import './ledger.css';
@@ -257,17 +317,21 @@ const props = defineProps({
   openFormTrigger: { type: Number, default: 0 }
 });
 
-const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
-
 const isFormOpen = ref(false);
 const isSaving = ref(false);
 const isLoading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
 
+// Debe coincidir con MAX_FINANCE_RECEIPTS del backend.
+const MAX_RECEIPTS = 10;
+
 const rows = ref([]);
+const receiptUrls = reactive({});
+const fileInput = ref(null);
 const editingRow = ref(null);
 const statusSavingId = ref(null);
+let pendingFiles = [];
 
 watch(() => props.openFormTrigger, (val) => {
   if (val > 0) openCreate();
@@ -337,21 +401,38 @@ function emptyForm() {
 
 const form = reactive(emptyForm());
 
+function onFileChange(event) {
+  pendingFiles = Array.from(event.target.files || []).slice(0, MAX_RECEIPTS);
+}
+
+function resetForm() {
+  Object.assign(form, emptyForm());
+  pendingFiles = [];
+  if (fileInput.value) fileInput.value.value = '';
+}
+
+/** Texto del tooltip de una miniatura, avisando si el archivo ya no está. */
+function receiptTitle(rcpt) {
+  const name = rcpt.original_name || 'Comprobante';
+  return rcpt.missing ? `${name} — el archivo ya no está en el servidor` : name;
+}
+
 function openCreate() {
   editingRow.value = null;
-  Object.assign(form, emptyForm());
+  resetForm();
   isFormOpen.value = true;
 }
 
 function closeForm() {
   isFormOpen.value = false;
   editingRow.value = null;
-  Object.assign(form, emptyForm());
+  resetForm();
 }
 
 /** Abre el formulario con los datos del pago para editarlo en su sitio. */
 function startEdit(row) {
   editingRow.value = row;
+  resetForm();
   Object.assign(form, {
     persona: row.persona || '',
     cargo: row.cargo || '',
@@ -368,6 +449,38 @@ function startEdit(row) {
   isFormOpen.value = true;
 }
 
+function releaseUrls() {
+  for (const key of Object.keys(receiptUrls)) {
+    URL.revokeObjectURL(receiptUrls[key]);
+    delete receiptUrls[key];
+  }
+}
+
+function forgetReceiptUrl(id) {
+  if (receiptUrls[id]) {
+    URL.revokeObjectURL(receiptUrls[id]);
+    delete receiptUrls[id];
+  }
+}
+
+/** Solo se descargan las miniaturas de la página visible. */
+async function hydrateReceipts() {
+  await Promise.all(paged.value.map(async (row) => {
+    await Promise.all((row.receipts || []).map(async (rcpt) => {
+      // `missing` lo marca el backend: el archivo ya no está en disco, así que
+      // no tiene sentido pedirlo (la fila muestra el aviso en su lugar).
+      if (rcpt.missing || receiptUrls[rcpt.id]) return;
+      try {
+        receiptUrls[rcpt.id] = await loadReceiptUrl(`/api/finance/salary-receipts/${rcpt.id}`);
+      } catch {
+        rcpt.missing = true;
+      }
+    }));
+  }));
+}
+
+watch(paged, hydrateReceipts);
+
 function flashSuccess(message) {
   successMessage.value = message;
   setTimeout(() => { successMessage.value = ''; }, 3000);
@@ -381,6 +494,7 @@ async function fetchRows() {
     // Un fallo del servidor no puede parecer "sin salarios registrados".
     if (!response.ok) throw new Error(data.error || 'No se pudieron obtener los salarios.');
     rows.value = data.salaries || [];
+    await hydrateReceipts();
   } catch (error) {
     errorMessage.value = error.message || 'No se pudieron obtener los salarios.';
   } finally {
@@ -394,13 +508,14 @@ async function submit() {
   successMessage.value = '';
   try {
     const editing = editingRow.value;
+    // Multipart y no JSON: el mismo envío lleva los comprobantes adjuntos.
+    const fd = new FormData();
+    for (const [key, value] of Object.entries(form)) fd.append(key, value ?? '');
+    for (const file of pendingFiles) fd.append('receipts', file);
+
     const response = await apiFetch(
       editing ? `/api/finance/salaries/${editing.id}` : '/api/finance/salaries',
-      {
-        method: editing ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form })
-      }
+      { method: editing ? 'PUT' : 'POST', body: fd }
     );
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudo guardar el salario.');
@@ -437,12 +552,45 @@ async function toggleStatus(row) {
   }
 }
 
+async function uploadReceipts(salaryId, event) {
+  const files = Array.from(event.target.files || []).slice(0, MAX_RECEIPTS);
+  event.target.value = '';
+  if (files.length === 0) return;
+  errorMessage.value = '';
+  try {
+    const fd = new FormData();
+    for (const file of files) fd.append('receipts', file);
+    const response = await apiFetch(`/api/finance/salaries/${salaryId}/receipts`, {
+      method: 'POST',
+      body: fd
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo subir el comprobante.');
+    await fetchRows();
+  } catch (error) {
+    errorMessage.value = error.message;
+  }
+}
+
+async function removeReceipt(receiptId) {
+  if (!confirm('¿Eliminar este comprobante?')) return;
+  try {
+    const response = await apiFetch(`/api/finance/salary-receipts/${receiptId}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('No se pudo eliminar el comprobante.');
+    forgetReceiptUrl(receiptId);
+    await fetchRows();
+  } catch (error) {
+    errorMessage.value = error.message;
+  }
+}
+
 async function removeRow(row) {
   if (!confirm(`¿Eliminar el salario de ${row.persona} del ${formatDate(row.fecha)}? Esta acción no se puede deshacer.`)) return;
   errorMessage.value = '';
   try {
     const response = await apiFetch(`/api/finance/salaries/${row.id}`, { method: 'DELETE' });
     if (!response.ok) throw new Error('No se pudo eliminar el salario.');
+    for (const rcpt of row.receipts || []) forgetReceiptUrl(rcpt.id);
     if (editingRow.value?.id === row.id) closeForm();
     flashSuccess('Salario eliminado.');
     await fetchRows();
@@ -452,6 +600,7 @@ async function removeRow(row) {
 }
 
 onMounted(fetchRows);
+onBeforeUnmount(releaseUrls);
 </script>
 
 <style scoped>

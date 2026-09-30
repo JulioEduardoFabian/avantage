@@ -293,6 +293,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { isPdfReceipt, loadReceiptUrl } from './receiptImage.js';
+import { BANCOS } from './incomeOptions.js';
 import { currencySymbol, dayOnly, formatAmount, formatDate } from './format.js';
 import { useLedgerTable } from './useLedgerTable.js';
 import LedgerPagination from './LedgerPagination.vue';
@@ -302,7 +303,6 @@ const props = defineProps({
   openFormTrigger: { type: Number, default: 0 }
 });
 
-const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
 // Debe coincidir con MAX_FINANCE_RECEIPTS del backend.
 const MAX_RECEIPTS = 10;
 

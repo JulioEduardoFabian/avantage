@@ -125,11 +125,11 @@
 import { computed, onMounted, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import PaymentScheduleEditor from './PaymentScheduleEditor.vue';
+import { BANCOS } from '../views/finance/incomeOptions.js';
 
 const props = defineProps({ lead: { type: Object, required: true } });
 const emit = defineEmits(['close', 'won']);
 
-const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
 const EMITIR_OPCIONES = ['factura', 'boleta', 'nrus', 'rxh', 'c. interno'];
 
 const monto = ref('');

@@ -183,8 +183,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { apiFetch } from '../../apiClient.js';
+import { BANCOS } from './incomeOptions.js';
 
-const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
 const RANGE_OPTIONS = [6, 12];
 
 const isFormOpen = ref(false);

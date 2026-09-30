@@ -24,7 +24,12 @@ export function cuotaLabel(index) {
   return CUOTAS[index] || `${index + 1}va`;
 }
 export const EMITIR_OPCIONES = ['factura', 'boleta', 'nrus', 'rxh', 'c. interno'];
-export const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
+/**
+ * Cuentas donde puede entrar o salir el dinero. "BCP Finanzas" es la cuenta
+ * del área de finanzas, separada de la operativa ("BCP"), y se lista en todo
+ * el módulo (ingresos, libro diario, gastos fijos, salarios y el resumen).
+ */
+export const BANCOS = ['BCP', 'BCP Finanzas', 'Interbank', 'Efectivo'];
 export const MONEDAS = ['soles', 'dolares'];
 /**
  * Ciclo de vida de un ingreso. "verificado" es el único estado que suma en las
@@ -80,7 +85,7 @@ async function nextCode(table, fecha) {
   return `${prefix}-${Number(count) + 1}`;
 }
 
-function unlinkQuiet(filename) {
+export function unlinkQuiet(filename) {
   if (!filename) return;
   fs.unlink(path.join(financeReceiptDir, filename), () => {});
 }
@@ -92,7 +97,7 @@ export function receiptFileExists(filename) {
 }
 
 /** Filas de comprobante (1:N) a partir de los archivos subidos por multer. */
-function receiptRowsFromFiles(files, foreignKey, id) {
+export function receiptRowsFromFiles(files, foreignKey, id) {
   return (files || []).map((file) => ({
     [foreignKey]: id,
     filename: file.filename,
@@ -107,7 +112,7 @@ function receiptRowsFromFiles(files, foreignKey, id) {
  * `missing: true` los que ya no tienen archivo en disco para que la UI lo diga
  * en vez de quedarse cargando una miniatura que nunca llegará.
  */
-async function attachReceipts(rows, table, foreignKey) {
+export async function attachReceipts(rows, table, foreignKey) {
   if (rows.length === 0) return rows;
   const receipts = await db(table)
     .whereIn(foreignKey, rows.map((r) => r.id))
@@ -275,7 +280,7 @@ export class FinanceLedgerService {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!CUOTAS.includes(cuota)) throw new Error('La cuota debe ser 1era, 2da o 3era.');
     if (!EMITIR_OPCIONES.includes(emitir)) throw new Error('El campo "emitir" no es válido.');
-    if (!BANCOS.includes(banco)) throw new Error('El banco debe ser BCP, Interbank o Efectivo.');
+    if (!BANCOS.includes(banco)) throw new Error(`El banco debe ser uno de: ${BANCOS.join(', ')}.`);
     const numericMonto = Number(monto);
     if (!Number.isFinite(numericMonto) || numericMonto <= 0) {
       throw new Error('El monto debe ser un número mayor a 0.');
@@ -692,7 +697,7 @@ export class FinanceLedgerService {
   #normalizeJournal({ fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino }) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!detalle || !detalle.trim()) throw new Error('El detalle es obligatorio.');
-    if (!BANCOS.includes(banco)) throw new Error('El banco debe ser BCP, Interbank o Efectivo.');
+    if (!BANCOS.includes(banco)) throw new Error(`El banco debe ser uno de: ${BANCOS.join(', ')}.`);
     const numericMonto = Number(monto);
     if (!Number.isFinite(numericMonto)) throw new Error('El monto debe ser un número.');
 

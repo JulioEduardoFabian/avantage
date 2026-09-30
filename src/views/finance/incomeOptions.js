@@ -20,7 +20,21 @@ export function cuotaLabel(index) {
 }
 
 export const EMITIR_OPCIONES = ["factura", "boleta", "nrus", "rxh", "c. interno"];
-export const BANCOS = ["BCP", "Interbank", "Efectivo"];
+/**
+ * Cuentas donde entra o sale el dinero, en el orden en que se muestran en
+ * todo el módulo (ingresos, libro diario, gastos fijos, salarios, resumen y
+ * el modal de cierre ganado). "BCP Finanzas" es la cuenta del área de
+ * finanzas, distinta de la operativa ("BCP").
+ */
+export const BANCOS = ["BCP", "BCP Finanzas", "Interbank", "Efectivo"];
+
+/** Sufijo de clase CSS de un banco ("BCP Finanzas" → "bcp-finanzas"). */
+export function bankSlug(banco) {
+  return String(banco || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-");
+}
 
 /** ITF según la fórmula del Excel: IF(|monto|<1000, 0, INT(|monto|/1000)*0.05). */
 export function calcItf(monto) {

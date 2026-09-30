@@ -1,4 +1,10 @@
 import { db } from '../db/connection.js';
+import {
+  BANCOS as BANCOS_LEDGER,
+  attachReceipts,
+  receiptRowsFromFiles,
+  unlinkQuiet
+} from './financeLedgerService.js';
 
 /**
  * Planilla de salarios.
@@ -11,10 +17,16 @@ import { db } from '../db/connection.js';
  *
  * El `monto` se guarda en **negativo** porque es dinero que sale; el
  * formulario lo pide en positivo y `normalize()` le pone el signo.
+ *
+ * Lo único que comparte con `financeLedgerService` son las utilidades de
+ * archivo de los comprobantes (`finance_salary_receipts` guarda sus archivos
+ * en la misma carpeta `uploads/finance-receipts/`) y la lista de bancos: es
+ * fontanería de disco y un desplegable, no contabilidad.
  */
 
 export const MONEDAS = ['soles', 'dolares'];
-export const BANCOS = ['BCP', 'Interbank', 'Efectivo'];
+/** La misma lista de cuentas que el resto de Finanzas (BCP, BCP Finanzas...). */
+export const BANCOS = BANCOS_LEDGER;
 export const ESTADOS = ['pagado', 'pendiente'];
 
 /**
@@ -66,7 +78,8 @@ export class FinanceSalaryService {
       .select('finance_salaries.*', 'users.name as created_by_name')
       .orderBy('finance_salaries.fecha', 'desc')
       .orderBy('finance_salaries.id', 'desc');
-    return rows.map(withIsoDates);
+    const withReceipts = await attachReceipts(rows, 'finance_salary_receipts', 'salary_id');
+    return withReceipts.map(withIsoDates);
   }
 
   async createSalary(payload) {
@@ -75,14 +88,46 @@ export class FinanceSalaryService {
       ...data,
       created_by: payload.createdBy || null
     });
+    await this.#insertReceipts(id, payload.receipts);
     return this.getSalary(id);
   }
 
+  /**
+   * Los comprobantes que lleguen en la edición se **suman** a los que ya
+   * tiene el pago (igual que en el libro diario): quitar uno es una acción
+   * aparte, desde su miniatura.
+   */
   async updateSalary(id, payload) {
     const existing = await db('finance_salaries').where({ id }).first();
     if (!existing) return null;
     await db('finance_salaries').where({ id }).update(normalize(payload));
+    await this.#insertReceipts(id, payload.receipts);
     return this.getSalary(id);
+  }
+
+  async #insertReceipts(salaryId, files) {
+    const rows = receiptRowsFromFiles(files, 'salary_id', salaryId);
+    if (rows.length > 0) await db('finance_salary_receipts').insert(rows);
+    return rows.length;
+  }
+
+  /** Adjunta comprobantes a un pago ya registrado, desde su fila en la tabla. */
+  async addReceipts(salaryId, files) {
+    const salary = await db('finance_salaries').where({ id: salaryId }).first();
+    if (!salary) throw new Error('Salario no encontrado.');
+    if (!files || files.length === 0) throw new Error('No se recibió ningún comprobante.');
+    await this.#insertReceipts(salaryId, files);
+    return db('finance_salary_receipts').where('salary_id', salaryId).orderBy('id', 'asc');
+  }
+
+  async getReceiptById(id) {
+    return db('finance_salary_receipts').where({ id }).first();
+  }
+
+  async deleteReceipt(id) {
+    const receipt = await db('finance_salary_receipts').where({ id }).first();
+    if (receipt) unlinkQuiet(receipt.filename);
+    return db('finance_salary_receipts').where({ id }).del();
   }
 
   /** Cambia solo el estado (pagado ↔ pendiente) sin reenviar todo el formulario. */
@@ -94,10 +139,15 @@ export class FinanceSalaryService {
 
   async getSalary(id) {
     const row = await db('finance_salaries').where({ id }).first();
-    return withIsoDates(row);
+    if (!row) return row;
+    const [withReceipts] = await attachReceipts([row], 'finance_salary_receipts', 'salary_id');
+    return withIsoDates(withReceipts);
   }
 
+  /** Borra el pago y, con él, los archivos de sus comprobantes en disco. */
   async deleteSalary(id) {
+    const receipts = await db('finance_salary_receipts').where('salary_id', id).select('filename');
+    receipts.forEach((r) => unlinkQuiet(r.filename));
     return db('finance_salaries').where({ id }).del();
   }
 }
