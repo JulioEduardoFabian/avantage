@@ -30,11 +30,19 @@ function todayIso() {
 
 // mysql2 entrega DATE como un Date a medianoche LOCAL; serializado a JSON
 // (UTC) podía correrse un día. Se devuelve siempre como "YYYY-MM-DD".
+/**
+ * Una columna DATE a "YYYY-MM-DD". Se toman los componentes LOCALES y no
+ * `toISOString()`: la fecha llega como medianoche local y pasarla a UTC puede
+ * correrla un día.
+ */
+function isoDay(value) {
+  if (!value) return null;
+  if (!(value instanceof Date)) return String(value).slice(0, 10);
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+}
+
 function withIsoDate(contract) {
-  const d = contract.contract_date;
-  if (d instanceof Date) {
-    contract.contract_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }
+  contract.contract_date = isoDay(contract.contract_date);
   return contract;
 }
 
@@ -106,10 +114,16 @@ export class ContractService {
       : [];
     // Las entregas son del contrato y no dependen del lead: un contrato sin
     // lead asociado también puede tener su cronograma de entregas.
-    contract.deliverables = await db('contract_deliverables')
+    //
+    // La fecha se normaliza a "YYYY-MM-DD" igual que hace Finanzas con las
+    // cuotas: de una columna DATE el driver devuelve un Date, y eso rompía
+    // tanto el `<input type="date">` del formulario como el formateo del
+    // documento, que imprimía "Por definir" sobre una fecha ya cargada.
+    const deliverables = await db('contract_deliverables')
       .where({ contract_id: id })
       .orderBy('position')
       .select('id', 'due_date', 'avance');
+    contract.deliverables = deliverables.map((row) => ({ ...row, due_date: isoDay(row.due_date) }));
     return withIsoDate(contract);
   }
 

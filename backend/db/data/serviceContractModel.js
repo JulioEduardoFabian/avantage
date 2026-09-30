@@ -181,7 +181,10 @@ export const SERVICE_CONTRACT_MODEL = {
         'errores provienen de información falsa, incorrecta o por la influencia de terceros ajenos al proceso.'
     }
   ],
+  // Sin la ciudad: el contrato se firma a distancia casi siempre (el asesorado
+  // puede estar en otra región), así que nombrar una ciudad de firma era
+  // declarar algo que no pasó. La fecha sí se mantiene.
   closing:
     'Las partes declaran haber leído el contrato, por lo que conocen y aceptan todas las cláusulas en su ' +
-    'integridad, y ambos firman en la ciudad de {{ciudad}}, el {{fecha}}.'
+    'integridad, y ambos firman el {{fecha}}.'
 };

@@ -71,6 +71,13 @@ test('ninguna cláusula deja fijos datos de un contrato concreto', () => {
   assert.doesNotMatch(todo, /USIL|Gestión Educativa|Elena Milagro/);
 });
 
+// El contrato se firma a distancia casi siempre, así que nombrar una ciudad de
+// firma era declarar algo que no ocurrió.
+test('el cierre no nombra la ciudad de firma, pero sí la fecha', () => {
+  assert.match(SERVICE_CONTRACT_MODEL.closing, /ambos firman el \{\{fecha\}\}/);
+  assert.doesNotMatch(SERVICE_CONTRACT_MODEL.closing, /ciudad|\{\{ciudad\}\}/);
+});
+
 test('todos los importes escritos en el texto usan "S/." con punto', () => {
   const todo = clauses.map((c) => c.body).join('\n');
   assert.doesNotMatch(todo, /S\/(?!\.)\s*\d/, 'un importe quedó escrito como "S/ 15.00"');

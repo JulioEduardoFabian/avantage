@@ -215,6 +215,35 @@ test('{{cronograma_entregas}} imprime las entregas pactadas como tabla', () => {
   assert.match(html, /5 de octubre de 2026/);
 });
 
+// De una columna DATE el driver devuelve un Date, no un string. `String(date)`
+// da "Sun Sep 20 2026 …", que cortado a diez caracteres no es una fecha: el
+// documento imprimía "Por definir" sobre una fecha que el usuario SÍ había
+// cargado, y no había forma de notarlo desde el formulario.
+test('una fecha que llega como Date se imprime igual que una en texto', () => {
+  const asDate = buildContractDocument({
+    id: 26,
+    title: 'CONTRATO',
+    status: 'borrador',
+    deliverables: [{ due_date: new Date(2026, 8, 30), avance: 'Entrega del trabajo corregido' }],
+    clauses: [{ title: 'ENTREGAS', body: '{{cronograma_entregas}}' }]
+  });
+  assert.match(asDate, /30 de se(p)?tiembre de 2026/);
+  assert.doesNotMatch(asDate, /Por definir/);
+});
+
+test('las cuotas con fecha en Date también se imprimen', () => {
+  const html = buildContractDocument({
+    id: 27,
+    title: 'CONTRATO',
+    status: 'firmado',
+    currency: 'PEN',
+    installments: [{ monto: '750', due_date: new Date(2026, 8, 20) }],
+    clauses: [{ title: 'PAGO', body: '{{cronograma_pagos}}' }]
+  });
+  assert.match(html, /20 de se(p)?tiembre de 2026/);
+  assert.doesNotMatch(html, /Por definir/);
+});
+
 test('una entrega sin fecha se imprime "Por definir" en vez de dejar la celda vacía', () => {
   const html = buildContractDocument({
     id: 23,

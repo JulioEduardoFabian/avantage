@@ -143,9 +143,22 @@ export function formatAmountLegal(amount, currency = 'PEN') {
   return `${symbol} ${figure} (${numberToWords(Math.floor(totalCents / 100)).toUpperCase()} CON ${cents}/100 ${currencyWords})`;
 }
 
+/**
+ * Acepta tanto "YYYY-MM-DD" como un objeto Date, porque de una columna DATE el
+ * driver devuelve un Date y `String(date)` da "Sun Sep 20 2026 …": cortado a
+ * diez caracteres y partido por guiones eso no es una fecha, así que la función
+ * devolvía null y el documento imprimía "Por definir" sobre una fecha que el
+ * usuario SÍ había puesto (caso real: el cronograma de entregas del 30/09).
+ *
+ * De un Date se toman los componentes LOCALES, no `toISOString()`: una columna
+ * DATE llega como medianoche local, y pasarla a UTC puede correrla un día.
+ */
 function formatLongDate(iso) {
   if (!iso) return null;
-  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
+  const raw = iso instanceof Date
+    ? `${iso.getFullYear()}-${String(iso.getMonth() + 1).padStart(2, '0')}-${String(iso.getDate()).padStart(2, '0')}`
+    : String(iso);
+  const [y, m, d] = raw.slice(0, 10).split('-').map(Number);
   if (!y || !m || !d) return null;
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('es-PE', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
