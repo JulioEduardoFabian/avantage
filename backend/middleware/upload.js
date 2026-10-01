@@ -80,6 +80,44 @@ export function uploadProjectUpdateAttachment(req, res, next) {
 
 export { uploadDir };
 
+/**
+ * Copia de respaldo del archivo que se entregó al cliente (módulo Entregables).
+ * Carpeta propia y no la de los avances del proyecto: son cosas distintas con
+ * ciclos de vida distintos —el avance vive en la línea de tiempo del portal, la
+ * entrega es un registro interno— y mezclarlas hace imposible saber qué se puede
+ * borrar al limpiar el disco.
+ */
+const deliverableDir = path.join(uploadsBase, 'deliverables');
+fs.mkdirSync(deliverableDir, { recursive: true });
+
+const deliverableStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, deliverableDir),
+  filename: (req, file, cb) => {
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${unique}${path.extname(file.originalname)}`);
+  }
+});
+
+const deliverableUpload = multer({
+  storage: deliverableStorage,
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB: acá llega el documento completo, no un comprobante.
+}).single('attachment');
+
+/**
+ * Middleware para las rutas del módulo Entregables: sube (opcionalmente) el
+ * archivo entregado en el campo "attachment".
+ */
+export function uploadDeliverableAttachment(req, res, next) {
+  deliverableUpload(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ error: 'Error al subir el archivo entregado: ' + err.message });
+    }
+    next();
+  });
+}
+
+export { deliverableDir };
+
 const financeReceiptStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, financeReceiptDir),
   filename: (req, file, cb) => {

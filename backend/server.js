@@ -53,7 +53,7 @@ import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
 import { signToken, requireAuth, requirePermission, requireAnyPermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
 
-import { uploadProjectUpdateAttachment, uploadDir, uploadFinanceReceipt, uploadFinanceFile, uploadEmailAttachments, financeReceiptDir, whatsappMediaDir, campaignAdImageDir } from './middleware/upload.js';
+import { uploadProjectUpdateAttachment, uploadDir, uploadDeliverableAttachment, deliverableDir, uploadFinanceReceipt, uploadFinanceFile, uploadEmailAttachments, financeReceiptDir, whatsappMediaDir, campaignAdImageDir } from './middleware/upload.js';
 import { db } from './db/connection.js';
 
 // Estado del funnel Kanban que marca el fin del proceso comercial: al llegar
@@ -3884,13 +3884,13 @@ app.get('/api/project-updates/:id/attachment', requireAuth, requirePermission('p
 // ---------------------------------------------------------------- ENTREGABLES
 
 /**
- * Tablero operativo de entregables: una fila por cuota del cronograma, con el
- * estado del pago y el trabajo que se subió contra ella.
+ * Las entregas de cada proyecto (tabla `deliverables`), cruzadas con el estado
+ * de la cuota que las condiciona. Responde de un golpe la pregunta operativa:
+ * ¿esto ya se entregó y el pago ya está verificado?
  *
- * Responde de un golpe la pregunta que hoy exige tres pantallas (Finanzas,
- * detalle del proyecto y contrato): ¿este entregable ya tiene el pago verificado
- * y el trabajo subido? No crea nada — cruza `finance_income`, `project_updates`
- * y `contract_deliverables`, y el estado se deriva en cada lectura.
+ * Las entregas ya no se liberan por el portal del cliente: ocurren fuera del
+ * sistema y se registran acá, así que este módulo es el que sabe qué FALTA
+ * entregar — algo que ninguna de las tablas anteriores podía decir.
  */
 app.get('/api/deliverables', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
   try {
@@ -3898,6 +3898,135 @@ app.get('/api/deliverables', requireAuth, requirePermission('deliverables.view')
   } catch (error) {
     console.error('❌ Error al obtener el tablero de entregables:', error);
     res.status(500).json({ error: 'Error al obtener el tablero de entregables.', details: error.message });
+  }
+});
+
+/**
+ * La cuota que condiciona una entrega tiene que ser del MISMO cliente: si no, el
+ * entregable quedaría atado al pago de otro proyecto. Se comprueba en el alta y
+ * en la edición, que son los dos sitios por donde entra ese dato.
+ */
+async function assertIncomeBelongsToProject(projectId, incomeId, res) {
+  if (!incomeId) return true;
+  const project = await projectService.getProjectById(projectId);
+  const income = await financeLedgerService.getIncomeById(incomeId);
+  if (!income || !project || income.lead_id !== project.lead_id) {
+    res.status(400).json({ error: 'La cuota indicada no pertenece a este proyecto.' });
+    return false;
+  }
+  return true;
+}
+
+/** Alta de un entregable planificado. */
+app.post('/api/deliverables', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const { projectId, title, description, dueDate, incomeId } = req.body || {};
+    if (!projectId) return res.status(400).json({ error: 'El proyecto es obligatorio.' });
+    const project = await projectService.getProjectById(projectId);
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+    if (!await assertIncomeBelongsToProject(projectId, incomeId, res)) return;
+
+    const deliverable = await deliverableService.create({
+      projectId, title, description, dueDate, incomeId, createdBy: req.user.id
+    });
+    res.json({ deliverable });
+  } catch (error) {
+    console.error('❌ Error al crear el entregable:', error);
+    res.status(400).json({ error: error.message || 'Error al crear el entregable.' });
+  }
+});
+
+/** Edición del plan (título, descripción, fecha pactada, cuota que lo condiciona). */
+app.put('/api/deliverables/:id', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const existing = await deliverableService.getById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Entregable no encontrado.' });
+
+    const { title, description, dueDate, incomeId, notes } = req.body || {};
+    if (incomeId !== undefined && !await assertIncomeBelongsToProject(existing.project_id, incomeId, res)) return;
+
+    res.json({ deliverable: await deliverableService.update(req.params.id, { title, description, dueDate, incomeId, notes }) });
+  } catch (error) {
+    console.error('❌ Error al editar el entregable:', error);
+    res.status(400).json({ error: error.message || 'Error al editar el entregable.' });
+  }
+});
+
+/**
+ * Marca la entrega: cuándo, por qué canal y, si se quiere, con una copia del
+ * archivo entregado (multipart, campo "attachment").
+ *
+ * No se exige que la cuota esté verificada: entregar sin el pago confirmado
+ * pasa, y taparlo sería peor que registrarlo — el tablero lo muestra como
+ * "Entregado sin cobrar", que es lo que es.
+ */
+app.post('/api/deliverables/:id/deliver', requireAuth, requirePermission('deliverables.view'), uploadDeliverableAttachment, async (req, res) => {
+  try {
+    const existing = await deliverableService.getById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Entregable no encontrado.' });
+
+    const { deliveredAt, channel, notes } = req.body || {};
+    const { deliverable, replacedFile } = await deliverableService.markDelivered(req.params.id, {
+      deliveredAt, channel, notes, deliveredBy: req.user.id, attachment: req.file || null
+    });
+    // El archivo anterior ya no lo referencia nadie.
+    if (replacedFile) fs.unlink(path.join(deliverableDir, replacedFile), () => {});
+    res.json({ deliverable });
+  } catch (error) {
+    console.error('❌ Error al registrar la entrega:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar la entrega.' });
+  }
+});
+
+/** Deshace la marca de entregado (se marcó por error). El archivo se conserva. */
+app.post('/api/deliverables/:id/undeliver', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const existing = await deliverableService.getById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Entregable no encontrado.' });
+    res.json({ deliverable: await deliverableService.markPending(req.params.id) });
+  } catch (error) {
+    console.error('❌ Error al revertir la entrega:', error);
+    res.status(400).json({ error: error.message || 'Error al revertir la entrega.' });
+  }
+});
+
+/**
+ * Copia al proyecto el cronograma de entregas del contrato vigente del cliente.
+ * Copia y no lee en vivo: un contrato emitido es inmutable, así que reprogramar
+ * una entrega no puede reescribir un documento ya firmado. Saltea las que ya
+ * existen con el mismo título, así que reimportar no duplica nada.
+ */
+app.post('/api/projects/:id/deliverables/import-contract', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    res.json(await deliverableService.importFromContract(req.params.id, { createdBy: req.user.id }));
+  } catch (error) {
+    console.error('❌ Error al importar el cronograma de entregas del contrato:', error);
+    res.status(400).json({ error: error.message || 'Error al importar el cronograma de entregas.' });
+  }
+});
+
+/** Descarga de la copia de respaldo del archivo entregado. */
+app.get('/api/deliverables/:id/attachment', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const deliverable = await db('deliverables').where({ id: req.params.id }).first();
+    if (!deliverable?.attachment_filename) return res.status(404).json({ error: 'Este entregable no tiene archivo guardado.' });
+    res.download(path.join(deliverableDir, deliverable.attachment_filename), deliverable.attachment_original_name || deliverable.attachment_filename);
+  } catch (error) {
+    console.error('❌ Error al descargar el archivo entregado:', error);
+    res.status(500).json({ error: 'Error al descargar el archivo entregado.', details: error.message });
+  }
+});
+
+app.delete('/api/deliverables/:id', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const removed = await deliverableService.remove(req.params.id);
+    if (!removed) return res.status(404).json({ error: 'Entregable no encontrado.' });
+    if (removed.attachment_filename) fs.unlink(path.join(deliverableDir, removed.attachment_filename), () => {});
+    console.log(`[Entregables] Entregable #${req.params.id} eliminado por ${req.user.email}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error al eliminar el entregable:', error);
+    res.status(500).json({ error: 'Error al eliminar el entregable.', details: error.message });
   }
 });
 

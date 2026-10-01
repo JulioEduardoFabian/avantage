@@ -129,17 +129,23 @@ antes de tocar el arranque de producción.
   imagen. El recorte se hace en el servidor: el archivo completo nunca viaja al navegador antes de
   que el pago esté verificado.
 - El módulo **Entregables** (`/admin/entregables`, `DeliverablesView.vue`, permiso `deliverables.view`,
-  `deliverableService.js`) es el cruce operativo entre el dinero y el trabajo: una fila **por cuota**
-  del cronograma con el estado del pago al lado del entregable subido. **No tiene tablas propias** y
-  no debe tenerlas: el estado se deriva en cada lectura de `finance_income.estado`,
-  `project_updates.income_id` y `contract_deliverables`, igual que `projects.is_locked`. Los cuatro
-  estados salen de dos preguntas (¿pago verificado? ¿trabajo subido?) y se llaman por lo que falta:
-  `entregado`, `retenido` (falta Finanzas), `falta_trabajo` (falta operaciones) y `pendiente`.
-  Como Proyectos, **no muestra importes**: las cuotas se nombran por `finance_income.code`. Los
-  avances con adjunto y sin `income_id` se listan aparte porque el cliente los descarga sin
-  condición; atarlos usa el mismo endpoint que el detalle del proyecto
-  (`PATCH /api/project-updates/:id/unlock-income`, que acepta `projects.view` o `deliverables.view`
-  vía `requireAnyPermission`).
+  `deliverableService.js`) tiene **tabla propia**, `deliverables`: desde que las entregas dejaron de
+  liberarse por el portal del cliente, la entrega ocurre fuera del sistema (correo, WhatsApp,
+  presencial) y hay que registrarla. Ninguna de las tablas anteriores servía: `project_updates` solo
+  sabe de lo ya publicado y no puede decir qué **falta** entregar; `contract_deliverables` es el
+  compromiso de un contrato emitido y es inmutable a propósito; `finance_income` es el dinero.
+  Una fila es un entregable **planificado** (título, fecha pactada, `income_id` opcional = la cuota
+  que lo condiciona) que después se marca entregado (fecha, responsable, canal y copia opcional del
+  archivo, en `uploads/deliverables/`). `status` guarda solo `pendiente`/`entregado`: el estado
+  operativo se **deriva** en cada lectura cruzándolo con el estado de la cuota —`entregado`,
+  `sin_cobrar` (salió el trabajo y Finanzas no verificó), `por_entregar` (ya se cobró y falta
+  entregar) y `pendiente`— porque ese dato lo mueve Finanzas desde su propia pantalla. Sin cuota
+  atada no hay nada que esperar del cobro. Como Proyectos, **no muestra importes**: las cuotas se
+  nombran por `finance_income.code`. El botón "Importar del contrato" **copia** las filas de
+  `contract_deliverables` del contrato vigente y saltea las que ya existen con el mismo título
+  (mismo criterio que las plantillas de tareas), porque un contrato emitido no se reescribe al
+  reprogramar una entrega. El portal del cliente **no se tocó**: su línea de tiempo y el bloqueo de
+  adjuntos por pago (`project_updates.income_id`) siguen funcionando igual.
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
   registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
   `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los

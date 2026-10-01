@@ -62,6 +62,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261021000000_create_finance_salaries.js` | Crea `finance_salaries`: la planilla de pagos al personal (persona, cargo, **fecha** del pago, periodo que cubre, monto, moneda, método, banco y detalle). Es un registro **aparte** de la contabilidad: no se relaciona con `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no entra en los totales ni en el flujo de caja de `getOverview()`. `persona` es texto libre (se le paga a gente sin cuenta en el panel, y dar de baja a un usuario no debe reescribir la planilla). |
 | `20261023000000_create_finance_salary_receipts.js` | Crea `finance_salary_receipts`: los comprobantes (imágenes o PDF) que respaldan cada pago de la planilla, 1:N contra `finance_salaries` y en cascada con él. Son los mismos archivos y la misma carpeta (`uploads/finance-receipts/`) que usan los comprobantes de ingresos y del libro diario, pero siguen sin tocar la contabilidad: solo son el respaldo del pago. |
 | `20261024000000_create_deliverables_permission.js` | Agrega el permiso `deliverables.view` (módulo **Entregables**) y lo asigna al rol Administrador. **No crea tablas**: el módulo es una lectura que cruza `finance_income` (¿el pago está verificado?), `project_updates.income_id` (¿el trabajo está subido y contra qué cobro?) y `contract_deliverables` (lo comprometido por escrito). Una tabla propia sería una cuarta verdad sobre el mismo hecho. |
+| `20261025000000_create_deliverables_table.js` | Crea `deliverables`: el registro propio de las entregas de cada proyecto, desde que dejaron de liberarse por el portal del cliente. Una fila es un entregable **planificado** (título, `due_date`, `income_id` opcional = la cuota que lo condiciona) que luego se marca entregado (`delivered_at`, `delivered_by`, `delivery_channel` y copia opcional del archivo). `income_id` va con ON DELETE SET NULL, no CASCADE: borrar una cuota del cronograma no puede borrar el registro de un trabajo ya entregado. |
 
 ### Cronograma de pagos y entregables bloqueados
 
@@ -113,34 +114,46 @@ lectura (`projectUpdateService`), igual que `projects.is_locked` se deriva del p
 bloqueo se aplica también en la descarga (`GET /api/portal/projects/:id/updates/:updateId/attachment`
 responde 403), no solo en la pantalla.
 
-### El tablero de Entregables
+### El módulo de Entregables
 
-El módulo **Entregables** (`/admin/entregables`, permiso `deliverables.view`,
-`deliverableService.js`) no agrega ninguna tabla: responde la pregunta operativa
-—*¿este entregable ya tiene el pago verificado y el trabajo subido?*— cruzando en
-cada lectura las tres fuentes que ya existen. La unidad de la fila es **la cuota**,
-porque es lo único que el modelo ya usa para unir dinero y trabajo
-(`project_updates.income_id`).
+Las entregas **ya no se liberan por el portal del cliente**: ocurren fuera del sistema (correo,
+WhatsApp, presencial) y se registran en la tabla `deliverables`
+(`/admin/entregables`, permiso `deliverables.view`, `deliverableService.js`). Hizo falta tabla
+propia porque ninguna de las que ya existían podía llevar ese registro:
 
-El estado de cada fila sale de dos preguntas, y su nombre dice qué falta:
+- `project_updates` solo sabe de lo que YA se publicó, así que no puede decir qué **falta** entregar
+  — y eso es la mitad del tablero.
+- `contract_deliverables` es el compromiso escrito en un contrato emitido, inmutable a propósito: un
+  contrato firmado no cambia porque alguien reprograme una entrega.
+- `finance_income` es el dinero, no el trabajo.
 
-| pago verificado | trabajo subido | estado | falta |
+Una fila es un entregable **planificado** que después se marca como entregado. Lo único que no se
+guarda es el estado operativo, que se deriva en cada lectura cruzando `status` con el `estado` de la
+cuota atada (`income_id`) — ese dato lo mueve Finanzas desde su propia pantalla, así que guardarlo
+sería una copia que se desincroniza:
+
+| cuota verificada | entregado | estado | falta |
 |---|---|---|---|
-| sí | sí | `entregado` | nada: el cliente ya lo descarga |
-| no | sí | `retenido` | que Finanzas verifique el pago |
-| sí | no | `falta_trabajo` | que operaciones suba el entregable |
+| sí (o sin cuota atada) | sí | `entregado` | nada |
+| no | sí | `sin_cobrar` | salió el trabajo y Finanzas aún no verifica → cobranza |
+| sí (o sin cuota atada) | no | `por_entregar` | hacer la entrega |
 | no | no | `pendiente` | las dos cosas |
 
-Además, `is_overdue` marca la cuota que venció y **sigue sin verificarse** (una
-vencida ya verificada no es noticia), y los avances con adjunto y sin `income_id`
-se listan aparte: el cliente los descarga sin condición, así que si alguno debía
-liberarse con un pago, ahí es donde se nota. Atarlo usa el mismo endpoint que el
-detalle del proyecto (`PATCH /api/project-updates/:id/unlock-income`), que acepta
-`projects.view` o `deliverables.view`.
+Hay dos alarmas y son de áreas distintas, por eso van separadas: `is_overdue` (pasó la fecha pactada
+de la ENTREGA y sigue sin entregarse) y `payment_overdue` (venció la CUOTA y sigue sin verificarse).
+
+El botón **"Importar del contrato"** copia a `deliverables` las filas de `contract_deliverables` del
+contrato vigente del cliente (el más reciente no anulado) y saltea las que ya existen con el mismo
+título, así que reimportar no duplica nada — mismo criterio que la importación de plantillas de
+tareas. Se **copia** en vez de leerse en vivo justamente porque el contrato emitido es inmutable.
 
 El módulo **no muestra importes**, igual que Proyectos: una cuota se nombra por su
-`finance_income.code`. Así operaciones puede trabajar sin que eso implique abrir la
-contabilidad, que tiene su propio permiso.
+`finance_income.code`. Así operaciones trabaja sin que eso implique abrir la contabilidad, que tiene
+su propio permiso.
+
+El portal del cliente **no cambió**: su línea de tiempo (`project_updates`) y el bloqueo de adjuntos
+por pago que describe la sección anterior siguen funcionando igual. Son dos registros distintos — lo
+que el cliente ve publicado, y lo que operaciones entregó — y a propósito no comparten tabla.
 
 ## 3. Seeds (datos iniciales de roles, permisos, columnas del funnel y leads de prueba)
 
