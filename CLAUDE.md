@@ -170,19 +170,33 @@ antes de tocar el arranque de producción.
   (el desplegable reagrega ese valor como "Registrado anteriormente"); renombrar con
   `propagate: true` sí reescribe `leads.field_of_study` y `projects.field_of_study`, nunca
   cotizaciones ni contratos ya emitidos.
-- Los dos tableros de leads leen la **misma** columna `leads.status`, así que lo único que separa un
-  lead del setter de uno comercial es el valor de ese campo. La regla de "¿ya graduó al Funnel de
-  Ventas?" vive en `backend/services/salesFunnelStage.js` y su espejo `src/salesFunnelStage.js`:
-  status que no esté en `SETTER_ONLY_STATUSES` ni sea de bandeja (`nuevo`/`inbox`/`abierto`), y que
-  sea una clave de `funnel_columns` o uno de los desenlaces fijos (`cita_agendada`,
-  `en_negociacion`, `ganado`, `perdido`). Hay que consultarla por ahí y no con listas propias: las
-  columnas de Ventas las crea el equipo y sus claves se generan solas (`col_mtc2nwec_fij`).
+- Los dos tableros de leads leen la **misma** columna `leads.status`, pero "¿este lead ya es del
+  closer?" **no** se deduce de ese texto: se sella en `leads.sales_funnel_at` al entrar al funnel
+  comercial. La deducción por status dejaba de reconocer al lead en cuanto el equipo borraba o
+  recreaba una columna, y por ahí volvían los leads cotizados al Setter Funnel. La regla vive en
+  `backend/services/salesFunnelStage.js` y su espejo `src/salesFunnelStage.js`:
+  `leadHasGraduated(lead, salesStatuses)` es la pregunta que se le hace a un **lead** (mira el sello
+  primero); `isSalesFunnelStatus(status, ...)` solo DETECTA la graduación al moverlo — status que no
+  esté en `SETTER_ONLY_STATUSES` ni sea de bandeja (`nuevo`/`inbox`/`abierto`), y que sea una clave
+  de `funnel_columns` o uno de los desenlaces fijos (`cita_agendada`, `en_negociacion`, `ganado`,
+  `perdido`). Hay que consultarla por ahí y no con listas propias: las columnas de Ventas las crea el
+  equipo y sus claves se generan solas (`col_mtc2nwec_fij`).
   **Sobre un lead que ya graduó, el bot de WhatsApp no actúa**: no le responde (pausa el bot para
   ese contacto y avisa al equipo), no le manda recordatorios de inactividad, no lo congela y
   `moveFunnelStage()` se niega a cambiarle el status — el bot solo manda leads HACIA Ventas
   (`cita_agendada`), nunca de vuelta. La única excepción es un lead con una reunión próxima
   agendada, que sigue recibiendo el recordatorio de esa reunión y las respuestas sobre el
   link/la hora (`handlePostBookingMessage`), caminos que no mueven el funnel.
+- `leadService.updateLeadStatus()` es el **único** camino por el que cambia `leads.status` (incluso
+  `updateLead()` delega ahí si le llega un `status`), y es donde viven las dos reglas: sella
+  `sales_funnel_at` al pasar a una etapa comercial, y a un lead ya sellado **solo una persona** puede
+  ponerle una etapa fuera del funnel comercial — el bot y los automatismos reciben el lead sin
+  cambios. Cada movimiento (y cada intento rechazado, con `blocked`) queda en `lead_stage_changes`,
+  que se lee desde la ficha del lead en el Funnel de Ventas y por `GET /api/leads/:id/stage-history`.
+- `leadService.findByPhone()` cruza primero la cadena exacta y después los últimos 9 dígitos
+  (`phoneMatchKey`): el `wa_id` del bot (`51987654321`) y lo que escribe la persona en el formulario
+  de Meta (`+51 987 654 321`) son el mismo contacto, y compararlos tal cual hacía que el bot le
+  creara un gemelo en "conversación abierta" y lo trabajara de cero.
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`). Los
   permisos son "herramientas" habilitables (`leads.view`, `projects.view`, `roles.manage`,
   `finance.view`, ...); se resuelven una vez en el login y se embeben en el JWT.

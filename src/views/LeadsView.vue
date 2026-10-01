@@ -734,6 +734,47 @@
             </select>
           </div>
 
+          <!-- Historial de etapas: de dónde salió y quién lo movió. Está
+               junto al selector porque es la pregunta que se hace justo ahí
+               ("yo lo dejé en otra columna"). -->
+          <div class="stage-history-section">
+            <button
+              type="button"
+              class="stage-history-toggle"
+              :class="{ 'is-open': showStageHistory }"
+              @click="toggleStageHistory"
+            >
+              🕒 {{ showStageHistory ? 'Ocultar historial de etapas' : 'Ver historial de etapas' }}
+            </button>
+
+            <div v-if="showStageHistory" class="stage-history-body">
+              <p v-if="stageHistoryLoading" class="stage-history-empty">Cargando…</p>
+              <p v-else-if="stageHistoryError" class="stage-history-empty is-error">{{ stageHistoryError }}</p>
+              <p v-else-if="stageHistory.length === 0" class="stage-history-empty">
+                Sin movimientos registrados desde que existe la bitácora.
+              </p>
+              <ul v-else class="stage-history-list">
+                <li
+                  v-for="entry in stageHistory"
+                  :key="entry.id"
+                  class="stage-history-item"
+                  :class="{ 'is-blocked': entry.blocked }"
+                >
+                  <div class="stage-history-move">
+                    <span class="stage-from">{{ stageLabel(entry.fromStatus) }}</span>
+                    <span class="stage-arrow">→</span>
+                    <span class="stage-to">{{ stageLabel(entry.toStatus) }}</span>
+                    <span v-if="entry.blocked" class="stage-blocked-tag">bloqueado</span>
+                  </div>
+                  <div class="stage-history-meta">
+                    {{ stageActorLabel(entry) }} · {{ formatStageDate(entry.createdAt) }}
+                  </div>
+                  <p v-if="entry.reason" class="stage-history-reason">{{ entry.reason }}</p>
+                </li>
+              </ul>
+            </div>
+          </div>
+
           <!-- Primer pago: el vendedor ve en qué va y sube el voucher sin
                entrar a Finanzas. Vivía en la tarjeta del tablero, que ahora
                solo lleva nombre y celular. -->
@@ -1235,6 +1276,18 @@ const quoteHistoryLoading = ref(false);
 const quoteMove = ref(null);
 const quoteMoveUndoing = ref(false);
 
+/**
+ * Historial de etapas del lead seleccionado (`lead_stage_changes`): quién lo
+ * movió, desde qué etapa y hacia cuál, incluidos los intentos que el backend
+ * rechazó. Es la respuesta a "¿por qué este lead salió de donde lo dejé?", que
+ * hasta ahora había que deducir. Se pide al abrirlo, no al abrir la ficha: no
+ * todo el mundo lo necesita cada vez.
+ */
+const showStageHistory = ref(false);
+const stageHistory = ref([]);
+const stageHistoryLoading = ref(false);
+const stageHistoryError = ref('');
+
 // Conversación con el bot de WhatsApp (Avan) para el lead seleccionado.
 const showBotChat = ref(false);
 const botChatMessages = ref([]);
@@ -1253,11 +1306,72 @@ watch(selectedLead, () => {
   quoteHistory.value = [];
   if (selectedLead.value) loadQuoteHistory();
 
+  showStageHistory.value = false;
+  stageHistory.value = [];
+  stageHistoryError.value = '';
+
   showBotChat.value = false;
   botChatMessages.value = [];
   botChatError.value = '';
   stopBotChatPolling();
 });
+
+async function toggleStageHistory() {
+  showStageHistory.value = !showStageHistory.value;
+  if (!showStageHistory.value || stageHistory.value.length > 0) return;
+
+  stageHistoryLoading.value = true;
+  stageHistoryError.value = '';
+  try {
+    const response = await apiFetch(`/api/leads/${selectedLead.value.id}/stage-history`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo obtener el historial de etapas.');
+    stageHistory.value = data.history || [];
+  } catch (err) {
+    stageHistoryError.value = err.message;
+  } finally {
+    stageHistoryLoading.value = false;
+  }
+}
+
+/**
+ * Nombre legible de una etapa. Primero la columna real del tablero —es la que
+ * el equipo ve y renombra—; si la etapa ya no existe (columna borrada), se
+ * muestra la clave cruda, que es un dato útil en sí mismo cuando se está
+ * investigando por qué un lead se movió.
+ */
+function stageLabel(key) {
+  if (!key) return '—';
+  const column = columns.value.find((c) => c.key === key);
+  if (column) return `${column.icon || ''} ${column.label}`.trim();
+  return FIXED_STAGE_LABELS[key] || key;
+}
+
+const FIXED_STAGE_LABELS = {
+  nuevo: 'Nuevo',
+  cita_agendada: '📅 Cita agendada',
+  en_negociacion: '🤝 En negociación',
+  ganado: '🏆 Ganado',
+  perdido: '❌ Perdido',
+  conversacion_abierta: '💬 Conversación abierta (Setter)',
+  calificando: '🎯 En calificación (Setter)',
+  congelado: '🧊 Congelado (Setter)',
+  transferido_closer: '🤝 Transferido a un asesor (Setter)',
+  descartado: '🚫 Descartado (Setter)'
+};
+
+function stageActorLabel(entry) {
+  if (entry.actorType === 'bot') return '🤖 Bot de WhatsApp';
+  if (entry.actorType === 'user') return `👤 ${entry.actorName || 'Usuario eliminado'}`;
+  return '⚙️ Sistema';
+}
+
+function formatStageDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-PE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
 
 /**
  * Trae el hilo completo (contacto + Avan) del lead seleccionado desde la
@@ -1326,7 +1440,20 @@ onBeforeUnmount(stopBotChatPolling);
 // Ventas, entrando a esta columna (recién ahí es un lead comercial).
 const GRADUATED_STATUS_TO_SALES_COLUMN = { cita_agendada: 'nuevo' };
 
-const visibleLeads = computed(() => leads.value.filter(l => !SETTER_ONLY_STATUSES.includes(l.status)));
+/**
+ * Los leads que este tablero muestra: todo lo que no sea una etapa exclusiva
+ * del Setter Funnel y, además, TODO lead con el sello `sales_funnel_at`.
+ *
+ * El sello manda sobre el estado a propósito: un lead que ya graduó y que
+ * quedó con un estado del setter (por los movimientos automáticos que había
+ * antes del tope del backend) tiene que seguir viéndose acá — desaparecer del
+ * tablero del closer es justamente lo que el equipo venía reportando. Al no
+ * coincidir con ninguna columna, cae en la primera, donde se puede volver a
+ * arrastrar a su etapa.
+ */
+const visibleLeads = computed(() => leads.value.filter(
+  (l) => l.sales_funnel_at || !SETTER_ONLY_STATUSES.includes(l.status)
+));
 
 // Estadísticas de Resumen
 const highViabilityCount = computed(() => {
@@ -3680,6 +3807,114 @@ onMounted(() => {
 /* Conversación con el bot de WhatsApp (Avan) */
 .bot-chat-section {
   margin-top: 1.25rem;
+}
+
+/* Historial de etapas: misma caja plegable que la conversación con el bot,
+   para que las dos lecturas de la ficha se vean como lo mismo. */
+.stage-history-section {
+  margin-top: 0.9rem;
+}
+
+.stage-history-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-1);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stage-history-toggle:hover {
+  border-color: var(--primary);
+}
+
+.stage-history-toggle.is-open {
+  border-color: var(--primary);
+  background: rgba(111, 129, 37, 0.08);
+}
+
+.stage-history-body {
+  margin-top: 0.5rem;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.stage-history-empty {
+  margin: 0;
+  padding: 0.6rem 0.2rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.stage-history-empty.is-error {
+  color: #B3261E;
+}
+
+.stage-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.stage-history-item {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  background: var(--surface-1);
+}
+
+/* Un intento rechazado no es un movimiento: se marca distinto para que al
+   revisar el historial se vea de un vistazo que ahí el tope sí actuó. */
+.stage-history-item.is-blocked {
+  border-left-color: #B3261E;
+  background: rgba(179, 38, 30, 0.05);
+}
+
+.stage-history-move {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.stage-arrow {
+  color: var(--text-muted);
+}
+
+.stage-blocked-tag {
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(179, 38, 30, 0.12);
+  color: #B3261E;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stage-history-meta {
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.stage-history-reason {
+  margin: 0.25rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
 }
 
 .bot-chat-toggle {

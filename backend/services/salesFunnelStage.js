@@ -13,6 +13,14 @@ import { db } from '../db/connection.js';
  * de ventas: leads en seguimiento, la mayoría ya cotizados, reapareciendo como
  * congelados). Este módulo es ahora el único lugar donde se responde esa
  * pregunta en el backend.
+ *
+ * La respuesta tiene dos partes y conviene no confundirlas:
+ *
+ *   - `isSalesFunnelStatus()` DETECTA la graduación leyendo el status. Solo
+ *     sirve para eso, porque depende de que la columna siga existiendo.
+ *   - `leadHasGraduated()` / `isLeadInSalesFunnel()` RECUERDAN la graduación:
+ *     miran `leads.sales_funnel_at`, el sello que se escribe al entrar al
+ *     funnel comercial. Es el que hay que usar sobre un lead concreto.
  */
 
 /**
@@ -62,6 +70,11 @@ export async function loadSalesFunnelStatuses() {
 /**
  * ¿Este status es de un lead del Funnel de Ventas? `salesStatuses` es lo que
  * devuelve `loadSalesFunnelStatuses()`.
+ *
+ * Es la regla que DETECTA la graduación, no la que la recuerda: solo mira el
+ * texto del status, así que deja de reconocer al lead en cuanto su columna se
+ * borra o se recrea. Para preguntar "¿este lead es del closer?" hay que usar
+ * `isLeadInSalesFunnel()`/`leadHasGraduated()`, que además miran el marcador.
  */
 export function isSalesFunnelStatus(status, salesStatuses) {
   if (!status) return false;
@@ -70,10 +83,29 @@ export function isSalesFunnelStatus(status, salesStatuses) {
   return salesStatuses.has(status);
 }
 
+/**
+ * ¿Este lead ya es del closer? Es la pregunta que hay que hacer sobre un lead
+ * (y no `isSalesFunnelStatus`, que solo mira el texto del status).
+ *
+ * Manda `leads.sales_funnel_at`: el sello que se escribe cuando el lead entra
+ * al funnel comercial y que solo borra una persona que lo devuelva a propósito
+ * al setter. Sobrevive a que el equipo borre, renombre o recree la columna en
+ * la que estaba el lead — justo el caso en el que la regla por status dejaba de
+ * reconocerlo y el bot volvía a moverlo al Setter Funnel.
+ *
+ * El status se sigue mirando como respaldo, para los leads que ya estaban en el
+ * funnel comercial antes de que existiera el sello.
+ */
+export function leadHasGraduated(lead, salesStatuses) {
+  if (!lead) return false;
+  if (lead.sales_funnel_at) return true;
+  return isSalesFunnelStatus(lead.status, salesStatuses);
+}
+
 /** Atajo para un solo lead, cuando no hay un barrido del que colgarse. */
 export async function isLeadInSalesFunnel(lead) {
-  if (!lead?.status) return false;
-  if (SETTER_ONLY_STATUSES.includes(lead.status)) return false;
-  if (INBOX_STATUSES.includes(lead.status)) return false;
-  return isSalesFunnelStatus(lead.status, await loadSalesFunnelStatuses());
+  if (!lead) return false;
+  if (lead.sales_funnel_at) return true;
+  if (!lead.status) return false;
+  return leadHasGraduated(lead, await loadSalesFunnelStatuses());
 }

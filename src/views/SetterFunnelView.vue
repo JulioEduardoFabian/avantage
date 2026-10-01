@@ -754,7 +754,7 @@
                    registró. Deja el lead en el mismo estado que el pase
                    automático, así que el closer lo ve igual. -->
               <button
-                v-if="!isSalesFunnelStatus(selectedLead.status, salesFunnelStatuses)"
+                v-if="!leadHasGraduated(selectedLead, salesFunnelStatuses)"
                 type="button"
                 class="handoff-closer-btn"
                 :disabled="handingOff"
@@ -873,7 +873,7 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } 
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
-import { buildSalesFunnelStatuses, isSalesFunnelStatus } from '../salesFunnelStage.js';
+import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
 
 /** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
 const MEDIA_BODY_PLACEHOLDER_RE = /^\[(Imagen|Video|Audio|Documento|Sticker)\]$/;
@@ -1270,7 +1270,11 @@ const filteredLeadsByColumn = computed(() => {
     // "Seguimiento" (columna creada por el equipo) no coincidía con nada y caía
     // en la primera columna, y uno "En Negociación" aparecía como transferido al
     // closer. Para el setter eso se ve como un lead que volvió solo al funnel.
-    if (isSalesFunnelStatus(status, salesFunnelStatuses.value)) continue;
+    //
+    // Se pregunta por el LEAD y no por su estado: el sello `sales_funnel_at`
+    // responde aunque la columna del lead ya no exista o aunque la petición de
+    // columnas de Ventas haya fallado y `salesFunnelStatuses` esté vacío.
+    if (leadHasGraduated(lead, salesFunnelStatuses.value)) continue;
 
     if (grouped[status]) {
       grouped[status].push(lead);

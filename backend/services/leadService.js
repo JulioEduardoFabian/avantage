@@ -1,10 +1,45 @@
 import { db } from '../db/connection.js';
+import { LeadStageChangeService } from './leadStageChangeService.js';
+import {
+  SETTER_ONLY_STATUSES,
+  isSalesFunnelStatus,
+  leadHasGraduated,
+  loadSalesFunnelStatuses
+} from './salesFunnelStage.js';
+
+/**
+ * Dígitos con los que se compara un teléfono.
+ *
+ * El mismo contacto llega con formatos distintos según la puerta por la que
+ * entre: el bot guarda el `wa_id` crudo ("51987654321"), el formulario de Meta
+ * y el alta manual guardan lo que escribió la persona ("+51 987 654 321",
+ * "987654321"). Comparar las cadenas tal cual hacía que el bot NO encontrara al
+ * lead que ya existía: le creaba un gemelo en "conversación abierta" y lo
+ * trabajaba como si fuera nuevo — otra forma de ver "el lead volvió al Setter
+ * Funnel" aunque el original siguiera cotizado en el funnel del closer.
+ *
+ * Se comparan los últimos 9 dígitos, que es el número nacional en Perú (el
+ * prefijo 51 puede estar o no). Menos de 8 dígitos no identifica a nadie: ahí
+ * se devuelve null y no se cruza con nada.
+ */
+export function phoneMatchKey(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 8) return null;
+  return digits.slice(-9);
+}
+
+/** Los mismos dígitos, calculados en SQL sobre la columna `phone`. */
+export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
 /**
  * Servicio de acceso a datos para los leads y prospectos (registro comercial de usuarios
  * del chatbot y prospectos capturados en la Base de Datos).
  */
 export class LeadService {
+  constructor({ stageChangeService } = {}) {
+    this.stageChanges = stageChangeService || new LeadStageChangeService();
+  }
+
   async createLead({
     topic,
     academicLevel,
@@ -101,8 +136,30 @@ export class LeadService {
     return db('leads').where('additional_notes', 'like', `%${text}%`).first();
   }
 
+  /**
+   * El lead de un teléfono. Primero la coincidencia exacta; si no hay, se
+   * compara por los últimos 9 dígitos (ver `phoneMatchKey`), que es lo que
+   * reconoce al mismo contacto guardado con otro formato.
+   *
+   * Si hay varias filas del mismo número —el daño ya hecho por los gemelos que
+   * se crearon antes— gana el lead que ya graduó al Funnel de Ventas: es el que
+   * el closer está trabajando y el que los topes tienen que proteger. Entre
+   * iguales, el más reciente.
+   */
   async findByPhone(phone) {
-    return db('leads').where({ phone }).first();
+    const exact = await db('leads').where({ phone }).first();
+    if (exact) return exact;
+
+    const key = phoneMatchKey(phone);
+    if (!key) return null;
+
+    const matches = await db('leads')
+      .whereRaw(`${PHONE_MATCH_KEY_SQL} = ?`, [key])
+      .orderByRaw('CASE WHEN leads.sales_funnel_at IS NULL THEN 1 ELSE 0 END')
+      .orderBy('leads.created_at', 'desc')
+      .first();
+
+    return matches || null;
   }
 
   /**
@@ -145,12 +202,82 @@ export class LeadService {
       .first();
   }
 
-  async updateLeadStatus(id, status) {
-    await db('leads').where({ id }).update({ status });
+  /**
+   * Punto ÚNICO por el que cambia la etapa de un lead, y donde viven las dos
+   * reglas que impedían que esto funcionara:
+   *
+   *   1. **Sellar la graduación.** Al pasar a una etapa del Funnel de Ventas se
+   *      escribe `sales_funnel_at`. A partir de ahí el lead es del closer
+   *      aunque después se borre o se renombre la columna en la que está: la
+   *      pregunta deja de depender del texto del status (ver
+   *      `salesFunnelStage.js`).
+   *   2. **Nadie lo devuelve solo.** A un lead ya graduado, el bot y los
+   *      automatismos del backend NO pueden ponerle una etapa que esté fuera
+   *      del funnel comercial. El intento queda registrado en la bitácora como
+   *      `blocked` en vez de desaparecer sin rastro. Solo una persona puede
+   *      devolverlo al setter, y recién ahí se borra el sello.
+   *
+   * `actor` es `req.user` (una persona), `{ type: 'bot' }` o nada (el backend).
+   */
+  async updateLeadStatus(id, status, { actor = null, reason = null } = {}) {
+    const current = await db('leads').where({ id }).first();
+    if (!current) return null;
+
+    const actorType = actor?.type === 'bot' ? 'bot' : (actor?.id ? 'user' : 'system');
+    const salesStatuses = await loadSalesFunnelStatuses();
+
+    if (current.status === status) {
+      // No es un movimiento, pero sí la ocasión de poner el sello que falte:
+      // los leads que nacieron ya con una etapa comercial nunca pasan por el
+      // camino de abajo.
+      if (!current.sales_funnel_at && isSalesFunnelStatus(status, salesStatuses)) {
+        await db('leads').where({ id }).update({ sales_funnel_at: db.fn.now() });
+      }
+      return this.getLeadById(id);
+    }
+
+    const graduated = leadHasGraduated(current, salesStatuses);
+    const staysCommercial = isSalesFunnelStatus(status, salesStatuses);
+
+    if (graduated && !staysCommercial && actorType !== 'user') {
+      await this.stageChanges.record(current.id, {
+        fromStatus: current.status,
+        toStatus: status,
+        actor,
+        blocked: true,
+        reason: reason || 'El lead ya está en el Funnel de Ventas: solo una persona puede devolverlo al Setter Funnel.'
+      });
+      return this.getLeadById(id);
+    }
+
+    const patch = { status };
+    if (staysCommercial && !current.sales_funnel_at) {
+      patch.sales_funnel_at = db.fn.now();
+    } else if (current.sales_funnel_at && actorType === 'user' && SETTER_ONLY_STATUSES.includes(status)) {
+      // Una persona lo devolvió a propósito a una etapa del setter. Las etapas
+      // de bandeja ("nuevo") no cuentan: están en la primera columna de los dos
+      // tableros, así que arrastrar un lead ahí dentro del funnel del closer no
+      // puede significar que deje de ser suyo.
+      patch.sales_funnel_at = null;
+    }
+
+    await db('leads').where({ id }).update(patch);
+    await this.stageChanges.record(current.id, {
+      fromStatus: current.status,
+      toStatus: status,
+      actor,
+      reason
+    });
     return this.getLeadById(id);
   }
 
-  async updateLead(id, data) {
+  /**
+   * Actualiza los datos del lead. La etapa NO se escribe acá aunque venga en
+   * `data`: se delega en `updateLeadStatus()`, que es donde viven el sello de
+   * graduación y el tope que impide devolver al setter un lead del closer. Si
+   * se escribiera de paso, cualquier guardado de la ficha podría saltárselos.
+   */
+  async updateLead(id, data, { actor = null, reason = null } = {}) {
     const updatePayload = {};
 
     if (data.fullName !== undefined || data.full_name !== undefined) {
@@ -183,7 +310,6 @@ export class LeadService {
       updatePayload.assigned_to = data.assignedTo || data.assigned_to;
     }
     if (data.source !== undefined) updatePayload.source = data.source;
-    if (data.status !== undefined) updatePayload.status = data.status;
     if (data.overallViabilityScore !== undefined) updatePayload.overall_viability_score = data.overallViabilityScore;
     if (data.viabilityLevel !== undefined) updatePayload.viability_level = data.viabilityLevel;
     if (data.additionalNotes !== undefined || data.additional_notes !== undefined) {
@@ -192,6 +318,10 @@ export class LeadService {
 
     if (Object.keys(updatePayload).length > 0) {
       await db('leads').where({ id }).update(updatePayload);
+    }
+    if (data.status !== undefined && data.status !== null && data.status !== '') {
+      const moved = await this.updateLeadStatus(id, data.status, { actor, reason });
+      if (moved) return moved;
     }
     return this.getLeadById(id);
   }

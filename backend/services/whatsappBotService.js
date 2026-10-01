@@ -10,7 +10,8 @@ import { criticalSignal, isTrustDoubt, mayBeRefusal, saysNotInterested } from '.
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
-import { isSalesFunnelStatus, loadSalesFunnelStatuses } from './salesFunnelStage.js';
+import { leadHasGraduated, loadSalesFunnelStatuses } from './salesFunnelStage.js';
+import { PHONE_MATCH_KEY_SQL, phoneMatchKey } from './leadService.js';
 
 // Motivo que ve el equipo en la notificación de transferencia, por señal
 // crítica detectada (ver `leadSignals.js`). Se redactan desde el punto de
@@ -1428,7 +1429,7 @@ export class WhatsappBotService {
       const lead = await this.leadService.findByPhone(waId);
       if (!lead) return;
 
-      if (isSalesFunnelStatus(lead.status, await loadSalesFunnelStatuses())) {
+      if (leadHasGraduated(lead, await loadSalesFunnelStatuses())) {
         this.logActivity({
           type: 'funnel_move_blocked',
           waId,
@@ -1437,7 +1438,13 @@ export class WhatsappBotService {
         return;
       }
 
-      await this.leadService.updateLeadStatus(lead.id, status);
+      // El actor viaja hasta `leadService.updateLeadStatus()`, que repite el
+      // tope del lado de la base de datos y deja el intento en la bitácora:
+      // este `if` evita el viaje, pero no es el que garantiza nada.
+      await this.leadService.updateLeadStatus(lead.id, status, {
+        actor: { type: 'bot', name: 'Bot de WhatsApp' },
+        reason: 'Movimiento automático del bot de WhatsApp.'
+      });
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] Error al mover el lead de ${waId} a la etapa "${status}" del Setter Funnel:`, error);
     }
@@ -1458,7 +1465,7 @@ export class WhatsappBotService {
       const lead = await this.leadService.findByPhone(waId);
       if (!lead) return null;
       const statuses = salesStatuses || await loadSalesFunnelStatuses();
-      return isSalesFunnelStatus(lead.status, statuses) ? lead : null;
+      return leadHasGraduated(lead, statuses) ? lead : null;
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] Error al comprobar si el lead de ${waId} ya está en el Funnel de Ventas:`, error.message);
       return null;
@@ -1469,15 +1476,37 @@ export class WhatsappBotService {
    * De una lista de contactos, cuáles tienen su lead ya en el Funnel de
    * Ventas. Una sola consulta por los teléfonos (más la de `funnel_columns`)
    * en vez de dos por cada fila del barrido.
+   *
+   * El cruce es por los últimos dígitos y no por la cadena exacta (ver
+   * `phoneMatchKey`): el barrido recorre `wa_id`s crudos y el lead del closer
+   * puede estar guardado como "+51 987 654 321". Con la comparación exacta, el
+   * barrido no lo reconocía y lo congelaba igual.
    */
   async _salesFunnelWaIds(waIds) {
     if (waIds.length === 0) return new Set();
     try {
       const salesStatuses = await loadSalesFunnelStatuses();
-      const leads = await db('leads').whereIn('phone', waIds).select('phone', 'status');
-      return new Set(
-        leads.filter((lead) => isSalesFunnelStatus(lead.status, salesStatuses)).map((lead) => lead.phone)
-      );
+      const byKey = new Map();
+      for (const waId of waIds) {
+        const key = phoneMatchKey(waId);
+        if (key) byKey.set(key, waId);
+      }
+
+      const leads = await db('leads')
+        .where(function () {
+          this.whereIn('phone', waIds);
+          if (byKey.size > 0) this.orWhereRaw(`${PHONE_MATCH_KEY_SQL} IN (${[...byKey.keys()].map(() => '?').join(',')})`, [...byKey.keys()]);
+        })
+        .select('phone', 'status', 'sales_funnel_at');
+
+      const graduated = new Set();
+      for (const lead of leads) {
+        if (!leadHasGraduated(lead, salesStatuses)) continue;
+        if (waIds.includes(lead.phone)) graduated.add(lead.phone);
+        const waId = byKey.get(phoneMatchKey(lead.phone));
+        if (waId) graduated.add(waId);
+      }
+      return graduated;
     } catch (error) {
       // Ante la duda el barrido sigue como antes: dejar de hacer seguimiento a
       // todos los leads del setter por un error de consulta sería peor.

@@ -96,10 +96,17 @@ export class ContractService {
    * Clientes del Funnel de Ventas para asociar un contrato: se excluyen las
    * etapas que solo existen en el Setter Funnel (el bot aún los califica) y
    * los descartados.
+   *
+   * El sello `sales_funnel_at` entra igual aunque el status diga otra cosa: un
+   * lead que ya graduó y quedó con una etapa del setter sigue siendo un cliente
+   * del closer, y no poder emitirle el contrato sería el mismo problema visto
+   * desde otra pantalla.
    */
   async listClientLeads() {
     return db('leads')
-      .whereNotIn('status', SETTER_ONLY_STATUSES)
+      .where(function () {
+        this.whereNotIn('status', SETTER_ONLY_STATUSES).orWhereNotNull('sales_funnel_at');
+      })
       .select('id', 'full_name', 'phone', 'dni', 'status')
       .orderBy('created_at', 'desc');
   }

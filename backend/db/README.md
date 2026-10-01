@@ -63,6 +63,8 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261023000000_create_finance_salary_receipts.js` | Crea `finance_salary_receipts`: los comprobantes (imágenes o PDF) que respaldan cada pago de la planilla, 1:N contra `finance_salaries` y en cascada con él. Son los mismos archivos y la misma carpeta (`uploads/finance-receipts/`) que usan los comprobantes de ingresos y del libro diario, pero siguen sin tocar la contabilidad: solo son el respaldo del pago. |
 | `20261024000000_create_deliverables_permission.js` | Agrega el permiso `deliverables.view` (módulo **Entregables**) y lo asigna al rol Administrador. **No crea tablas**: el módulo es una lectura que cruza `finance_income` (¿el pago está verificado?), `project_updates.income_id` (¿el trabajo está subido y contra qué cobro?) y `contract_deliverables` (lo comprometido por escrito). Una tabla propia sería una cuarta verdad sobre el mismo hecho. |
 | `20261025000000_create_deliverables_table.js` | Crea `deliverables`: el registro propio de las entregas de cada proyecto, desde que dejaron de liberarse por el portal del cliente. Una fila es un entregable **planificado** (título, `due_date`, `income_id` opcional = la cuota que lo condiciona) que luego se marca entregado (`delivered_at`, `delivered_by`, `delivery_channel` y copia opcional del archivo). `income_id` va con ON DELETE SET NULL, no CASCADE: borrar una cuota del cronograma no puede borrar el registro de un trabajo ya entregado. |
+| `20261026000000_alter_leads_add_sales_funnel_at.js` | Agrega `leads.sales_funnel_at`: el sello de que el lead ya graduó al Funnel de Ventas y es del closer. Hasta ahora eso se **deducía** del texto de `leads.status`, y la deducción dejaba de funcionar en cuanto se borraba o recreaba una columna — por ahí volvían los leads cotizados al Setter Funnel. Rellena el sello para los que hoy son comerciales por su status y, además, para los que tienen cotización, proyecto o ingreso aunque su status diga otra cosa (son los que el bot ya había devuelto); excluye `descartado`, que es una decisión explícita de una persona. |
+| `20261026010000_create_lead_stage_changes_table.js` | Crea `lead_stage_changes`: la bitácora de movimientos de etapa de cada lead (de dónde, a dónde, quién — `user`/`bot`/`system` —, por qué y cuándo), **incluidos los intentos rechazados**, marcados con `blocked`. Sin ella, cada reporte de "este lead se regresó solo" había que reconstruirlo a mano, y un tope que funciona se veía igual que uno que nunca se activó. |
 
 ### Cronograma de pagos y entregables bloqueados
 
@@ -154,6 +156,56 @@ su propio permiso.
 El portal del cliente **no cambió**: su línea de tiempo (`project_updates`) y el bloqueo de adjuntos
 por pago que describe la sección anterior siguen funcionando igual. Son dos registros distintos — lo
 que el cliente ve publicado, y lo que operaciones entregó — y a propósito no comparten tabla.
+
+### Quién es "del closer": `leads.sales_funnel_at`
+
+Los dos tableros de leads (Setter Funnel y Funnel de Ventas) leen la **misma** columna
+`leads.status`, así que durante mucho tiempo la pregunta "¿este lead ya graduó al funnel comercial?"
+se respondía **deduciéndola** de ese texto: si el status era la clave de una columna de
+`funnel_columns`, o uno de los desenlaces fijos (`cita_agendada`, `en_negociacion`, `ganado`,
+`perdido`), el lead era del closer.
+
+Esa deducción se cae sola, y es el origen de los reportes repetidos de *"dejé el lead cotizado en el
+funnel del closer y se regresó al del setter"*:
+
+- si alguien borra, recrea o reemplaza una columna, los leads que estaban ahí se quedan con una clave
+  que ya no existe en `funnel_columns`. Desde ese momento nada los reconoce: el Setter Funnel vuelve
+  a mostrarlos y el bot vuelve a moverlos (congelarlos por inactividad a las 2 h);
+- un lead que el closer dejó en la primera columna tiene un status de bandeja (`nuevo`), que a
+  propósito no cuenta como comercial — y quedaba igual de desprotegido;
+- si la petición de columnas falla en el navegador, el tablero del setter se quedaba sin la lista y
+  mostraba todo.
+
+`leads.sales_funnel_at` no se deduce: se **sella** cuando el lead entra a una etapa del funnel
+comercial y solo lo borra una persona que lo devuelva a propósito a una etapa del setter. Sobrevive a
+cualquier cambio de columnas. La regla vive en `backend/services/salesFunnelStage.js` y su espejo
+`src/salesFunnelStage.js` — `leadHasGraduated()` es la pregunta que hay que hacerle a un lead;
+`isSalesFunnelStatus()` solo DETECTA la graduación al moverlo.
+
+El único lugar donde se escribe `leads.status` es `leadService.updateLeadStatus()`, y ahí viven las
+dos reglas: sellar al entrar, y **no dejar salir** salvo que el actor sea una persona. El bot y los
+automatismos del backend reciben el lead sin cambios y el intento queda registrado.
+
+### `lead_stage_changes`: por qué se movió este lead
+
+Cada cambio de etapa deja una fila: de qué etapa, a cuál, quién (`actor_type`: `user` / `bot` /
+`system`, con copia del nombre como en `lead_notes`), por qué y cuándo — **incluidos los intentos
+rechazados**, marcados con `blocked`. Se lee desde la ficha del lead en el Funnel de Ventas
+("Ver historial de etapas") y por `GET /api/leads/:id/stage-history`.
+
+Existe porque cada vez que el equipo reportaba un lead "regresado" había que reconstruir a mano qué
+pudo haberlo movido: `leads.status` solo guarda el valor actual. Un tope que funciona y un tope que
+nunca se activó también se veían idénticos hasta que `blocked` los separó.
+
+### El mismo contacto con dos teléfonos distintos
+
+El `wa_id` que guarda el bot (`51987654321`) y lo que escribe una persona en el formulario de Meta o
+en el alta manual (`+51 987 654 321`) son el mismo número con distinta cadena. Comparar `phone` tal
+cual hacía que el bot **no encontrara** al lead que ya existía: le creaba un gemelo en
+`conversacion_abierta` y lo trabajaba de cero — otra forma de ver "el lead volvió al Setter Funnel"
+aunque el original siguiera cotizado. `leadService.findByPhone()` compara primero la cadena exacta y
+después los últimos 9 dígitos (`phoneMatchKey`); si hay varias filas del mismo número gana la que ya
+graduó, que es la que el closer trabaja.
 
 ## 3. Seeds (datos iniciales de roles, permisos, columnas del funnel y leads de prueba)
 

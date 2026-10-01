@@ -20,6 +20,7 @@ import { buildQuotationDocument } from './services/quotationDocument.js';
 import { buildPaymentReceiptDocument } from './services/paymentReceiptDocument.js';
 import { buildPaymentReceiptPdf, receiptPdfFilename } from './services/paymentReceiptPdf.js';
 import { LeadNoteService } from './services/leadNoteService.js';
+import { LeadStageChangeService } from './services/leadStageChangeService.js';
 import { DocumentService } from './services/documentService.js';
 import { CampaignService } from './services/campaignService.js';
 import { MetaAdsService } from './services/metaAdsService.js';
@@ -121,6 +122,7 @@ const taskTemplateService = new TaskTemplateService();
 const quoteService = new QuoteService();
 const contractTemplateService = new ContractTemplateService();
 const leadNoteService = new LeadNoteService();
+const leadStageChangeService = new LeadStageChangeService();
 const campaignService = new CampaignService();
 const metaAdsService = new MetaAdsService();
 const tiktokAdsService = new TikTokAdsService();
@@ -1665,6 +1667,24 @@ app.post('/api/leads/:id/notes', requireAuth, requirePermission('leads.view'), a
   }
 });
 
+/**
+ * Historial de etapas de un lead: quién lo movió, desde dónde y hacia dónde,
+ * incluidos los intentos que el backend rechazó (`blocked`).
+ *
+ * Existe por los reportes repetidos de "este lead se regresó solo al Funnel de
+ * Setter": sin esta lista, la única forma de investigarlos era deducir qué
+ * pudo haberlo movido. Ahora se lee desde la ficha del lead.
+ */
+app.get('/api/leads/:id/stage-history', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    const history = await leadStageChangeService.listForLead(req.params.id);
+    res.json({ history });
+  } catch (error) {
+    console.error('❌ Error al obtener el historial de etapas del lead:', error);
+    res.status(500).json({ error: 'Error al obtener el historial de etapas.', details: error.message });
+  }
+});
+
 app.delete('/api/lead-notes/:noteId', requireAuth, requirePermission('leads.view'), async (req, res) => {
   try {
     await leadNoteService.remove(req.params.noteId, {
@@ -1692,7 +1712,10 @@ app.patch('/api/leads/:id/status', requireAuth, requirePermission('leads.view'),
       return res.status(400).json({ error: 'El estado (status) es requerido.' });
     }
 
-    const lead = await leadService.updateLeadStatus(req.params.id, status);
+    const lead = await leadService.updateLeadStatus(req.params.id, status, {
+      actor: req.user,
+      reason: 'Cambio de etapa desde el panel.'
+    });
     if (!lead) {
       return res.status(404).json({ error: 'Lead no encontrado.' });
     }
@@ -1763,7 +1786,10 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), upl
       await financeLedgerService.setLeadTotalAmount(lead.id, totalAmount);
     }
 
-    const updatedLead = await leadService.updateLeadStatus(lead.id, FUNNEL_FINAL_STATUS);
+    const updatedLead = await leadService.updateLeadStatus(lead.id, FUNNEL_FINAL_STATUS, {
+      actor: req.user,
+      reason: 'Cierre de venta registrado desde el funnel.'
+    });
     const created = await projectService.createProjectFromLead(updatedLead);
 
     const today = new Date().toISOString().slice(0, 10);
@@ -1820,7 +1846,7 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), upl
  */
 app.put('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
   try {
-    const updated = await leadService.updateLead(req.params.id, req.body);
+    const updated = await leadService.updateLead(req.params.id, req.body, { actor: req.user });
     if (!updated) {
       return res.status(404).json({ error: 'Lead no encontrado.' });
     }
@@ -2921,7 +2947,10 @@ app.post('/api/leads/:id/quote', requireAuth, requirePermission('leads.view'), a
     const quotedColumn = await funnelColumnService.getQuotedColumn();
     if (quotedColumn && lead.status !== quotedColumn.key) {
       previousStatus = lead.status;
-      await leadService.updateLeadStatus(lead.id, quotedColumn.key);
+      await leadService.updateLeadStatus(lead.id, quotedColumn.key, {
+        actor: req.user,
+        reason: `Cotización #${quote.id} generada.`
+      });
       movedTo = { key: quotedColumn.key, label: quotedColumn.label };
     }
 

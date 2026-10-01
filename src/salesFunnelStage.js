@@ -51,6 +51,23 @@ export function buildSalesFunnelStatuses(columns = []) {
   return statuses;
 }
 
+/**
+ * ¿Este LEAD ya es del closer? Es la pregunta que hay que hacerle a un lead, y
+ * no `isSalesFunnelStatus()`, que solo mira el texto del estado.
+ *
+ * Manda `sales_funnel_at`, el sello que el backend escribe cuando el lead entra
+ * al funnel comercial (ver `backend/services/salesFunnelStage.js`). Al no
+ * depender de las columnas, responde bien aunque el equipo haya borrado o
+ * recreado la columna en la que está el lead, y también cuando la petición de
+ * columnas falló y `salesStatuses` llegó vacío — los dos casos en los que el
+ * Setter Funnel volvía a mostrar leads cotizados.
+ */
+export function leadHasGraduated(lead, salesStatuses) {
+  if (!lead) return false;
+  if (lead.sales_funnel_at) return true;
+  return isSalesFunnelStatus(lead.status, salesStatuses);
+}
+
 /** ¿Este estado es de un lead del Funnel de Ventas? */
 export function isSalesFunnelStatus(status, salesStatuses) {
   if (!status) return false;
