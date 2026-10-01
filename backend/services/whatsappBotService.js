@@ -10,6 +10,7 @@ import { criticalSignal, isTrustDoubt, mayBeRefusal, saysNotInterested } from '.
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
+import { isSalesFunnelStatus, loadSalesFunnelStatuses } from './salesFunnelStage.js';
 
 // Motivo que ve el equipo en la notificación de transferencia, por señal
 // crítica detectada (ver `leadSignals.js`). Se redactan desde el punto de
@@ -1413,15 +1414,132 @@ export class WhatsappBotService {
    * por teléfono antes de pasarle el mensaje al bot), así que solo se
    * actualiza su status; si por algún motivo no existe, se ignora en vez de
    * interrumpir la conversación.
+   *
+   * Un lead que YA graduó al Funnel de Ventas no se mueve nunca desde acá: el
+   * bot solo manda leads HACIA el funnel comercial (`cita_agendada`), jamás de
+   * vuelta. Sin este tope, el barrido de inactividad le pisaba el status a
+   * leads que el closer estaba trabajando —cotizados, en seguimiento— y los
+   * devolvía al Setter Funnel en la columna "Congelados", como si nadie los
+   * hubiera atendido. Es un tope y no un arreglo de un camino puntual a
+   * propósito: cualquier camino futuro del bot queda cubierto.
    */
   async moveFunnelStage(waId, status) {
     try {
       const lead = await this.leadService.findByPhone(waId);
       if (!lead) return;
+
+      if (isSalesFunnelStatus(lead.status, await loadSalesFunnelStatuses())) {
+        this.logActivity({
+          type: 'funnel_move_blocked',
+          waId,
+          reason: `El lead #${lead.id} ya está en el Funnel de Ventas (etapa "${lead.status}"): el bot no lo mueve a "${status}".`
+        });
+        return;
+      }
+
       await this.leadService.updateLeadStatus(lead.id, status);
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] Error al mover el lead de ${waId} a la etapa "${status}" del Setter Funnel:`, error);
     }
+  }
+
+  /**
+   * El lead de este contacto, solo si ya graduó al Funnel de Ventas (lo
+   * trabaja una persona). Devuelve `null` si sigue siendo del setter, si no
+   * hay lead, o si la consulta falla: ante la duda el bot sigue trabajando,
+   * porque dejar a un contacto sin respuesta por un error de base de datos es
+   * peor que el problema que este guard evita.
+   *
+   * `salesStatuses` se pasa cuando ya se cargó para todo un barrido, para no
+   * repetir la consulta a `funnel_columns` por cada fila.
+   */
+  async salesFunnelLead(waId, salesStatuses = null) {
+    try {
+      const lead = await this.leadService.findByPhone(waId);
+      if (!lead) return null;
+      const statuses = salesStatuses || await loadSalesFunnelStatuses();
+      return isSalesFunnelStatus(lead.status, statuses) ? lead : null;
+    } catch (error) {
+      console.error(`❌ [WhatsApp Bot] Error al comprobar si el lead de ${waId} ya está en el Funnel de Ventas:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * De una lista de contactos, cuáles tienen su lead ya en el Funnel de
+   * Ventas. Una sola consulta por los teléfonos (más la de `funnel_columns`)
+   * en vez de dos por cada fila del barrido.
+   */
+  async _salesFunnelWaIds(waIds) {
+    if (waIds.length === 0) return new Set();
+    try {
+      const salesStatuses = await loadSalesFunnelStatuses();
+      const leads = await db('leads').whereIn('phone', waIds).select('phone', 'status');
+      return new Set(
+        leads.filter((lead) => isSalesFunnelStatus(lead.status, salesStatuses)).map((lead) => lead.phone)
+      );
+    } catch (error) {
+      // Ante la duda el barrido sigue como antes: dejar de hacer seguimiento a
+      // todos los leads del setter por un error de consulta sería peor.
+      console.error('❌ [WhatsApp Bot] Error al listar los leads que ya están en el Funnel de Ventas:', error.message);
+      return new Set();
+    }
+  }
+
+  /**
+   * ¿Este contacto tiene una reunión agendada que todavía no pasó? Es la única
+   * excepción al silencio del bot con los leads del Funnel de Ventas: un lead
+   * recién graduado a "cita_agendada" sigue recibiendo el recordatorio de SU
+   * reunión y las respuestas sobre el link/la hora (ver
+   * handlePostBookingMessage). Ese camino no mueve el funnel ni congela nada:
+   * es el bot terminando su propio agendamiento, no trabajando al lead.
+   */
+  async hasUpcomingMeeting(waId) {
+    try {
+      const meeting = await db('scheduled_meetings')
+        .where({ wa_id: waId })
+        .where('start_time', '>=', db.fn.now())
+        .first();
+      return !!meeting;
+    } catch (error) {
+      console.error(`❌ [WhatsApp Bot] Error al buscar la reunión próxima de ${waId}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Mensaje de un lead que ya está en el Funnel de Ventas: el bot se retira en
+   * vez de retomar la conversación (volvería a calificar o a ofrecer una cita a
+   * alguien que ya tiene cotización y un closer asignado). Se pausa el bot para
+   * ese contacto, que es el estado que el panel de WhatsApp ya sabe mostrar
+   * ("bot pausado"), así el silencio se ve en vez de parecer una falla; y se
+   * avisa UNA vez al equipo, porque alguien tiene que leer ese mensaje.
+   */
+  async standDownForSalesFunnel(waId, lead, text) {
+    const pending = this.pendingMessages.get(waId);
+    if (pending?.timer) clearTimeout(pending.timer);
+    this.pendingMessages.delete(waId);
+
+    this.logActivity({
+      type: 'skipped',
+      waId,
+      text,
+      reason: `El lead #${lead.id} ya está en el Funnel de Ventas (etapa "${lead.status}"): lo trabaja una persona y el bot no vuelve a responderle automáticamente.`
+    });
+
+    const session = await this.getSession(waId);
+    if (session && !session.bot_enabled) return;
+
+    await this.setBotEnabled(waId, false);
+
+    await this.alertInternal({
+      waId,
+      type: 'sales_funnel_lead_message',
+      title: `${lead.full_name || waId} escribió por WhatsApp`,
+      body: `Este lead ya está en el Funnel de Ventas (etapa "${lead.status}"), así que el bot no le responde.\n\n`
+        + `Escribió: "${text}"\n\n`
+        + 'Hay que contestarle a mano desde el panel de WhatsApp.'
+    });
   }
 
   /**
@@ -1526,6 +1644,22 @@ export class WhatsappBotService {
     // "escribiendo..." de WhatsApp (que se envía referenciando ese id) antes
     // de cada respuesta del bot.
     if (messageId) this.lastInboundMessageId.set(waId, messageId);
+
+    // El lead ya graduó al Funnel de Ventas: lo trabaja un closer, con
+    // cotización de por medio, y el bot no tiene nada que hacer ahí — retomar
+    // la conversación significaría volver a calificarlo o a ofrecerle una cita
+    // que ya tuvo. Se comprueba ANTES del buffer para que no quede un turno
+    // encolado del mensaje anterior.
+    //
+    // Única excepción: mientras tenga una reunión próxima agendada sigue
+    // atendido por el camino post-agendamiento (responde por el link o la
+    // hora, silencia el recordatorio si avisa que no puede). Ese camino no
+    // mueve el funnel ni congela nada.
+    const salesLead = await this.salesFunnelLead(waId);
+    if (salesLead && !(await this.hasUpcomingMeeting(waId))) {
+      await this.standDownForSalesFunnel(waId, salesLead, text);
+      return;
+    }
 
     // Si ya hay un buffer en curso para este wa_id, esta burbuja se suma a
     // las anteriores y se reinicia la espera de silencio, en vez de procesar
@@ -1867,6 +2001,17 @@ export class WhatsappBotService {
 
   async runConversationTurn(waId, incomingText, inboundMark = null) {
     let session = await this.getSession(waId);
+
+    // El lead pudo graduar al Funnel de Ventas mientras este mensaje esperaba
+    // en el buffer o en la cola serializada (un closer lo arrastró de columna
+    // justo ahora). Mismo criterio que en handleIncomingMessage y en el mismo
+    // orden: antes de cualquier otra cosa, y con la excepción de la reunión
+    // próxima, que mantiene vivo el camino post-agendamiento.
+    const salesLead = await this.salesFunnelLead(waId);
+    if (salesLead && !(await this.hasUpcomingMeeting(waId))) {
+      await this.standDownForSalesFunnel(waId, salesLead, incomingText);
+      return;
+    }
 
     // Un plantón en la reunión, una queja o un "quiero hablar con alguien" se
     // atienden antes que nada y sin importar en qué paso esté la conversación:
@@ -4671,6 +4816,15 @@ ${numberedList(fullSlotLabels(offer))}
       )
       : new Set();
 
+    // Contactos cuyo lead YA está en el Funnel de Ventas. Este barrido no los
+    // toca de ninguna forma: ni "¿Sigues por ahí?" ni congelarlos. Era la
+    // causa del bug que reportó ventas — un lead en seguimiento, ya cotizado,
+    // recibía el recordatorio de inactividad y una hora después aparecía en la
+    // columna "Congelados" del Setter Funnel, fuera del tablero del closer.
+    // El silencio de un lead comercial no es inactividad del bot que haya que
+    // perseguir: es una negociación en curso que alguien está llevando.
+    const inSalesFunnel = await this._salesFunnelWaIds(candidateWaIds);
+
     // Quién habló ÚLTIMO en cada conversación candidata. Sin este dato el
     // barrido trataba todo silencio como inactividad del lead y le mandaba
     // "¿Sigues por ahí?" incluso cuando el que había dejado de responder era
@@ -4704,6 +4858,7 @@ ${numberedList(fullSlotLabels(offer))}
 
     for (const session of awaitingReply) {
       if (withUpcomingMeeting.has(session.wa_id)) continue;
+      if (inSalesFunnel.has(session.wa_id)) continue;
 
       // El último mensaje es del contacto: esto NO es inactividad del lead,
       // es un turno que el bot perdió. No le corresponde un recordatorio
@@ -4763,6 +4918,7 @@ ${numberedList(fullSlotLabels(offer))}
 
     for (const session of awaitingFreeze) {
       if (withUpcomingMeeting.has(session.wa_id)) continue;
+      if (inSalesFunnel.has(session.wa_id)) continue;
 
       // Red de seguridad: congelar por inactividad a alguien que escribió y
       // se quedó esperando es la misma injusticia que mandarle "¿Sigues por
@@ -4844,8 +5000,15 @@ ${numberedList(fullSlotLabels(offer))}
       .distinct('wa_id');
     const answeredWaIds = new Set(answeredRows.map((r) => r.wa_id));
 
+    // Un lead que ya está en el Funnel de Ventas no se "recupera": que no
+    // tenga sesión del bot es lo normal cuando lo trabaja una persona desde el
+    // principio (o cuando alguien reinició la conversación), y revivir el bot
+    // encima sería arrancarle una calificación a un lead ya cotizado.
+    const inSalesFunnel = await this._salesFunnelWaIds(lastRows.map((r) => r.wa_id));
+
     for (const row of lastRows) {
       if (answeredWaIds.has(row.wa_id)) continue;
+      if (inSalesFunnel.has(row.wa_id)) continue;
       if (row.direction !== 'inbound' || !isRealWaId(row.wa_id)) continue;
       if (now - new Date(row.received_at).getTime() < MISSED_REPLY_RECOVERY_MS) continue;
 
@@ -4939,6 +5102,19 @@ ${numberedList(fullSlotLabels(offer))}
    */
   async freezeStaleSession(session) {
     try {
+      // Red de seguridad: los dos bucles del barrido ya descartan los leads
+      // comerciales, pero congelar es justamente la acción que los sacaba del
+      // tablero del closer, así que se vuelve a comprobar en el único lugar
+      // por donde pasan todos los caminos.
+      if (await this.salesFunnelLead(session.wa_id)) {
+        this.logActivity({
+          type: 'freeze_skipped_sales_funnel',
+          waId: session.wa_id,
+          reason: 'El lead ya está en el Funnel de Ventas: el bot no lo congela ni lo devuelve al Setter Funnel.'
+        });
+        return;
+      }
+
       const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
       answers.__frozenFrom = session.status;
       await db('whatsapp_bot_sessions').where({ id: session.id }).update({ status: FROZEN_STATUS, answers: JSON.stringify(answers) });

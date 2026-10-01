@@ -754,7 +754,7 @@
                    registró. Deja el lead en el mismo estado que el pase
                    automático, así que el closer lo ve igual. -->
               <button
-                v-if="!SALES_FUNNEL_STATUSES.has(selectedLead.status)"
+                v-if="!isSalesFunnelStatus(selectedLead.status, salesFunnelStatuses)"
                 type="button"
                 class="handoff-closer-btn"
                 :disabled="handingOff"
@@ -765,7 +765,7 @@
               </button>
               <p v-else class="handoff-done-hint">
                 ✅ Este lead ya está en el Funnel de Ventas
-                (<strong>{{ SALES_FUNNEL_STATUS_LABELS[selectedLead.status] || selectedLead.status }}</strong>).
+                (<strong>{{ salesStageLabel(selectedLead.status) }}</strong>).
               </p>
             </div>
           </div>
@@ -873,6 +873,7 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } 
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
+import { buildSalesFunnelStatuses, isSalesFunnelStatus } from '../salesFunnelStage.js';
 
 /** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
 const MEDIA_BODY_PLACEHOLDER_RE = /^\[(Imagen|Video|Audio|Documento|Sticker)\]$/;
@@ -1175,19 +1176,37 @@ const qualificationRate = computed(() => {
 // Agrupación y Mapeo de Leads en Columnas del Setter Funnel
 /**
  * Estados que ya pertenecen al Funnel de Ventas: el lead "graduó" del Setter
- * Funnel y lo trabaja el closer. `transferido_closer` NO está aquí a propósito
- * — es un lead que Avan pasó a una persona SIN llegar a agendar, así que sigue
- * siendo del setter (ver SETTER_ONLY_STATUSES en LeadsView.vue).
+ * Funnel y lo trabaja el closer. Se arma con las columnas REALES del tablero de
+ * Ventas (`GET /api/funnel-columns`) y no con una lista fija: las columnas las
+ * crea el equipo y sus claves se generan solas (`col_mtc2nwec_fij`), así que un
+ * lead en "Seguimiento" o "Cotizado" no coincidía con nada y este tablero lo
+ * devolvía a su primera columna, como si fuera un contacto sin calificar. Hasta
+ * que la petición responda queda el respaldo de estados fijos.
+ * `transferido_closer` NO entra nunca — es un lead que Avan pasó a una persona
+ * SIN llegar a agendar, así que sigue siendo del setter (ver
+ * `SETTER_ONLY_STATUSES` en `src/salesFunnelStage.js`).
  */
-const SALES_FUNNEL_STATUSES = new Set(['cita_agendada', 'en_negociacion', 'ganado', 'perdido']);
+const salesColumns = ref([]);
+const salesFunnelStatuses = computed(() => buildSalesFunnelStatuses(salesColumns.value));
 
-/** Etiqueta legible de esos estados, para no mostrar la clave cruda en la ficha. */
+/**
+ * Etiqueta legible de una etapa del Funnel de Ventas, para no mostrar la clave
+ * cruda (`col_mtc2nwec_fij`) en la ficha. Primero la columna real del tablero de
+ * Ventas —es la que el equipo ve y renombra—, y si no está cargada, el nombre
+ * fijo de los desenlaces conocidos.
+ */
 const SALES_FUNNEL_STATUS_LABELS = {
   cita_agendada: '📅 Cita agendada',
   en_negociacion: '🤝 En negociación',
   ganado: '🏆 Ganado',
   perdido: '❌ Perdido'
 };
+
+function salesStageLabel(status) {
+  const column = salesColumns.value.find((c) => c.key === status);
+  if (column) return `${column.icon || ''} ${column.label}`.trim();
+  return SALES_FUNNEL_STATUS_LABELS[status] || status;
+}
 
 /**
  * Estado con el que un lead entra al funnel del closer. Es el mismo que pone
@@ -1244,6 +1263,15 @@ const filteredLeadsByColumn = computed(() => {
     // Determinación de la Columna
     // Si el estado es 'conversacion_abierta' o 'nuevo' o similar etapa inicial, se ubica en la primera columna
     const status = lead.status || 'nuevo';
+
+    // Ya graduó al Funnel de Ventas: este tablero no lo muestra, ni siquiera
+    // como "Conversación Abierta". Se comprueba ANTES de cualquier otro encaje
+    // porque los encajes de abajo son los que lo traían de vuelta: un lead en
+    // "Seguimiento" (columna creada por el equipo) no coincidía con nada y caía
+    // en la primera columna, y uno "En Negociación" aparecía como transferido al
+    // closer. Para el setter eso se ve como un lead que volvió solo al funnel.
+    if (isSalesFunnelStatus(status, salesFunnelStatuses.value)) continue;
+
     if (grouped[status]) {
       grouped[status].push(lead);
     } else if (status === 'nuevo' || status === 'inbox' || status === 'abierto') {
@@ -1252,17 +1280,13 @@ const filteredLeadsByColumn = computed(() => {
         grouped[firstColKey].push(lead);
       }
     } else if (status === 'contactado' && grouped['calificando']) {
+      // Único encaje de un estado ajeno que sobrevive: solo se aplica si el
+      // tablero de Ventas NO tiene una columna "contactado" (si la tiene, el
+      // lead ya salió por el `continue` de arriba). Los encajes de
+      // `en_negociacion` → "Transferido al closer" y `perdido` → "Descartado"
+      // se quitaron: ambos son desenlaces del Funnel de Ventas, y mostrarlos acá
+      // era exactamente lo que hacía ver leads comerciales como leads del setter.
       grouped['calificando'].push(lead);
-    } else if (status === 'en_negociacion' && grouped['transferido_closer']) {
-      grouped['transferido_closer'].push(lead);
-    } else if (status === 'perdido' && grouped['descartado']) {
-      grouped['descartado'].push(lead);
-    } else if (SALES_FUNNEL_STATUSES.has(status)) {
-      // Ya graduó al Funnel de Ventas y este tablero no tiene una columna para
-      // ese estado: se oculta en vez de caer en la primera columna. Si no,
-      // un lead con la cita ya agendada reaparecería como "Conversación
-      // Abierta", como si nadie lo hubiera trabajado.
-      continue;
     } else {
       // Si no coincide, ubicar en la primera columna
       if (grouped[firstColKey]) {
@@ -1648,6 +1672,23 @@ function loadSetterColumns() {
   columns.value = JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
 }
 
+/**
+ * Columnas del tablero de Ventas. Este tablero no las dibuja: las necesita solo
+ * para saber qué estados significan "ya es un lead comercial" y dejarlos fuera.
+ * Si la petición falla no se interrumpe la carga de leads — queda el respaldo de
+ * estados fijos de `buildSalesFunnelStatuses()`.
+ */
+async function fetchSalesColumns() {
+  try {
+    const res = await apiFetch('/api/funnel-columns');
+    if (!res.ok) throw new Error('Error al obtener las columnas del Funnel de Ventas');
+    const data = await res.json();
+    salesColumns.value = Array.isArray(data.columns) ? data.columns : [];
+  } catch (err) {
+    console.warn('No se pudieron cargar las columnas del Funnel de Ventas:', err);
+  }
+}
+
 // Fetch Leads & Data
 async function fetchAll() {
   isLoading.value = true;
@@ -1777,6 +1818,7 @@ onBeforeUnmount(() => {
 
 onMounted(() => {
   loadSetterColumns();
+  fetchSalesColumns();
   fetchAll();
 });
 </script>

@@ -152,6 +152,19 @@ antes de tocar el arranque de producción.
   (el desplegable reagrega ese valor como "Registrado anteriormente"); renombrar con
   `propagate: true` sí reescribe `leads.field_of_study` y `projects.field_of_study`, nunca
   cotizaciones ni contratos ya emitidos.
+- Los dos tableros de leads leen la **misma** columna `leads.status`, así que lo único que separa un
+  lead del setter de uno comercial es el valor de ese campo. La regla de "¿ya graduó al Funnel de
+  Ventas?" vive en `backend/services/salesFunnelStage.js` y su espejo `src/salesFunnelStage.js`:
+  status que no esté en `SETTER_ONLY_STATUSES` ni sea de bandeja (`nuevo`/`inbox`/`abierto`), y que
+  sea una clave de `funnel_columns` o uno de los desenlaces fijos (`cita_agendada`,
+  `en_negociacion`, `ganado`, `perdido`). Hay que consultarla por ahí y no con listas propias: las
+  columnas de Ventas las crea el equipo y sus claves se generan solas (`col_mtc2nwec_fij`).
+  **Sobre un lead que ya graduó, el bot de WhatsApp no actúa**: no le responde (pausa el bot para
+  ese contacto y avisa al equipo), no le manda recordatorios de inactividad, no lo congela y
+  `moveFunnelStage()` se niega a cambiarle el status — el bot solo manda leads HACIA Ventas
+  (`cita_agendada`), nunca de vuelta. La única excepción es un lead con una reunión próxima
+  agendada, que sigue recibiendo el recordatorio de esa reunión y las respuestas sobre el
+  link/la hora (`handlePostBookingMessage`), caminos que no mueven el funnel.
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`). Los
   permisos son "herramientas" habilitables (`leads.view`, `projects.view`, `roles.manage`,
   `finance.view`, ...); se resuelven una vez en el login y se embeben en el JWT.

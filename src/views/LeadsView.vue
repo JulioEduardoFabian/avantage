@@ -1056,6 +1056,7 @@ import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
 import WinDealModal from '../components/WinDealModal.vue';
 import LeadNotes from '../components/LeadNotes.vue';
+import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
 const DEFAULT_COLUMNS = [
@@ -1317,12 +1318,15 @@ onBeforeUnmount(stopBotChatPolling);
 // Que un asesor lo esté atendiendo no significa que tenga una reunión, así
 // que se queda visible solo en su propia columna del Setter Funnel — antes
 // entraba también acá y se contaba como "Con Reunión" sin tener cita real.
-const SETTER_ONLY_STATUSES = new Set(['conversacion_abierta', 'calificando', 'congelado', 'transferido_closer']);
+// La lista vive en `src/salesFunnelStage.js`, compartida con el Setter Funnel y
+// espejo de la del backend: tenerla escrita dos veces fue lo que dejó que
+// `descartado` quedara fuera acá y que los leads descartados por el setter
+// aparecieran en la primera columna de este tablero.
 // Un lead con cita ya agendada "gradúa" del Setter Funnel al Funnel de
 // Ventas, entrando a esta columna (recién ahí es un lead comercial).
 const GRADUATED_STATUS_TO_SALES_COLUMN = { cita_agendada: 'nuevo' };
 
-const visibleLeads = computed(() => leads.value.filter(l => !SETTER_ONLY_STATUSES.has(l.status)));
+const visibleLeads = computed(() => leads.value.filter(l => !SETTER_ONLY_STATUSES.includes(l.status)));
 
 // Estadísticas de Resumen
 const highViabilityCount = computed(() => {

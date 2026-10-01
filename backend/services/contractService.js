@@ -1,8 +1,7 @@
 import { db } from '../db/connection.js';
+import { SETTER_ONLY_STATUSES } from './salesFunnelStage.js';
 
 export const CONTRACT_STATUSES = ['borrador', 'firmado', 'anulado'];
-
-const SETTER_ONLY_STATUSES = ['conversacion_abierta', 'calificando', 'congelado', 'transferido_closer', 'descartado'];
 
 const EDITABLE_FIELDS = {
   title: 'title',
