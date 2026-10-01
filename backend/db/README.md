@@ -65,6 +65,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261025000000_create_deliverables_table.js` | Crea `deliverables`: el registro propio de las entregas de cada proyecto, desde que dejaron de liberarse por el portal del cliente. Una fila es un entregable **planificado** (título, `due_date`, `income_id` opcional = la cuota que lo condiciona) que luego se marca entregado (`delivered_at`, `delivered_by`, `delivery_channel` y copia opcional del archivo). `income_id` va con ON DELETE SET NULL, no CASCADE: borrar una cuota del cronograma no puede borrar el registro de un trabajo ya entregado. |
 | `20261026000000_alter_leads_add_sales_funnel_at.js` | Agrega `leads.sales_funnel_at`: el sello de que el lead ya graduó al Funnel de Ventas y es del closer. Hasta ahora eso se **deducía** del texto de `leads.status`, y la deducción dejaba de funcionar en cuanto se borraba o recreaba una columna — por ahí volvían los leads cotizados al Setter Funnel. Rellena el sello para los que hoy son comerciales por su status y, además, para los que tienen cotización, proyecto o ingreso aunque su status diga otra cosa (son los que el bot ya había devuelto); excluye `descartado`, que es una decisión explícita de una persona. |
 | `20261026010000_create_lead_stage_changes_table.js` | Crea `lead_stage_changes`: la bitácora de movimientos de etapa de cada lead (de dónde, a dónde, quién — `user`/`bot`/`system` —, por qué y cuándo), **incluidos los intentos rechazados**, marcados con `blocked`. Sin ella, cada reporte de "este lead se regresó solo" había que reconstruirlo a mano, y un tope que funciona se veía igual que uno que nunca se activó. |
+| `20261027000000_create_deliverable_settings.js` | Crea `deliverable_settings` (fila única): la configuración del módulo de Entregables. Por ahora solo `notice_email`, el correo al que llega el aviso de cuota verificada. Es **uno solo** y no todos los usuarios con `deliverables.view`: de las entregas se encarga una persona, y repartir el aviso lo convierte en ruido que nadie mira. Está en la base y no en el `.env` porque el destinatario cambia cuando cambia quién ocupa el puesto, y eso tiene que poder hacerse desde el panel. |
 
 ### Cronograma de pagos y entregables bloqueados
 
@@ -168,9 +169,17 @@ tiene que entregar no estaba mirando ahí, así que el trabajo se quedaba espera
 pasara a revisar. Por eso, al verificar una cuota sale un aviso automático
 (`paymentNoticeService.js`, llamado desde `PATCH /api/finance/income/:id/verificacion`):
 
-- **a quién**: a los usuarios con permiso `deliverables.view` — se resuelve por permiso y no por una
-  lista en el `.env` para que dar de alta a alguien en el panel baste. `INTERNAL_ALERT_EMAIL` queda
-  como red de seguridad para la instalación donde todavía nadie tenga ese permiso;
+- **a quién**: a **un solo** correo, `deliverable_settings.notice_email`. De las entregas se encarga
+  una persona, y repartir el aviso entre todos los que pueden abrir el módulo lo convierte en ruido
+  que nadie termina de mirar. Está en la base y no en el `.env` porque el destinatario cambia cuando
+  cambia quién ocupa el puesto, y eso tiene que poder hacerse desde el panel —sin reiniciar nada— y
+  por la misma persona que usa la pantalla (`GET`/`PUT /api/deliverable-settings`).
+  `INTERNAL_ALERT_EMAIL` queda como red de seguridad mientras el campo esté vacío, para que un aviso
+  no se pierda en silencio. Hay además un envío de prueba (`POST /api/deliverable-settings/test`):
+  manda el mismo correo con datos de ejemplo, y acepta una dirección en el cuerpo para poder probar
+  ANTES de guardarla — si estaba mal escrita, lo último que se quiere es haberla dejado fija. Un
+  correo que se manda solo, cada tanto y a una sola persona es justamente el que nadie descubre que
+  está roto;
 - **qué dice**: datos del cliente (nombre, celular, correo, estudios y proyecto), el pago (código,
   cuota y fecha pactada) y los entregables atados a esa cuota, marcando cuáles **faltan entregar**.
   **Sin importes**, por la misma razón que el resto del módulo: el destinatario tiene

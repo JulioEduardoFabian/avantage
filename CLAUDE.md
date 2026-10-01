@@ -152,11 +152,14 @@ antes de tocar el arranque de producción.
   Como la verificación ocurre en Finanzas —otra pantalla, casi siempre otra persona—, al verificar
   una cuota sale un **aviso automático al equipo** (`paymentNoticeService.js`): correo + campana del
   panel con los datos del cliente, el pago y los entregables atados a esa cuota, marcando cuáles
-  faltan entregar. Va a los usuarios con permiso `deliverables.view` (si no hay ninguno, a
-  `INTERNAL_ALERT_EMAIL`) y **sin importes**, por la misma razón que el resto del módulo. Solo sale
-  cuando la cuota pasa de verdad a `verificado`: volver a verificar algo ya verificado no vuelve a
-  avisar. Es un aviso, no parte de la verificación — si el correo falla, el pago queda verificado
-  igual. Como Proyectos, **no muestra importes**: las cuotas se
+  faltan entregar. Va a **un solo** correo —el de `deliverable_settings.notice_email`, que se edita
+  en la propia pantalla de Entregables (`/api/deliverable-settings`), con un botón de envío de
+  prueba al lado— y **sin importes**, por la misma razón que el resto del módulo. Es uno y no todos
+  los usuarios con `deliverables.view` a propósito: de las entregas se encarga una persona, y
+  repartirlo lo vuelve ruido que nadie mira. `INTERNAL_ALERT_EMAIL` queda de red de seguridad
+  mientras el campo esté vacío. Solo sale cuando la cuota pasa de verdad a `verificado`: volver a
+  verificar algo ya verificado no vuelve a avisar. Es un aviso, no parte de la verificación — si el
+  correo falla, el pago queda verificado igual. Como Proyectos, **no muestra importes**: las cuotas se
   nombran por `finance_income.code`. El botón "Importar del contrato" **copia** las filas de
   `contract_deliverables` del contrato vigente y saltea las que ya existen con el mismo título
   (mismo criterio que las plantillas de tareas), porque un contrato emitido no se reescribe al

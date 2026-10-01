@@ -48,6 +48,7 @@ import { GoogleCalendarService } from './services/googleCalendarService.js';
 import { ScheduledMeetingService } from './services/scheduledMeetingService.js';
 import { NotificationService } from './services/notificationService.js';
 import { PaymentNoticeService } from './services/paymentNoticeService.js';
+import { DeliverableSettingsService } from './services/deliverableSettingsService.js';
 import { FinanceService } from './services/financeService.js';
 import { FinanceLedgerService } from './services/financeLedgerService.js';
 import { FinanceSalaryService } from './services/financeSalaryService.js';
@@ -149,8 +150,14 @@ const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
 // Avisa al equipo de Entregables cuando Finanzas verifica una cuota: es el
 // momento en que el trabajo atado a ella se puede entregar, y ocurre en otra
-// pantalla y a cargo de otra persona.
-const paymentNoticeService = new PaymentNoticeService({ emailService, notificationService });
+// pantalla y a cargo de otra persona. El destinatario sale de la configuración
+// del módulo (un solo correo, editable desde su propia pantalla).
+const deliverableSettingsService = new DeliverableSettingsService();
+const paymentNoticeService = new PaymentNoticeService({
+  emailService,
+  notificationService,
+  deliverableSettingsService
+});
 // La planilla de salarios es un registro aparte: no suma en ingresos ni egresos.
 const financeSalaryService = new FinanceSalaryService();
 // El cronograma de pagos del contrato son las cuotas reales de Finanzas.
@@ -3926,6 +3933,51 @@ app.get('/api/project-updates/:id/attachment', requireAuth, requirePermission('p
 });
 
 // ---------------------------------------------------------------- ENTREGABLES
+
+/*
+ * Configuración del módulo (fila única `deliverable_settings`). Cuelga de
+ * /api/deliverable-settings y no de /api/deliverables/... para no competir con
+ * `/api/deliverables/:id`, igual que las notas de lead cuelgan de
+ * /api/lead-notes.
+ */
+
+app.get('/api/deliverable-settings', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    res.json({ settings: await deliverableSettingsService.get() });
+  } catch (error) {
+    console.error('❌ Error al obtener la configuración de entregables:', error);
+    res.status(500).json({ error: 'Error al obtener la configuración.', details: error.message });
+  }
+});
+
+app.put('/api/deliverable-settings', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const settings = await deliverableSettingsService.update({ noticeEmail: req.body?.noticeEmail });
+    console.log(`⚙️ [Entregables] Correo de avisos → ${settings.noticeEmail || '(sin configurar)'} (${req.user.email})`);
+    res.json({ settings });
+  } catch (error) {
+    if (error.code === 'INVALID_EMAIL') return res.status(400).json({ error: error.message });
+    console.error('❌ Error al guardar la configuración de entregables:', error);
+    res.status(500).json({ error: 'Error al guardar la configuración.', details: error.message });
+  }
+});
+
+/**
+ * Envío de prueba del aviso de cuota verificada. Acepta un correo en el cuerpo
+ * para poder probar ANTES de guardar: si la dirección estaba mal escrita, lo
+ * último que se quiere es haberla dejado guardada.
+ */
+app.post('/api/deliverable-settings/test', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    const result = await paymentNoticeService.sendTestNotice(req.body?.email);
+    console.log(`📧 [Entregables] Correo de prueba enviado a ${result.recipient} (${req.user.email})`);
+    res.json(result);
+  } catch (error) {
+    if (error.code === 'NO_RECIPIENT') return res.status(400).json({ error: error.message });
+    console.error('❌ Error al enviar el correo de prueba:', error);
+    res.status(502).json({ error: error.message || 'No se pudo enviar el correo de prueba.' });
+  }
+});
 
 /**
  * Las entregas de cada proyecto (tabla `deliverables`), cruzadas con el estado

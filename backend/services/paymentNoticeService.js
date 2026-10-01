@@ -15,12 +15,68 @@ import { db } from '../db/connection.js';
  *
  * **Sin importes.** El correo nombra la cuota por su código, igual que los
  * módulos de Proyectos y Entregables: el dinero se consulta en Finanzas, que
- * tiene su propio permiso, y estos destinatarios no tienen por qué tenerlo.
+ * tiene su propio permiso, y quien recibe este aviso no tiene por qué tenerlo.
  */
 export class PaymentNoticeService {
-  constructor({ emailService, notificationService } = {}) {
+  constructor({ emailService, notificationService, deliverableSettingsService } = {}) {
     this.emailService = emailService;
     this.notificationService = notificationService;
+    this.deliverableSettingsService = deliverableSettingsService;
+  }
+
+  /**
+   * A quién le llega el aviso: el correo configurado en la pantalla de
+   * Entregables.
+   *
+   * Es UNO solo a propósito. De las entregas se encarga una persona, y repartir
+   * el aviso entre todos los que pueden abrir el módulo lo convierte en ruido
+   * que nadie termina de mirar. `INTERNAL_ALERT_EMAIL` queda como red de
+   * seguridad para que un aviso no se pierda en silencio mientras nadie
+   * configuró el campo.
+   */
+  async noticeRecipient() {
+    const settings = await this.deliverableSettingsService?.get();
+    const configured = (settings?.noticeEmail || '').trim();
+    if (configured) return configured;
+
+    const fallback = (process.env.INTERNAL_ALERT_EMAIL || '').trim();
+    return fallback || null;
+  }
+
+  /**
+   * Envío de prueba: el mismo correo que saldría de verdad, con datos de
+   * ejemplo y dicho desde el asunto. Existe porque un correo que se manda solo,
+   * cada tanto y a una sola persona es justamente el que nadie descubre que
+   * está roto — y cuando se descubre, ya se perdieron entregas.
+   */
+  async sendTestNotice(recipient) {
+    const to = (recipient || '').trim() || await this.noticeRecipient();
+    if (!to) {
+      const error = new Error('No hay a quién mandarle la prueba: guarda primero un correo.');
+      error.code = 'NO_RECIPIENT';
+      throw error;
+    }
+
+    const notice = buildVerifiedPaymentNotice(SAMPLE_NOTICE_DATA);
+    const base = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
+    const result = await this.emailService?.sendInternalAlertEmail(to, {
+      subject: `[PRUEBA] ${notice.title}`,
+      title: `[PRUEBA] ${notice.title}`,
+      bodyText: 'Este es un correo de prueba enviado desde el módulo de Entregables.\n'
+        + 'Los datos de abajo son inventados; un aviso de verdad se ve exactamente así.\n'
+        + '\n'
+        + '------------------------------------------------------------\n'
+        + `${notice.body}`,
+      actionUrl: base ? `${base}/admin/entregables` : null,
+      actionLabel: 'Abrir Entregables'
+    });
+
+    if (result && result.success === false) {
+      const error = new Error(result.error || 'El servidor de correo rechazó el envío.');
+      error.code = 'SEND_FAILED';
+      throw error;
+    }
+    return { sent: true, recipient: to };
   }
 
   /**
@@ -56,15 +112,15 @@ export class PaymentNoticeService {
         link: project ? '/admin/entregables' : '/admin/finanzas'
       });
 
-      const recipients = await deliverablesRecipients();
-      if (recipients.length === 0) {
+      const recipient = await this.noticeRecipient();
+      if (!recipient) {
         console.warn(`⚠️ [Finanzas] Cuota ${income.code} verificada sin destinatario para el aviso `
-          + '(ningún usuario con "deliverables.view" y sin INTERNAL_ALERT_EMAIL).');
-        return { sent: false, reason: 'sin_destinatarios' };
+          + '(no hay correo guardado en Entregables ni INTERNAL_ALERT_EMAIL).');
+        return { sent: false, reason: 'sin_destinatario' };
       }
 
       const base = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
-      await this.emailService?.sendInternalAlertEmail(recipients.join(', '), {
+      await this.emailService?.sendInternalAlertEmail(recipient, {
         subject: notice.title,
         title: notice.title,
         bodyText: notice.body,
@@ -72,8 +128,8 @@ export class PaymentNoticeService {
         actionLabel: 'Abrir Entregables'
       });
 
-      console.log(`📧 [Finanzas] Aviso de cuota verificada ${income.code} enviado a ${recipients.length} destinatario(s).`);
-      return { sent: true, recipients };
+      console.log(`📧 [Finanzas] Aviso de cuota verificada ${income.code} enviado a ${recipient}.`);
+      return { sent: true, recipient };
     } catch (error) {
       console.error('❌ [Finanzas] Error al avisar de la cuota verificada:', error.message);
       return { sent: false, reason: 'error', error: error.message };
@@ -82,31 +138,27 @@ export class PaymentNoticeService {
 }
 
 /**
- * A quién le importa esto: las personas que pueden trabajar el módulo de
- * Entregables. Se resuelve por permiso y no por una lista en el entorno para
- * que dar de alta a alguien en el panel baste — si hubiera que acordarse de
- * tocar el `.env`, el aviso dejaría de llegarle justo a quien se acaba de
- * sumar al puesto.
- *
- * `INTERNAL_ALERT_EMAIL` queda como red de seguridad para la instalación donde
- * todavía nadie tenga ese permiso: sin esto el aviso se perdería en silencio.
+ * Datos de ejemplo del envío de prueba. Son inventados pero con la misma forma
+ * que los de verdad —cuota con código, un entregable pendiente y otro ya
+ * entregado— para que la prueba muestre el correo completo y no una versión
+ * recortada que no se parece a lo que va a llegar.
  */
-async function deliverablesRecipients() {
-  const emails = await db('users')
-    .join('roles', 'roles.id', 'users.role_id')
-    .join('role_permissions', 'role_permissions.role_id', 'roles.id')
-    .join('permissions', 'permissions.id', 'role_permissions.permission_id')
-    .where('permissions.key', 'deliverables.view')
-    .whereNotNull('users.email')
-    .distinct()
-    .pluck('users.email');
-
-  const clean = emails.map((email) => String(email).trim()).filter(Boolean);
-  if (clean.length > 0) return [...new Set(clean)];
-
-  const fallback = (process.env.INTERNAL_ALERT_EMAIL || '').trim();
-  return fallback ? [fallback] : [];
-}
+const SAMPLE_NOTICE_DATA = {
+  income: { id: 0, code: 'EJEMPLO-001', cuota: '2da', due_date: '2026-10-03' },
+  lead: {
+    full_name: 'María Ejemplo Rodríguez',
+    phone: '987 654 321',
+    email: 'maria.ejemplo@correo.com',
+    university: 'Universidad de Ejemplo',
+    field_of_study: 'Administración'
+  },
+  project: { id: 0, topic: 'Tesis de ejemplo para probar el aviso' },
+  deliverables: [
+    { title: 'Capítulo I y II', due_date: '2026-10-03', status: 'pendiente' },
+    { title: 'Resumen ejecutivo', due_date: '2026-09-28', status: 'entregado', delivered_at: '2026-09-29' }
+  ],
+  verifiedByName: 'Finanzas'
+};
 
 /**
  * El texto del aviso, separado del envío para poder leerlo y probarlo sin

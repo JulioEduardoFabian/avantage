@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildVerifiedPaymentNotice } from '../paymentNoticeService.js';
+import { buildVerifiedPaymentNotice, PaymentNoticeService } from '../paymentNoticeService.js';
+import { isEmailShaped } from '../deliverableSettingsService.js';
 
 /**
  * Verificar una cuota es lo que habilita la entrega del trabajo atado a ella
@@ -83,4 +84,80 @@ test('se sostiene sin lead, sin proyecto y sin quién verificó', () => {
 
   assert.match(notice.title, /Cliente sin nombre/);
   assert.doesNotMatch(notice.body, /undefined|null/);
+});
+
+/**
+ * El aviso va a UN solo correo, el que se guarda en la pantalla de Entregables:
+ * de las entregas se encarga una persona, y repartirlo entre todos los que
+ * pueden abrir el módulo lo convierte en ruido que nadie termina de mirar.
+ */
+const settingsStub = (noticeEmail) => ({ get: async () => ({ noticeEmail }) });
+
+test('manda al correo guardado en la pantalla de Entregables', async () => {
+  const service = new PaymentNoticeService({ deliverableSettingsService: settingsStub('entregas@empresa.com') });
+  process.env.INTERNAL_ALERT_EMAIL = 'interno@empresa.com';
+
+  assert.equal(await service.noticeRecipient(), 'entregas@empresa.com');
+});
+
+test('sin correo guardado cae en INTERNAL_ALERT_EMAIL, que es la red de seguridad', async () => {
+  const service = new PaymentNoticeService({ deliverableSettingsService: settingsStub('') });
+  process.env.INTERNAL_ALERT_EMAIL = 'interno@empresa.com';
+
+  assert.equal(await service.noticeRecipient(), 'interno@empresa.com');
+});
+
+test('sin nada configurado no inventa un destinatario', async () => {
+  const service = new PaymentNoticeService({ deliverableSettingsService: settingsStub('') });
+  delete process.env.INTERNAL_ALERT_EMAIL;
+
+  assert.equal(await service.noticeRecipient(), null);
+});
+
+test('el correo de prueba avisa que lo es antes de abrirlo', async () => {
+  const sent = [];
+  const service = new PaymentNoticeService({
+    deliverableSettingsService: settingsStub('entregas@empresa.com'),
+    emailService: { sendInternalAlertEmail: async (to, payload) => { sent.push({ to, payload }); return { success: true }; } }
+  });
+
+  const result = await service.sendTestNotice();
+
+  assert.equal(result.recipient, 'entregas@empresa.com');
+  assert.match(sent[0].payload.subject, /^\[PRUEBA\]/);
+  // Y muestra el aviso COMPLETO: una prueba recortada no sirve para saber qué
+  // va a llegar el día que llegue de verdad.
+  assert.match(sent[0].payload.bodyText, /ENTREGABLES ATADOS A ESTA CUOTA/);
+  assert.match(sent[0].payload.bodyText, /FALTA ENTREGAR/);
+});
+
+test('el correo de prueba se manda a la dirección escrita, aunque no esté guardada', async () => {
+  const sent = [];
+  const service = new PaymentNoticeService({
+    deliverableSettingsService: settingsStub('viejo@empresa.com'),
+    emailService: { sendInternalAlertEmail: async (to) => { sent.push(to); return { success: true }; } }
+  });
+
+  // Probar antes de guardar es el punto: si la dirección está mal escrita, lo
+  // último que se quiere es haberla dejado guardada.
+  const result = await service.sendTestNotice('nuevo@empresa.com');
+
+  assert.equal(result.recipient, 'nuevo@empresa.com');
+  assert.deepEqual(sent, ['nuevo@empresa.com']);
+});
+
+test('sin destinatario, la prueba lo dice en vez de fingir que salió', async () => {
+  const service = new PaymentNoticeService({ deliverableSettingsService: settingsStub('') });
+  delete process.env.INTERNAL_ALERT_EMAIL;
+
+  await assert.rejects(() => service.sendTestNotice(), (error) => error.code === 'NO_RECIPIENT');
+});
+
+test('el correo se valida con la forma mínima, no con una expresión estricta', () => {
+  for (const value of ['nombre@empresa.com', 'a.b+c@sub.dominio.pe']) {
+    assert.equal(isEmailShaped(value), true, `rechazaría: "${value}"`);
+  }
+  for (const value of ['', 'nombre', 'nombre@empresa', 'con espacio@empresa.com', '@empresa.com']) {
+    assert.equal(isEmailShaped(value), false, `aceptaría: "${value}"`);
+  }
 });

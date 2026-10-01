@@ -25,6 +25,69 @@
       <button type="button" class="dv-btn dv-btn-ghost" @click="fetchOverview">Reintentar</button>
     </div>
 
+    <!-- Correo de avisos. Va plegado: se configura una vez y después estorba.
+         El encabezado muestra la dirección guardada para que se pueda
+         comprobar de un vistazo sin abrir nada. -->
+    <section class="dv-config">
+      <button
+        type="button"
+        class="dv-config-toggle"
+        :class="{ 'is-open': showSettings }"
+        :aria-expanded="showSettings"
+        @click="showSettings = !showSettings"
+      >
+        <span>✉️ Avisos por correo</span>
+        <span class="dv-config-current">
+          {{ settings.noticeEmail || 'sin configurar' }}
+        </span>
+        <span class="dv-config-caret">{{ showSettings ? '▲' : '▼' }}</span>
+      </button>
+
+      <div v-if="showSettings" class="dv-config-body">
+        <p class="dv-help dv-config-intro">
+          Cuando Finanzas confirme el pago de una cuota, llega un correo a esta dirección con los
+          datos del cliente, el pago y los entregables que quedan listos para entregar.
+          Es <strong>una sola</strong> dirección.
+        </p>
+
+        <div class="dv-field">
+          <label class="dv-label" for="dv-notice-email">¿A qué correo mandamos los avisos?</label>
+          <input
+            id="dv-notice-email"
+            v-model="settingsForm.noticeEmail"
+            type="email"
+            class="dv-input"
+            placeholder="nombre@empresa.com"
+            autocomplete="email"
+          />
+          <p class="dv-help">
+            Si lo dejas vacío, los avisos van al correo interno configurado en el servidor.
+          </p>
+        </div>
+
+        <div class="dv-config-actions">
+          <button
+            type="button"
+            class="dv-btn dv-btn-primary"
+            :disabled="settingsSaving || !settingsDirty"
+            @click="saveSettings"
+          >{{ settingsSaving ? 'Guardando…' : 'Guardar correo' }}</button>
+
+          <!-- Probar ANTES de guardar es a propósito: si la dirección estaba
+               mal escrita, lo último que se quiere es haberla dejado guardada. -->
+          <button
+            type="button"
+            class="dv-btn dv-btn-ghost"
+            :disabled="settingsTesting"
+            @click="sendTestEmail"
+          >{{ settingsTesting ? 'Enviando…' : '📨 Enviar correo de prueba' }}</button>
+        </div>
+
+        <p v-if="settingsMessage" class="dv-config-ok">✅ {{ settingsMessage }}</p>
+        <p v-if="settingsError" class="dv-config-error">⚠️ {{ settingsError }}</p>
+      </div>
+    </section>
+
     <!-- Resumen del día. Cuenta SIEMPRE todo el tablero, no lo filtrado, y al
          tocar un recuadro la lista de abajo se queda solo con esos. -->
     <section class="dv-summary" aria-label="Resumen de entregables">
@@ -517,6 +580,87 @@ function clearFilters() {
   onlyNeedsAttention.value = false;
 }
 
+// ------------------------------------------------------ CORREO DE LOS AVISOS
+
+/**
+ * A qué correo llega el aviso de "Finanzas confirmó este pago". Se guarda en
+ * `deliverable_settings` (fila única) y es UNO solo: de las entregas se encarga
+ * una persona, y repartir el aviso entre todos lo vuelve ruido que nadie mira.
+ */
+const showSettings = ref(false);
+const settings = ref({ noticeEmail: '' });
+const settingsForm = reactive({ noticeEmail: '' });
+const settingsSaving = ref(false);
+const settingsTesting = ref(false);
+const settingsMessage = ref('');
+const settingsError = ref('');
+
+/** Sin cambios no hay nada que guardar: el botón se apaga en vez de mentir. */
+const settingsDirty = computed(
+  () => settingsForm.noticeEmail.trim() !== (settings.value.noticeEmail || '').trim()
+);
+
+async function fetchSettings() {
+  try {
+    const response = await apiFetch('/api/deliverable-settings');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo leer la configuración.');
+    settings.value = data.settings || { noticeEmail: '' };
+    settingsForm.noticeEmail = settings.value.noticeEmail || '';
+  } catch (error) {
+    settingsError.value = error.message;
+  }
+}
+
+async function saveSettings() {
+  settingsSaving.value = true;
+  settingsMessage.value = '';
+  settingsError.value = '';
+  try {
+    const response = await apiFetch('/api/deliverable-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noticeEmail: settingsForm.noticeEmail })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo guardar el correo.');
+    settings.value = data.settings;
+    settingsForm.noticeEmail = data.settings.noticeEmail || '';
+    settingsMessage.value = data.settings.noticeEmail
+      ? `Listo: los avisos van a ${data.settings.noticeEmail}.`
+      : 'Listo: sin correo propio, los avisos van al correo interno del servidor.';
+  } catch (error) {
+    settingsError.value = error.message;
+  } finally {
+    settingsSaving.value = false;
+  }
+}
+
+/**
+ * Manda el correo de ejemplo a lo que haya ESCRITO en el campo, no a lo
+ * guardado: así se comprueba una dirección nueva antes de dejarla fija.
+ */
+async function sendTestEmail() {
+  settingsTesting.value = true;
+  settingsMessage.value = '';
+  settingsError.value = '';
+  try {
+    const response = await apiFetch('/api/deliverable-settings/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: settingsForm.noticeEmail })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo enviar el correo de prueba.');
+    settingsMessage.value = `Correo de prueba enviado a ${data.recipient}. `
+      + 'Si no llega en unos minutos, revisa la carpeta de spam.';
+  } catch (error) {
+    settingsError.value = error.message;
+  } finally {
+    settingsTesting.value = false;
+  }
+}
+
 /** Qué fila tiene abierto su panel de "Más opciones" (una a la vez). */
 const openMoreId = ref(null);
 
@@ -889,7 +1033,12 @@ async function downloadAttachment(row) {
   }
 }
 
-onMounted(fetchOverview);
+onMounted(() => {
+  fetchOverview();
+  // La configuración se lee aunque el panel esté plegado: el encabezado muestra
+  // la dirección guardada, y ahí es donde se comprueba de un vistazo.
+  fetchSettings();
+});
 </script>
 
 <style scoped>
@@ -1007,6 +1156,65 @@ onMounted(fetchOverview);
 
 .dv-btn-danger { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.45); }
 .dv-btn-danger:hover:not(:disabled) { background: rgba(200, 85, 50, 0.08); border-color: var(--accent-rose); }
+
+/* --- Correo de los avisos ------------------------------------------------ */
+
+.dv-config {
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.dv-config-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.6rem 1rem;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dv-config-toggle:hover { background: var(--bg-card-hover); }
+.dv-config-toggle.is-open { border-bottom: 1px solid var(--border-color); }
+
+/* La dirección guardada se lee sin abrir el panel: es la comprobación que se
+   hace más seguido ("¿a dónde está yendo esto?"). */
+.dv-config-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.dv-config-caret { flex: 0 0 auto; color: var(--text-muted); font-size: 0.8rem; }
+
+.dv-config-body { padding: 1rem; }
+.dv-config-intro { margin-top: 0; margin-bottom: 1rem; }
+
+.dv-config-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+
+.dv-config-ok,
+.dv-config-error {
+  margin: 0.85rem 0 0;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.dv-config-ok { color: var(--accent-emerald); background: rgba(46, 125, 70, 0.08); }
+.dv-config-error { color: var(--accent-rose); background: rgba(200, 85, 50, 0.08); }
 
 /* --- Resumen / contadores ------------------------------------------------ */
 
@@ -1558,6 +1766,10 @@ textarea.dv-input { min-height: 80px; resize: vertical; }
   .dv-kpi-value { font-size: 1.7rem; }
   .dv-kpi-label { font-size: 0.88rem; }
   .dv-kpi-hint { font-size: 0.76rem; }
+
+  .dv-config-toggle { flex-wrap: wrap; }
+  .dv-config-current { flex: 1 1 100%; font-size: 0.9rem; }
+  .dv-config-actions .dv-btn { width: 100%; }
 
   .dv-filters { gap: 0.6rem; }
   .dv-search-wrap { flex: 1 1 100%; }
