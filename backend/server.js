@@ -47,6 +47,7 @@ import { InstagramWebhookService } from './services/instagramWebhookService.js';
 import { GoogleCalendarService } from './services/googleCalendarService.js';
 import { ScheduledMeetingService } from './services/scheduledMeetingService.js';
 import { NotificationService } from './services/notificationService.js';
+import { PaymentNoticeService } from './services/paymentNoticeService.js';
 import { FinanceService } from './services/financeService.js';
 import { FinanceLedgerService } from './services/financeLedgerService.js';
 import { FinanceSalaryService } from './services/financeSalaryService.js';
@@ -146,6 +147,10 @@ const scheduledMeetingService = new ScheduledMeetingService();
 const notificationService = new NotificationService();
 const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
+// Avisa al equipo de Entregables cuando Finanzas verifica una cuota: es el
+// momento en que el trabajo atado a ella se puede entregar, y ocurre en otra
+// pantalla y a cargo de otra persona.
+const paymentNoticeService = new PaymentNoticeService({ emailService, notificationService });
 // La planilla de salarios es un registro aparte: no suma en ingresos ni egresos.
 const financeSalaryService = new FinanceSalaryService();
 // El cronograma de pagos del contrato son las cuotas reales de Finanzas.
@@ -856,6 +861,9 @@ app.patch('/api/finance/income/:id/estado', requireAuth, requirePermission('fina
 app.patch('/api/finance/income/:id/verificacion', requireAuth, requirePermission('finance.verify'), async (req, res) => {
   try {
     const verified = req.body?.verified !== false;
+    // El estado anterior decide si esto es una verificación NUEVA: volver a
+    // verificar algo ya verificado no vuelve a avisar a nadie.
+    const before = await financeLedgerService.getIncomeById(req.params.id);
     const income = await financeLedgerService.setIncomeVerificacion(req.params.id, {
       verified,
       verifiedBy: req.user.id
@@ -874,6 +882,13 @@ app.patch('/api/finance/income/:id/verificacion', requireAuth, requirePermission
     // aviso al cliente es un efecto secundario: si el correo falla, la
     // verificación ya quedó hecha y el documento ya está descargable.
     if (verified) notifyUnlockedDeliverables(income).catch(() => {});
+
+    // Y el aviso al equipo: hasta este momento el módulo de Entregables no
+    // dejaba marcar como entregado nada atado a esta cuota, y quien entrega no
+    // está mirando Finanzas. Igual que el de arriba, no bloquea la respuesta.
+    if (verified && before?.estado !== 'verificado') {
+      paymentNoticeService.notifyIncomeVerified(income, { verifiedBy: req.user }).catch(() => {});
+    }
 
     res.json({ income, project });
   } catch (error) {

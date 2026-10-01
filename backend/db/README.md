@@ -161,6 +161,30 @@ Una cuota **`pagado`** (el cliente pagó y subió su comprobante; falta el visto
 deja entregar: esa diferencia es un trámite interno nuestro, no una deuda del cliente. Esa entrega
 queda como `sin_cobrar`, que es exactamente para lo que existe ese estado.
 
+### Y cuando la cuota se verifica, el equipo se entera
+
+El desbloqueo de arriba ocurre en **Finanzas**: otra pantalla, casi siempre otra persona. Quien
+tiene que entregar no estaba mirando ahí, así que el trabajo se quedaba esperando a que alguien
+pasara a revisar. Por eso, al verificar una cuota sale un aviso automático
+(`paymentNoticeService.js`, llamado desde `PATCH /api/finance/income/:id/verificacion`):
+
+- **a quién**: a los usuarios con permiso `deliverables.view` — se resuelve por permiso y no por una
+  lista en el `.env` para que dar de alta a alguien en el panel baste. `INTERNAL_ALERT_EMAIL` queda
+  como red de seguridad para la instalación donde todavía nadie tenga ese permiso;
+- **qué dice**: datos del cliente (nombre, celular, correo, estudios y proyecto), el pago (código,
+  cuota y fecha pactada) y los entregables atados a esa cuota, marcando cuáles **faltan entregar**.
+  **Sin importes**, por la misma razón que el resto del módulo: el destinatario tiene
+  `deliverables.view`, no `finance.view`;
+- **cuándo**: solo en la transición real a `verificado`. Volver a verificar algo ya verificado no
+  vuelve a avisar — por eso la ruta lee el estado anterior antes de escribir;
+- **qué pasa si falla**: nada. Es un aviso, no parte de la verificación: se dispara sin esperar
+  (`.catch(() => {})`) y el servicio no lanza. Primero se escribe la notificación de la campana, que
+  es lo que queda registrado aunque el correo no salga.
+
+Es un aviso **distinto** del que ya existía (`notifyUnlockedDeliverables` en `server.js`), que va al
+**cliente** y habla de los avances de `project_updates` que se liberan en su portal. Uno mira hacia
+afuera y el otro hacia adentro.
+
 El botón **"Importar del contrato"** copia a `deliverables` las filas de `contract_deliverables` del
 contrato vigente del cliente (el más reciente no anulado) y saltea las que ya existen con el mismo
 título, así que reimportar no duplica nada — mismo criterio que la importación de plantillas de

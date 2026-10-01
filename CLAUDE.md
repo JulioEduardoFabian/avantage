@@ -148,7 +148,15 @@ antes de tocar el arranque de producción.
   mira la vista — el botón que se ve y la regla que se aplica no pueden decir cosas distintas.
   Una cuota `pagado` (el cliente pagó y Finanzas todavía no da el visto bueno) **sí** deja entregar:
   esa diferencia es un trámite interno, no una deuda del cliente, y la entrega queda registrada como
-  `sin_cobrar`, que es justamente para lo que existe ese estado. Como Proyectos, **no muestra importes**: las cuotas se
+  `sin_cobrar`, que es justamente para lo que existe ese estado.
+  Como la verificación ocurre en Finanzas —otra pantalla, casi siempre otra persona—, al verificar
+  una cuota sale un **aviso automático al equipo** (`paymentNoticeService.js`): correo + campana del
+  panel con los datos del cliente, el pago y los entregables atados a esa cuota, marcando cuáles
+  faltan entregar. Va a los usuarios con permiso `deliverables.view` (si no hay ninguno, a
+  `INTERNAL_ALERT_EMAIL`) y **sin importes**, por la misma razón que el resto del módulo. Solo sale
+  cuando la cuota pasa de verdad a `verificado`: volver a verificar algo ya verificado no vuelve a
+  avisar. Es un aviso, no parte de la verificación — si el correo falla, el pago queda verificado
+  igual. Como Proyectos, **no muestra importes**: las cuotas se
   nombran por `finance_income.code`. El botón "Importar del contrato" **copia** las filas de
   `contract_deliverables` del contrato vigente y saltea las que ya existen con el mismo título
   (mismo criterio que las plantillas de tareas), porque un contrato emitido no se reescribe al
