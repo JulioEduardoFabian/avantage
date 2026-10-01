@@ -28,6 +28,7 @@ import { CampaignExportService } from './services/campaignExportService.js';
 import { UserService } from './services/userService.js';
 import { RoleService } from './services/roleService.js';
 import { ProjectUpdateService } from './services/projectUpdateService.js';
+import { DeliverableService } from './services/deliverableService.js';
 import { MetaWebhookService } from './services/metaWebhookService.js';
 import { runMetaLeadgenBackfill } from './scripts/backfillMetaLeadgenFields.js';
 import { PageInteractionService } from './services/pageInteractionService.js';
@@ -50,7 +51,7 @@ import { FinanceLedgerService } from './services/financeLedgerService.js';
 import { FinanceSalaryService } from './services/financeSalaryService.js';
 import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
-import { signToken, requireAuth, requirePermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
+import { signToken, requireAuth, requirePermission, requireAnyPermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
 
 import { uploadProjectUpdateAttachment, uploadDir, uploadFinanceReceipt, uploadFinanceFile, uploadEmailAttachments, financeReceiptDir, whatsappMediaDir, campaignAdImageDir } from './middleware/upload.js';
 import { db } from './db/connection.js';
@@ -127,6 +128,10 @@ const campaignExportService = new CampaignExportService({ campaignService });
 const userService = new UserService();
 const roleService = new RoleService();
 const projectUpdateService = new ProjectUpdateService();
+// Entregables: no tiene tablas propias, cruza las cuotas de Finanzas con los
+// avances subidos. Usa projectService para no recalcular el avance de tareas ni
+// la puerta del pago inicial por su cuenta.
+const deliverableService = new DeliverableService({ projectService });
 const metaWebhookService = new MetaWebhookService();
 const pageInteractionService = new PageInteractionService();
 const pageMessageService = new PageMessageService();
@@ -3807,8 +3812,12 @@ app.get('/api/projects/:id/payments', requireAuth, requirePermission('projects.v
 /**
  * Ata (o desata, mandando `incomeId: null`) un avance ya publicado a la cuota
  * que libera su adjunto, sin tener que volver a subir el archivo.
+ *
+ * Lo usan los dos módulos que ven ese vínculo: el detalle del proyecto y el
+ * tablero de Entregables (que es donde se detecta un entregable subido sin
+ * cobro asociado), así que acepta cualquiera de los dos permisos.
  */
-app.patch('/api/project-updates/:id/unlock-income', requireAuth, requirePermission('projects.view'), async (req, res) => {
+app.patch('/api/project-updates/:id/unlock-income', requireAuth, requireAnyPermission('projects.view', 'deliverables.view'), async (req, res) => {
   try {
     const update = await projectUpdateService.getUpdateById(req.params.id);
     if (!update) return res.status(404).json({ error: 'Actualización no encontrada.' });
@@ -3869,6 +3878,26 @@ app.get('/api/project-updates/:id/attachment', requireAuth, requirePermission('p
   } catch (error) {
     console.error('❌ Error al descargar el adjunto:', error);
     res.status(500).json({ error: 'Error al descargar el adjunto.', details: error.message });
+  }
+});
+
+// ---------------------------------------------------------------- ENTREGABLES
+
+/**
+ * Tablero operativo de entregables: una fila por cuota del cronograma, con el
+ * estado del pago y el trabajo que se subió contra ella.
+ *
+ * Responde de un golpe la pregunta que hoy exige tres pantallas (Finanzas,
+ * detalle del proyecto y contrato): ¿este entregable ya tiene el pago verificado
+ * y el trabajo subido? No crea nada — cruza `finance_income`, `project_updates`
+ * y `contract_deliverables`, y el estado se deriva en cada lectura.
+ */
+app.get('/api/deliverables', requireAuth, requirePermission('deliverables.view'), async (req, res) => {
+  try {
+    res.json(await deliverableService.getOverview());
+  } catch (error) {
+    console.error('❌ Error al obtener el tablero de entregables:', error);
+    res.status(500).json({ error: 'Error al obtener el tablero de entregables.', details: error.message });
   }
 });
 

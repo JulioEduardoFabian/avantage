@@ -6,6 +6,7 @@ import LeadsView from '../views/LeadsView.vue';
 import DatabaseView from '../views/DatabaseView.vue';
 import ProjectsView from '../views/ProjectsView.vue';
 import ProjectDetailView from '../views/ProjectDetailView.vue';
+import DeliverablesView from '../views/DeliverablesView.vue';
 import RolesView from '../views/RolesView.vue';
 import CareersView from '../views/CareersView.vue';
 import MetaWebhookTestView from '../views/MetaWebhookTestView.vue';
@@ -44,6 +45,7 @@ const router = createRouter({
     { path: '/admin/setter-funnel', name: 'setter-funnel', component: SetterFunnelView, meta: { requiresAuth: true, permission: 'leads.view' } },
     { path: '/admin/projects', name: 'projects', component: ProjectsView, meta: { requiresAuth: true, permission: 'projects.view' } },
     { path: '/admin/projects/:id', name: 'project-detail', component: ProjectDetailView, props: true, meta: { requiresAuth: true, permission: 'projects.view' } },
+    { path: '/admin/entregables', name: 'deliverables', component: DeliverablesView, meta: { requiresAuth: true, permission: 'deliverables.view' } },
     { path: '/admin/roles', name: 'roles', component: RolesView, meta: { requiresAuth: true, permission: 'roles.manage' } },
     { path: '/admin/carreras', name: 'careers', component: CareersView, meta: { requiresAuth: true, permission: 'careers.manage' } },
     { path: '/admin/webhooks', name: 'webhooks', component: MetaWebhookTestView, meta: { requiresAuth: true, permission: 'leads.view' } },

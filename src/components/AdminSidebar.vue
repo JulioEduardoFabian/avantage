@@ -167,6 +167,21 @@
         </router-link>
 
         <router-link
+          v-if="hasPermission('deliverables.view')"
+          to="/admin/entregables"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/entregables' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--accent-amber);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/>
+            <rect x="2" y="3" width="20" height="5" rx="1"/>
+            <path d="M10 12h4"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Entregables</span>
+        </router-link>
+
+        <router-link
           v-if="hasPermission('finance.view')"
           to="/admin/finance"
           class="nav-item"

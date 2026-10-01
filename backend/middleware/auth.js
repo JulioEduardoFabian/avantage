@@ -42,6 +42,23 @@ export function requirePermission(key) {
   };
 }
 
+/**
+ * Exige al menos UNO de varios permisos. Lo necesitan las rutas que son la
+ * misma acción vista desde dos módulos: atar un avance a una cuota se hace
+ * desde Proyectos (`projects.view`) y desde Entregables (`deliverables.view`),
+ * y duplicar el endpoint solo para cambiarle el permiso dejaría dos sitios
+ * donde arreglar la próxima regla.
+ */
+export function requireAnyPermission(...keys) {
+  return (req, res, next) => {
+    const granted = req.user?.permissions || [];
+    if (!keys.some((key) => granted.includes(key))) {
+      return res.status(403).json({ error: 'No tienes permiso para acceder a este recurso.' });
+    }
+    next();
+  };
+}
+
 const CLIENT_JWT_EXPIRES_IN = '30d';
 
 /**

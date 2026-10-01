@@ -19,6 +19,7 @@ export async function seed(knex) {
   const permissions = [
     { key: 'leads.view', label: 'Panel de Leads (Funnel de Ventas)' },
     { key: 'projects.view', label: 'Proyectos' },
+    { key: 'deliverables.view', label: 'Entregables (pago verificado + trabajo subido)' },
     { key: 'roles.manage', label: 'Roles y Permisos' }
   ];
   await knex('permissions').insert(permissions);

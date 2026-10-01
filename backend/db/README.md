@@ -61,6 +61,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261020000000_create_careers_catalog.js` | Crea `career_groups` (las áreas que agrupan el desplegable) y `careers` (las carreras, únicas en todo el catálogo, con `position` y `is_active`), y las siembra con la lista que antes vivía en `src/data/careers.js`. Agrega el permiso `careers.manage`. Los leads, proyectos y contratos siguen guardando la carrera como **texto**: quitar una del catálogo no toca las fichas que ya la usaron, solo deja de ofrecerse. |
 | `20261021000000_create_finance_salaries.js` | Crea `finance_salaries`: la planilla de pagos al personal (persona, cargo, **fecha** del pago, periodo que cubre, monto, moneda, método, banco y detalle). Es un registro **aparte** de la contabilidad: no se relaciona con `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no entra en los totales ni en el flujo de caja de `getOverview()`. `persona` es texto libre (se le paga a gente sin cuenta en el panel, y dar de baja a un usuario no debe reescribir la planilla). |
 | `20261023000000_create_finance_salary_receipts.js` | Crea `finance_salary_receipts`: los comprobantes (imágenes o PDF) que respaldan cada pago de la planilla, 1:N contra `finance_salaries` y en cascada con él. Son los mismos archivos y la misma carpeta (`uploads/finance-receipts/`) que usan los comprobantes de ingresos y del libro diario, pero siguen sin tocar la contabilidad: solo son el respaldo del pago. |
+| `20261024000000_create_deliverables_permission.js` | Agrega el permiso `deliverables.view` (módulo **Entregables**) y lo asigna al rol Administrador. **No crea tablas**: el módulo es una lectura que cruza `finance_income` (¿el pago está verificado?), `project_updates.income_id` (¿el trabajo está subido y contra qué cobro?) y `contract_deliverables` (lo comprometido por escrito). Una tabla propia sería una cuarta verdad sobre el mismo hecho. |
 
 ### Cronograma de pagos y entregables bloqueados
 
@@ -111,6 +112,35 @@ Finanzas verifica (finance.verify)  →  is_locked pasa a false solo, se habilit
 lectura (`projectUpdateService`), igual que `projects.is_locked` se deriva del pago inicial. El
 bloqueo se aplica también en la descarga (`GET /api/portal/projects/:id/updates/:updateId/attachment`
 responde 403), no solo en la pantalla.
+
+### El tablero de Entregables
+
+El módulo **Entregables** (`/admin/entregables`, permiso `deliverables.view`,
+`deliverableService.js`) no agrega ninguna tabla: responde la pregunta operativa
+—*¿este entregable ya tiene el pago verificado y el trabajo subido?*— cruzando en
+cada lectura las tres fuentes que ya existen. La unidad de la fila es **la cuota**,
+porque es lo único que el modelo ya usa para unir dinero y trabajo
+(`project_updates.income_id`).
+
+El estado de cada fila sale de dos preguntas, y su nombre dice qué falta:
+
+| pago verificado | trabajo subido | estado | falta |
+|---|---|---|---|
+| sí | sí | `entregado` | nada: el cliente ya lo descarga |
+| no | sí | `retenido` | que Finanzas verifique el pago |
+| sí | no | `falta_trabajo` | que operaciones suba el entregable |
+| no | no | `pendiente` | las dos cosas |
+
+Además, `is_overdue` marca la cuota que venció y **sigue sin verificarse** (una
+vencida ya verificada no es noticia), y los avances con adjunto y sin `income_id`
+se listan aparte: el cliente los descarga sin condición, así que si alguno debía
+liberarse con un pago, ahí es donde se nota. Atarlo usa el mismo endpoint que el
+detalle del proyecto (`PATCH /api/project-updates/:id/unlock-income`), que acepta
+`projects.view` o `deliverables.view`.
+
+El módulo **no muestra importes**, igual que Proyectos: una cuota se nombra por su
+`finance_income.code`. Así operaciones puede trabajar sin que eso implique abrir la
+contabilidad, que tiene su propio permiso.
 
 ## 3. Seeds (datos iniciales de roles, permisos, columnas del funnel y leads de prueba)
 

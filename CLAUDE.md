@@ -128,6 +128,18 @@ antes de tocar el arranque de producción.
   texto plano, extraído solo con `zlib`, sin dependencias nuevas — o los primeros bytes si es una
   imagen. El recorte se hace en el servidor: el archivo completo nunca viaja al navegador antes de
   que el pago esté verificado.
+- El módulo **Entregables** (`/admin/entregables`, `DeliverablesView.vue`, permiso `deliverables.view`,
+  `deliverableService.js`) es el cruce operativo entre el dinero y el trabajo: una fila **por cuota**
+  del cronograma con el estado del pago al lado del entregable subido. **No tiene tablas propias** y
+  no debe tenerlas: el estado se deriva en cada lectura de `finance_income.estado`,
+  `project_updates.income_id` y `contract_deliverables`, igual que `projects.is_locked`. Los cuatro
+  estados salen de dos preguntas (¿pago verificado? ¿trabajo subido?) y se llaman por lo que falta:
+  `entregado`, `retenido` (falta Finanzas), `falta_trabajo` (falta operaciones) y `pendiente`.
+  Como Proyectos, **no muestra importes**: las cuotas se nombran por `finance_income.code`. Los
+  avances con adjunto y sin `income_id` se listan aparte porque el cliente los descarga sin
+  condición; atarlos usa el mismo endpoint que el detalle del proyecto
+  (`PATCH /api/project-updates/:id/unlock-income`, que acepta `projects.view` o `deliverables.view`
+  vía `requireAnyPermission`).
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
   registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
   `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los
