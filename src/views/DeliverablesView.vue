@@ -1,186 +1,245 @@
 <template>
   <main class="container-fluid deliverables-page">
-    <div class="dv-header">
-      <div>
-        <h2 class="section-heading"><span>📦</span> Entregables</h2>
-        <p class="section-subheading" style="margin-bottom: 0;">
-          Qué hay que entregar en cada proyecto, qué ya se entregó y cómo se cruza con el cobro.
-          La entrega se hace por fuera (correo, WhatsApp, presencial) y se registra acá.
+    <!-- Esta pantalla la usa a diario una persona que no trabaja con software:
+         por eso tiene su propia escala (texto y botones más grandes que el
+         resto del panel), cada estado se explica con una frase que dice qué
+         hacer, y no hay acciones escondidas detrás de un icono suelto. Todo se
+         lee en una sola columna, así que funciona igual en el celular que en el
+         escritorio: no hay tablas que se desborden de lado. -->
+    <header class="dv-header">
+      <div class="dv-header-text">
+        <h2 class="dv-title"><span aria-hidden="true">📦</span> Entregables</h2>
+        <p class="dv-subtitle">
+          Qué le falta entregar a cada cliente y qué ya se entregó.
+          La entrega se hace por fuera (correo, WhatsApp, en persona) y acá se deja registrada.
         </p>
       </div>
-      <button class="btn-secondary" :disabled="isLoading" @click="fetchOverview">
+      <button type="button" class="dv-btn dv-btn-ghost" :disabled="isLoading" @click="fetchOverview">
         {{ isLoading ? 'Cargando…' : '🔄 Actualizar' }}
       </button>
-    </div>
+    </header>
 
-    <div v-if="loadError" class="info-box dv-alert">
-      <h4 style="color: var(--accent-rose);">⚠️ Algo salió mal</h4>
+    <div v-if="loadError" class="dv-alert" role="alert">
+      <strong>⚠️ Algo salió mal</strong>
       <p>{{ loadError }}</p>
+      <button type="button" class="dv-btn dv-btn-ghost" @click="fetchOverview">Reintentar</button>
     </div>
 
-    <!-- Contadores. Cuentan SIEMPRE todo el tablero, no lo filtrado: son el
-         semáforo del día, y al hacer clic filtran la lista de abajo. -->
-    <div class="dv-kpi-grid">
-      <button
-        v-for="tile in kpiTiles"
-        :key="tile.key"
-        type="button"
-        class="dv-kpi"
-        :class="[`is-${tile.tone}`, { 'is-active': stateFilter === tile.key }]"
-        @click="toggleStateFilter(tile.key)"
-      >
-        <span class="dv-kpi-value">{{ tile.value }}</span>
-        <span class="dv-kpi-label">{{ tile.icon }} {{ tile.label }}</span>
-        <span class="dv-kpi-hint">{{ tile.hint }}</span>
-      </button>
-    </div>
+    <!-- Resumen del día. Cuenta SIEMPRE todo el tablero, no lo filtrado, y al
+         tocar un recuadro la lista de abajo se queda solo con esos. -->
+    <section class="dv-summary" aria-label="Resumen de entregables">
+      <p class="dv-summary-hint">Toca un recuadro para ver solo esos entregables.</p>
+      <div class="dv-kpi-grid">
+        <button
+          v-for="tile in kpiTiles"
+          :key="tile.key"
+          type="button"
+          class="dv-kpi"
+          :class="[`is-${tile.tone}`, { 'is-active': stateFilter === tile.key }]"
+          :aria-pressed="stateFilter === tile.key"
+          @click="toggleStateFilter(tile.key)"
+        >
+          <span class="dv-kpi-value">{{ tile.value }}</span>
+          <span class="dv-kpi-label">{{ tile.icon }} {{ tile.label }}</span>
+          <span class="dv-kpi-hint">{{ tile.hint }}</span>
+          <span v-if="stateFilter === tile.key" class="dv-kpi-active">✓ Viendo solo estos · toca para quitar</span>
+        </button>
+      </div>
+    </section>
 
-    <div class="dv-filters glass-panel">
-      <input
-        v-model="search"
-        type="text"
-        class="form-input dv-search"
-        placeholder="🔎 Buscar por cliente, proyecto, entregable o código de cuota…"
-      />
-      <label class="dv-check">
-        <input v-model="onlyNeedsAttention" type="checkbox" />
-        Solo lo que necesita atención
+    <section class="dv-filters" aria-label="Buscar y filtrar">
+      <label class="dv-search-wrap">
+        <span class="dv-sr-only">Buscar</span>
+        <span class="dv-search-icon" aria-hidden="true">🔎</span>
+        <input
+          v-model="search"
+          type="search"
+          class="dv-search"
+          placeholder="Buscar por cliente, proyecto o entregable…"
+        />
+        <button
+          v-if="search"
+          type="button"
+          class="dv-search-clear"
+          title="Borrar la búsqueda"
+          @click="search = ''"
+        >✕</button>
       </label>
-      <span class="dv-filter-count">
-        {{ visibleProjects.length }} de {{ overview.projects.length }} proyectos
-        <template v-if="stateFilter">· filtrando «{{ stateLabel(stateFilter) }}»</template>
-      </span>
-    </div>
+
+      <button
+        type="button"
+        class="dv-toggle"
+        :class="{ 'is-on': onlyNeedsAttention }"
+        :aria-pressed="onlyNeedsAttention"
+        @click="onlyNeedsAttention = !onlyNeedsAttention"
+      >
+        {{ onlyNeedsAttention ? '☑' : '☐' }} Solo lo urgente
+      </button>
+
+      <p class="dv-filter-count">
+        Viendo <strong>{{ visibleProjects.length }}</strong> de {{ overview.projects.length }} proyectos
+      </p>
+
+      <button v-if="hasFilters" type="button" class="dv-btn dv-btn-ghost dv-clear" @click="clearFilters">
+        ✕ Quitar filtros
+      </button>
+    </section>
 
     <p v-if="isLoading && overview.projects.length === 0" class="dv-empty">Cargando entregables…</p>
 
-    <p v-else-if="visibleProjects.length === 0" class="dv-empty">
+    <div v-else-if="visibleProjects.length === 0" class="dv-empty">
       <template v-if="overview.projects.length === 0">
-        Todavía no hay proyectos. Un proyecto nace cuando un lead llega a la columna de cierre del
-        <router-link to="/admin/leads">Funnel de Ventas</router-link>.
+        <p>Todavía no hay proyectos.</p>
+        <p class="dv-empty-sub">
+          Un proyecto nace cuando una venta se cierra en el
+          <router-link to="/admin/leads">Funnel de Ventas</router-link>.
+        </p>
       </template>
-      <template v-else>Ningún entregable coincide con el filtro.</template>
-    </p>
+      <template v-else>
+        <p>Ningún entregable coincide con lo que estás buscando.</p>
+        <button type="button" class="dv-btn dv-btn-ghost" @click="clearFilters">✕ Quitar filtros</button>
+      </template>
+    </div>
 
-    <section v-for="project in visibleProjects" :key="project.project_id" class="glass-panel dv-project">
+    <section v-for="project in visibleProjects" :key="project.project_id" class="dv-project">
       <header class="dv-project-head">
-        <div>
+        <div class="dv-project-id">
+          <h3 class="dv-project-client">
+            {{ project.client_name || project.client_email || 'Cliente sin nombre' }}
+          </h3>
           <router-link :to="`/admin/projects/${project.project_id}`" class="dv-project-topic">
             {{ project.topic }}
           </router-link>
-          <p class="dv-project-client">
-            {{ project.client_name || project.client_email || 'Cliente sin nombre' }}
-            <span v-if="project.university"> · {{ project.university }}</span>
-            <span v-if="project.field_of_study"> · {{ project.field_of_study }}</span>
-          </p>
-          <p v-if="project.is_locked" class="dv-project-locked">
-            🔒 El proyecto espera que Finanzas verifique el pago inicial
-            <template v-if="project.initial_payment_code">({{ project.initial_payment_code }})</template>.
+          <p v-if="project.university || project.field_of_study" class="dv-project-extra">
+            {{ [project.university, project.field_of_study].filter(Boolean).join(' · ') }}
           </p>
         </div>
         <div class="dv-project-meta">
-          <span class="dv-chip">{{ project.status }}</span>
-          <span class="dv-chip">Tareas {{ project.completed_tasks }}/{{ project.total_tasks }} · {{ project.progress_percentage }}%</span>
           <span
             v-for="chip in projectStateChips(project)"
             :key="chip.key"
             class="dv-chip"
             :class="`is-${chip.tone}`"
           >{{ chip.icon }} {{ chip.value }} {{ chip.label }}</span>
+          <span class="dv-chip">Tareas {{ project.completed_tasks }}/{{ project.total_tasks }}</span>
         </div>
       </header>
 
-      <div class="dv-table-scroll">
-        <table v-if="rowsFor(project).length > 0" class="dv-table">
-          <thead>
-            <tr>
-              <th>Entregable</th>
-              <th>Vence</th>
-              <th>Cuota / Pago</th>
-              <th>Entrega</th>
-              <th>Estado</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in rowsFor(project)" :key="row.id" :class="{ 'is-overdue': row.is_overdue }">
-              <td class="dv-cell-title">
-                <strong>{{ row.title }}</strong>
-                <span v-if="row.description" class="dv-desc">{{ row.description }}</span>
-                <span v-if="row.notes" class="dv-desc">📝 {{ row.notes }}</span>
-              </td>
-              <td class="dv-nowrap">
-                {{ row.due_date ? formatDate(row.due_date) : 'Por definir' }}
-                <span v-if="row.is_overdue" class="dv-overdue-tag" title="La fecha pasó y sigue sin entregarse">vencida</span>
-              </td>
-              <td>
-                <template v-if="row.income_id">
-                  <span class="dv-badge" :class="`is-${paymentTone(row)}`">{{ paymentLabel(row) }}</span>
-                  <span class="dv-code">Cuota {{ row.income_cuota }} · {{ row.income_code }}</span>
-                  <span v-if="row.payment_overdue" class="dv-overdue-tag">cuota vencida</span>
-                </template>
-                <span v-else class="dv-muted">Sin cuota atada</span>
-              </td>
-              <td>
-                <template v-if="row.status === 'entregado'">
-                  <div>✅ {{ formatDate(row.delivered_at) }}</div>
-                  <span class="dv-work-meta">
-                    {{ channelLabel(row.delivery_channel) }}
-                    <template v-if="row.delivered_by_name">· {{ row.delivered_by_name }}</template>
-                  </span>
-                  <button
-                    v-if="row.has_attachment"
-                    type="button"
-                    class="dv-link-btn"
-                    @click="downloadAttachment(row)"
-                  >📎 {{ row.attachment_original_name }}</button>
-                </template>
-                <span v-else class="dv-muted">— sin entregar —</span>
-              </td>
-              <td>
-                <span class="dv-badge" :class="`is-${stateTone(row.state)}`">
-                  {{ stateIcon(row.state) }} {{ row.state_label }}
-                </span>
-                <span v-if="row.pending_reason" class="dv-pending">{{ row.pending_reason }}</span>
-              </td>
-              <td class="dv-actions">
-                <button
-                  v-if="row.status !== 'entregado'"
-                  type="button"
-                  class="btn-secondary dv-mini-btn"
-                  @click="openDeliverModal(project, row)"
-                >✓ Entregar</button>
-                <button
-                  v-else
-                  type="button"
-                  class="btn-secondary dv-mini-btn"
-                  title="Se marcó por error: vuelve a pendiente (el archivo se conserva)"
-                  :disabled="busyId === row.id"
-                  @click="undeliver(row)"
-                >↩ Revertir</button>
-                <button type="button" class="btn-secondary dv-mini-btn" @click="openEditModal(project, row)">✎</button>
-                <button
-                  type="button"
-                  class="btn-secondary dv-mini-btn is-danger"
-                  :disabled="busyId === row.id"
-                  @click="removeDeliverable(row)"
-                >✕</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <p v-if="project.is_locked" class="dv-note is-warn">
+        🔒 Este proyecto está esperando que Finanzas confirme el primer pago
+        <template v-if="project.initial_payment_code">({{ project.initial_payment_code }})</template>.
+      </p>
 
-        <p v-else-if="project.deliverables.length === 0" class="dv-muted dv-no-rows">
-          Este proyecto todavía no tiene entregables registrados.
-        </p>
-        <p v-else class="dv-muted dv-no-rows">
-          Ninguno de sus {{ project.deliverables.length }} entregables está en «{{ stateLabel(stateFilter) }}».
-        </p>
+      <div v-if="sortedRows(project).length > 0" class="dv-list">
+        <article
+          v-for="row in sortedRows(project)"
+          :key="row.id"
+          class="dv-item"
+          :class="[`is-${rowTone(row)}`, { 'is-open': openMoreId === row.id }]"
+        >
+          <div class="dv-item-head">
+            <h4 class="dv-item-title">{{ row.title }}</h4>
+            <div class="dv-item-tags">
+              <!-- "Fuera de fecha" va como marca aparte y no reemplazando al
+                   estado: son dos cosas distintas (en qué va la entrega, y si
+                   llegó tarde) y juntarlas escondía una de las dos. -->
+              <span v-if="row.is_overdue" class="dv-state is-bad">⚠️ Fuera de fecha</span>
+              <span class="dv-state" :class="`is-${stateTone(row.state)}`">
+                {{ stateIcon(row.state) }} {{ stateLabel(row.state) }}
+              </span>
+            </div>
+          </div>
+
+          <p class="dv-item-todo" :class="`is-${rowTone(row)}`">{{ todoSentence(row) }}</p>
+
+          <p v-if="row.description" class="dv-item-desc">{{ row.description }}</p>
+
+          <dl class="dv-facts">
+            <div class="dv-fact" :class="{ 'is-bad': row.is_overdue }">
+              <dt>📅 Fecha pactada</dt>
+              <dd>{{ dueText(row) }}</dd>
+            </div>
+            <div v-if="row.income_id" class="dv-fact" :class="{ 'is-bad': row.payment_overdue }">
+              <dt>💰 Pago</dt>
+              <dd>
+                {{ paymentLabel(row) }} · cuota {{ row.income_cuota }} ({{ row.income_code }})
+                <template v-if="row.payment_overdue"> · la cuota ya venció</template>
+              </dd>
+            </div>
+            <div v-else class="dv-fact">
+              <dt>💰 Pago</dt>
+              <dd>Este entregable no depende de ninguna cuota.</dd>
+            </div>
+            <div v-if="row.status === 'entregado'" class="dv-fact">
+              <dt>📤 Se entregó</dt>
+              <dd>
+                el {{ formatDate(row.delivered_at) }} · {{ channelLabel(row.delivery_channel) }}
+                <template v-if="row.delivered_by_name"> · lo registró {{ row.delivered_by_name }}</template>
+              </dd>
+            </div>
+            <div v-if="row.notes" class="dv-fact">
+              <dt>📝 Nota</dt>
+              <dd>{{ row.notes }}</dd>
+            </div>
+          </dl>
+
+          <button
+            v-if="row.has_attachment"
+            type="button"
+            class="dv-file-btn"
+            @click="downloadAttachment(row)"
+          >📎 Descargar {{ row.attachment_original_name }}</button>
+
+          <div class="dv-item-actions">
+            <button
+              v-if="row.status !== 'entregado'"
+              type="button"
+              class="dv-btn dv-btn-primary"
+              @click="openDeliverModal(project, row)"
+            >✓ Marcar como entregado</button>
+
+            <button
+              type="button"
+              class="dv-btn dv-btn-ghost dv-more"
+              :aria-expanded="openMoreId === row.id"
+              @click="toggleMore(row.id)"
+            >{{ openMoreId === row.id ? '✕ Cerrar opciones' : '⋯ Más opciones' }}</button>
+          </div>
+
+          <!-- Editar, deshacer y eliminar viven acá adentro a propósito: son lo
+               que no se hace todos los días, y tenerlas sueltas al lado del
+               botón principal era pedir un toque equivocado en el celular. -->
+          <div v-if="openMoreId === row.id" class="dv-more-panel">
+            <button type="button" class="dv-btn dv-btn-ghost" @click="openEditModal(project, row)">
+              ✎ Editar nombre, fecha o cuota
+            </button>
+            <button
+              v-if="row.status === 'entregado'"
+              type="button"
+              class="dv-btn dv-btn-ghost"
+              :disabled="busyId === row.id"
+              @click="undeliver(row)"
+            >↩ No estaba entregado (deshacer)</button>
+            <button
+              type="button"
+              class="dv-btn dv-btn-danger"
+              :disabled="busyId === row.id"
+              @click="removeDeliverable(row)"
+            >🗑 Eliminar este entregable</button>
+          </div>
+        </article>
       </div>
 
+      <p v-else-if="project.deliverables.length === 0" class="dv-note">
+        Este proyecto todavía no tiene entregables. Agrega el primero con el botón de abajo.
+      </p>
+      <p v-else class="dv-note">
+        Ninguno de sus {{ project.deliverables.length }} entregables está en «{{ stateLabel(stateFilter) }}».
+      </p>
+
       <div class="dv-project-actions">
-        <button type="button" class="btn-secondary dv-mini-btn" @click="openCreateModal(project)">
-          + Agregar entregable
+        <button type="button" class="dv-btn dv-btn-ghost" @click="openCreateModal(project)">
+          ➕ Agregar entregable
         </button>
         <!-- Lo que ya está escrito en el contrato no se vuelve a teclear. Copia,
              no lectura en vivo: un contrato emitido no cambia porque alguien
@@ -188,106 +247,132 @@
         <button
           v-if="project.contract_plan_available > 0"
           type="button"
-          class="btn-secondary dv-mini-btn"
+          class="dv-btn dv-btn-ghost"
           :disabled="busyId === `import-${project.project_id}`"
           @click="importFromContract(project)"
         >
-          📄 Importar del contrato ({{ project.contract_plan_available }})
+          📄 Traer los {{ project.contract_plan_available }} del contrato
         </button>
       </div>
     </section>
 
     <!-- Alta / edición del plan -->
-    <div v-if="editModal.open" class="modal-overlay" @click.self="closeEditModal">
-      <div class="modal-content dv-modal">
-        <div class="modal-header">
-          <h3 class="dv-modal-title">{{ editModal.id ? '✎ Editar entregable' : '+ Nuevo entregable' }}</h3>
-          <button type="button" class="btn-secondary dv-mini-btn" @click="closeEditModal">✕ Cerrar</button>
-        </div>
-        <form class="modal-body" @submit.prevent="saveDeliverable">
-          <div class="form-group">
-            <label class="form-label">Qué se entrega *</label>
-            <input v-model="editModal.title" type="text" class="form-input" placeholder="Capítulo I y II" required />
+    <div v-if="editModal.open" class="modal-overlay dv-overlay" @click.self="closeEditModal">
+      <div class="dv-sheet" role="dialog" aria-modal="true">
+        <header class="dv-sheet-head">
+          <h3 class="dv-sheet-title">{{ editModal.id ? '✎ Editar entregable' : '➕ Nuevo entregable' }}</h3>
+          <button type="button" class="dv-sheet-close" title="Cerrar" @click="closeEditModal">✕</button>
+        </header>
+
+        <form class="dv-sheet-body" @submit.prevent="saveDeliverable">
+          <div class="dv-field">
+            <label class="dv-label" for="dv-title">¿Qué se entrega?</label>
+            <input
+              id="dv-title"
+              v-model="editModal.title"
+              type="text"
+              class="dv-input"
+              placeholder="Por ejemplo: Capítulo I y II"
+              required
+            />
           </div>
-          <div class="form-group">
-            <label class="form-label">Detalle (opcional)</label>
-            <textarea v-model="editModal.description" class="form-input" rows="2"></textarea>
+
+          <div class="dv-field">
+            <label class="dv-label" for="dv-desc">Detalle <span class="dv-optional">(opcional)</span></label>
+            <textarea id="dv-desc" v-model="editModal.description" class="dv-input" rows="2"></textarea>
           </div>
-          <div class="dv-form-row">
-            <div class="form-group">
-              <label class="form-label">Fecha pactada</label>
-              <input v-model="editModal.dueDate" type="date" class="form-input" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Se entrega contra la cuota…</label>
-              <select v-model="editModal.incomeId" class="form-select">
-                <option value="">Sin cuota atada</option>
-                <option v-for="item in editModal.schedule" :key="item.income_id" :value="item.income_id">
-                  Cuota {{ item.cuota }} · {{ item.code }} ({{ item.estado }})
-                </option>
-              </select>
-            </div>
+
+          <div class="dv-field">
+            <label class="dv-label" for="dv-due">¿Para qué fecha quedó?</label>
+            <input id="dv-due" v-model="editModal.dueDate" type="date" class="dv-input" />
           </div>
-          <p class="dv-modal-hint">
-            Atar una cuota no bloquea nada: sirve para que el tablero avise si se entrega
-            antes de que Finanzas verifique el pago, o si ya se cobró y falta entregar.
-          </p>
-          <p v-if="editModal.error" class="dv-modal-error">{{ editModal.error }}</p>
-          <div class="dv-modal-actions">
-            <button type="button" class="btn-secondary" @click="closeEditModal">Cancelar</button>
-            <button type="submit" class="btn-primary dv-submit" :disabled="editModal.saving">
+
+          <div class="dv-field">
+            <label class="dv-label" for="dv-income">¿Se entrega contra alguna cuota?</label>
+            <select id="dv-income" v-model="editModal.incomeId" class="dv-input">
+              <option value="">No depende de ninguna cuota</option>
+              <option v-for="item in editModal.schedule" :key="item.income_id" :value="item.income_id">
+                Cuota {{ item.cuota }} · {{ item.code }} ({{ item.estado }})
+              </option>
+            </select>
+            <p class="dv-help">
+              Elegir una cuota no bloquea nada. Solo sirve para que esta pantalla avise si se
+              entrega antes de que Finanzas confirme el pago, o si ya se cobró y falta entregar.
+            </p>
+          </div>
+
+          <p v-if="editModal.error" class="dv-sheet-error">⚠️ {{ editModal.error }}</p>
+
+          <footer class="dv-sheet-actions">
+            <button type="submit" class="dv-btn dv-btn-primary" :disabled="editModal.saving">
               {{ editModal.saving ? 'Guardando…' : 'Guardar' }}
             </button>
-          </div>
+            <button type="button" class="dv-btn dv-btn-ghost" @click="closeEditModal">Cancelar</button>
+          </footer>
         </form>
       </div>
     </div>
 
     <!-- Registro de la entrega -->
-    <div v-if="deliverModal.open" class="modal-overlay" @click.self="closeDeliverModal">
-      <div class="modal-content dv-modal">
-        <div class="modal-header">
-          <h3 class="dv-modal-title">✓ Registrar entrega</h3>
-          <button type="button" class="btn-secondary dv-mini-btn" @click="closeDeliverModal">✕ Cerrar</button>
-        </div>
-        <form class="modal-body" @submit.prevent="submitDelivery">
-          <p class="dv-modal-subject">{{ deliverModal.title }}</p>
-          <div class="dv-form-row">
-            <div class="form-group">
-              <label class="form-label">Fecha de entrega</label>
-              <input v-model="deliverModal.deliveredAt" type="date" class="form-input" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Por dónde se entregó</label>
-              <select v-model="deliverModal.channel" class="form-select">
-                <option value="">Sin especificar</option>
-                <option v-for="c in CHANNELS" :key="c.value" :value="c.value">{{ c.label }}</option>
-              </select>
-            </div>
+    <div v-if="deliverModal.open" class="modal-overlay dv-overlay" @click.self="closeDeliverModal">
+      <div class="dv-sheet" role="dialog" aria-modal="true">
+        <header class="dv-sheet-head">
+          <h3 class="dv-sheet-title">✓ Registrar entrega</h3>
+          <button type="button" class="dv-sheet-close" title="Cerrar" @click="closeDeliverModal">✕</button>
+        </header>
+
+        <form class="dv-sheet-body" @submit.prevent="submitDelivery">
+          <p class="dv-sheet-subject">{{ deliverModal.title }}</p>
+
+          <div class="dv-field">
+            <label class="dv-label" for="dv-delivered-at">¿Qué día se entregó?</label>
+            <input id="dv-delivered-at" v-model="deliverModal.deliveredAt" type="date" class="dv-input" />
           </div>
-          <div class="form-group">
-            <label class="form-label">Copia del archivo (opcional)</label>
-            <input type="file" class="form-input" @change="deliverModal.file = $event.target.files[0] || null" />
-            <p class="dv-modal-hint">
-              Respaldo interno. El cliente ya lo recibió por el canal de arriba: esto es para que
-              mañana se pueda saber exactamente qué se mandó.
+
+          <div class="dv-field">
+            <label class="dv-label" for="dv-channel">¿Por dónde se lo mandaste?</label>
+            <select id="dv-channel" v-model="deliverModal.channel" class="dv-input">
+              <option value="">Prefiero no indicarlo</option>
+              <option v-for="c in CHANNELS" :key="c.value" :value="c.value">{{ c.label }}</option>
+            </select>
+          </div>
+
+          <div class="dv-field">
+            <label class="dv-label">Copia del archivo <span class="dv-optional">(opcional)</span></label>
+            <label class="dv-file-pick">
+              <input type="file" @change="pickFile($event)" />
+              <span>📎 {{ deliverModal.file ? deliverModal.file.name : 'Elegir un archivo de tu equipo' }}</span>
+            </label>
+            <button
+              v-if="deliverModal.file"
+              type="button"
+              class="dv-file-clear"
+              @click="deliverModal.file = null"
+            >✕ Quitar el archivo</button>
+            <p class="dv-help">
+              Es solo un respaldo nuestro. El cliente ya lo recibió por donde se lo mandaste;
+              esto sirve para saber mañana exactamente qué se le envió.
             </p>
           </div>
-          <div class="form-group">
-            <label class="form-label">Nota (opcional)</label>
-            <textarea v-model="deliverModal.notes" class="form-input" rows="2"></textarea>
+
+          <div class="dv-field">
+            <label class="dv-label" for="dv-notes">Nota <span class="dv-optional">(opcional)</span></label>
+            <textarea id="dv-notes" v-model="deliverModal.notes" class="dv-input" rows="2"></textarea>
           </div>
-          <p v-if="deliverModal.warnUnpaid" class="dv-modal-warn">
-            ⚠️ La cuota de este entregable todavía no está verificada por Finanzas. Se puede
-            registrar igual; quedará marcado como «Entregado sin cobrar».
+
+          <p v-if="deliverModal.warnUnpaid" class="dv-sheet-warn">
+            ⚠️ Finanzas todavía no confirmó la cuota de este entregable. Se puede registrar igual:
+            va a quedar marcado como <strong>«Entregado sin cobrar»</strong>.
           </p>
-          <p v-if="deliverModal.error" class="dv-modal-error">{{ deliverModal.error }}</p>
-          <div class="dv-modal-actions">
-            <button type="button" class="btn-secondary" @click="closeDeliverModal">Cancelar</button>
-            <button type="submit" class="btn-primary dv-submit" :disabled="deliverModal.saving">
-              {{ deliverModal.saving ? 'Registrando…' : 'Registrar entrega' }}
+
+          <p v-if="deliverModal.error" class="dv-sheet-error">⚠️ {{ deliverModal.error }}</p>
+
+          <footer class="dv-sheet-actions">
+            <button type="submit" class="dv-btn dv-btn-primary" :disabled="deliverModal.saving">
+              {{ deliverModal.saving ? 'Registrando…' : '✓ Sí, ya se entregó' }}
             </button>
-          </div>
+            <button type="button" class="dv-btn dv-btn-ghost" @click="closeDeliverModal">Cancelar</button>
+          </footer>
         </form>
       </div>
     </div>
@@ -330,26 +415,99 @@ function emptyTotals() {
   };
 }
 
+/**
+ * Los textos están escritos para quien atiende las entregas, no para quien
+ * programó la pantalla: el `hint` dice qué significa el número y el `todo` qué
+ * hay que hacer con esa fila. Por eso no se reutiliza el `pending_reason` que
+ * manda el backend, que está redactado desde el lado del dato.
+ */
 const STATE_META = {
-  entregado: { label: 'Entregados', icon: '✅', tone: 'ok', hint: 'Entregado y con el pago verificado' },
-  sin_cobrar: { label: 'Entregados sin cobrar', icon: '💸', tone: 'warn', hint: 'Salió el trabajo y el pago sigue sin verificar' },
-  por_entregar: { label: 'Falta entregar', icon: '📤', tone: 'bad', hint: 'Ya se cobró y la entrega sigue pendiente' },
-  pendiente: { label: 'Pendientes', icon: '⏳', tone: 'neutral', hint: 'Sin pago verificado y sin entregar' },
-  overdue: { label: 'Entregas vencidas', icon: '⚠️', tone: 'bad', hint: 'Pasó la fecha pactada y no se entregó' }
+  por_entregar: {
+    label: 'Falta entregar',
+    tile: 'Faltan por entregar',
+    icon: '📤',
+    tone: 'bad',
+    hint: 'El cliente ya pagó y todavía no recibe su trabajo',
+    todo: 'El pago ya está confirmado: falta hacerle llegar el trabajo.',
+    todoNoIncome: 'Falta hacer la entrega. No está atado a ninguna cuota.'
+  },
+  overdue: {
+    label: 'Fuera de fecha',
+    icon: '⚠️',
+    tone: 'bad',
+    hint: 'Ya pasó el día acordado y sigue sin entregarse'
+  },
+  sin_cobrar: {
+    label: 'Entregado sin cobrar',
+    tile: 'Entregados sin cobrar',
+    icon: '💸',
+    tone: 'warn',
+    hint: 'Ya se entregó, pero Finanzas aún no confirma el pago',
+    todo: 'Ya se entregó. Falta que Finanzas confirme el pago de la cuota.'
+  },
+  pendiente: {
+    label: 'Todavía no toca',
+    icon: '⏳',
+    tone: 'neutral',
+    hint: 'Sin pago confirmado y sin entregar',
+    todo: 'Todavía no toca: falta que paguen y falta entregar.'
+  },
+  entregado: {
+    label: 'Listo',
+    tile: 'Listos',
+    icon: '✅',
+    tone: 'ok',
+    hint: 'Entregado y con el pago confirmado',
+    todo: 'Listo: entregado y pagado. No hay nada pendiente.'
+  }
 };
 
-const kpiTiles = computed(() => ['entregado', 'sin_cobrar', 'por_entregar', 'pendiente', 'overdue'].map((key) => ({
+// Lo urgente primero: así el recuadro que hay que mirar está siempre arriba a
+// la izquierda, que es donde cae la vista al abrir la pantalla.
+const kpiTiles = computed(() => ['por_entregar', 'overdue', 'sin_cobrar', 'pendiente', 'entregado'].map((key) => ({
   key,
   value: overview.value.totals[key] || 0,
-  ...STATE_META[key]
+  ...STATE_META[key],
+  // El recuadro cuenta varios ('Listos'), la tarjeta describe uno ('Listo').
+  label: STATE_META[key].tile || STATE_META[key].label
 })));
 
+/*
+ * Los nombres de estado que se ven en pantalla salen de acá y NO de
+ * `row.state_label`, que es el vocabulario del dominio ("Pendiente",
+ * "Entregado"). Si el recuadro de arriba dice "Todavía no toca" y la tarjeta
+ * dice "Pendiente", quien lee cree que son dos cosas distintas: dentro de esta
+ * pantalla se habla un solo idioma.
+ */
 const stateLabel = (key) => STATE_META[key]?.label || key;
 const stateIcon = (key) => STATE_META[key]?.icon || '';
 const stateTone = (key) => STATE_META[key]?.tone || 'neutral';
 
+/** El color de la tarjeta: una entrega fuera de fecha se mira primero. */
+const rowTone = (row) => (row.is_overdue ? 'bad' : stateTone(row.state));
+
 function toggleStateFilter(key) {
   stateFilter.value = stateFilter.value === key ? '' : key;
+}
+
+const hasFilters = computed(() => Boolean(search.value.trim() || stateFilter.value || onlyNeedsAttention.value));
+
+/**
+ * Una sola salida para volver a verlo todo. Sin esto, alguien que tocó un
+ * recuadro y una casilla tiene que acordarse de deshacer las dos para entender
+ * por qué "le faltan proyectos".
+ */
+function clearFilters() {
+  search.value = '';
+  stateFilter.value = '';
+  onlyNeedsAttention.value = false;
+}
+
+/** Qué fila tiene abierto su panel de "Más opciones" (una a la vez). */
+const openMoreId = ref(null);
+
+function toggleMore(id) {
+  openMoreId.value = openMoreId.value === id ? null : id;
 }
 
 /** "overdue" no es un estado sino una marca que convive con cualquiera. */
@@ -360,6 +518,33 @@ function matchesStateFilter(row) {
 }
 
 const rowsFor = (project) => project.deliverables.filter(matchesStateFilter);
+
+/**
+ * Orden de la lista: lo que hay que hacer hoy arriba y lo terminado al final.
+ * El backend devuelve el orden del plan (`position`), que es el correcto para
+ * leer el cronograma pero no para trabajarlo — quien atiende las entregas abre
+ * la pantalla para saber qué le falta, no en qué orden se pactó.
+ */
+const STATE_WEIGHT = { por_entregar: 0, pendiente: 10, sin_cobrar: 20, entregado: 30 };
+
+function rowWeight(row) {
+  const base = STATE_WEIGHT[row.state] ?? 40;
+  return base - (row.is_overdue ? 5 : 0);
+}
+
+function sortedRows(project) {
+  return [...rowsFor(project)].sort((a, b) => {
+    const byState = rowWeight(a) - rowWeight(b);
+    if (byState !== 0) return byState;
+    // Entre iguales, primero lo que vence antes; lo que no tiene fecha, al final.
+    if (a.due_date !== b.due_date) {
+      if (!a.due_date) return 1;
+      if (!b.due_date) return -1;
+      return a.due_date < b.due_date ? -1 : 1;
+    }
+    return (a.position ?? 0) - (b.position ?? 0);
+  });
+}
 
 function matchesSearch(project) {
   const query = search.value.trim().toLowerCase();
@@ -379,32 +564,52 @@ const visibleProjects = computed(() => overview.value.projects.filter((project) 
   return true;
 }));
 
+/** Etiqueta corta para los chips del proyecto: "2 por entregar", no "2 falta entregar". */
+const CHIP_LABELS = {
+  por_entregar: 'por entregar',
+  overdue: 'fuera de fecha',
+  sin_cobrar: 'sin cobrar',
+  entregado: 'listos'
+};
+
 function projectStateChips(project) {
-  return ['por_entregar', 'sin_cobrar', 'overdue', 'entregado']
+  return ['por_entregar', 'overdue', 'sin_cobrar', 'entregado']
     .filter((key) => (project.counts[key] || 0) > 0)
     .map((key) => ({
       key,
       value: project.counts[key],
-      label: STATE_META[key].label.toLowerCase(),
+      label: CHIP_LABELS[key],
       icon: STATE_META[key].icon,
       tone: STATE_META[key].tone
     }));
 }
 
+/**
+ * La frase que dice qué hacer con esta fila. Es lo primero que se lee después
+ * del título: el nombre del estado solo nombra la situación, y quien usa esta
+ * pantalla necesita la acción.
+ */
+function todoSentence(row) {
+  const meta = STATE_META[row.state] || {};
+  const base = (!row.income_id && meta.todoNoIncome) || meta.todo || row.pending_reason || '';
+  if (row.is_overdue) {
+    const days = daysFromToday(row.due_date);
+    const late = days != null && days < 0
+      ? ` La fecha pasó hace ${plural(Math.abs(days), 'día', 'días')}.`
+      : ' La fecha pactada ya pasó.';
+    return `${base}${late}`;
+  }
+  return base;
+}
+
 /** "pagado" en Finanzas significa "con comprobante, a la espera del visto bueno". */
 function paymentLabel(row) {
-  if (row.income_estado === 'verificado') return '✅ Verificado';
-  if (row.income_estado === 'pagado') return '🧾 En revisión';
-  return '⏳ Sin pagar';
+  if (row.income_estado === 'verificado') return '✅ Pago confirmado';
+  if (row.income_estado === 'pagado') return '🧾 Pagado, Finanzas lo está revisando';
+  return '⏳ Todavía sin pagar';
 }
 
-function paymentTone(row) {
-  if (row.income_estado === 'verificado') return 'ok';
-  if (row.income_estado === 'pagado') return 'warn';
-  return 'neutral';
-}
-
-const channelLabel = (value) => CHANNELS.find((c) => c.value === value)?.label || 'Canal sin registrar';
+const channelLabel = (value) => CHANNELS.find((c) => c.value === value)?.label || 'no quedó registrado por dónde';
 
 /**
  * Las fechas llegan como `AAAA-MM-DD` (un día de calendario, no un instante):
@@ -420,11 +625,57 @@ function todayIso() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date());
 }
 
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * Cuántos días faltan (positivo) o pasaron (negativo) hasta esa fecha. Las dos
+ * fechas se convierten a mediodía UTC antes de restar: así el resultado es una
+ * cuenta de días de calendario y no depende de la hora ni del huso.
+ */
+function daysFromToday(iso) {
+  if (!iso) return null;
+  const toUtc = (value) => {
+    const [y, m, d] = String(value).slice(0, 10).split('-').map(Number);
+    return y && m && d ? Date.UTC(y, m - 1, d) : null;
+  };
+  const target = toUtc(iso);
+  const today = toUtc(todayIso());
+  if (target == null || today == null) return null;
+  return Math.round((target - today) / 86400000);
+}
+
+/**
+ * La fecha pactada contada como la contaría una persona ("faltan 3 días",
+ * "venció hace 2 días"). El día exacto se sigue mostrando: la cuenta ayuda a
+ * decidir, la fecha es la que se habla con el cliente.
+ */
+function dueText(row) {
+  if (!row.due_date) return 'Sin fecha acordada';
+  const date = formatDate(row.due_date);
+  if (row.status === 'entregado') return date;
+
+  const days = daysFromToday(row.due_date);
+  if (days == null) return date;
+  if (days === 0) return `${date} · es hoy`;
+  if (days === 1) return `${date} · es mañana`;
+  if (days === -1) return `${date} · fue ayer`;
+  if (days > 1) return `${date} · faltan ${plural(days, 'día', 'días')}`;
+  return `${date} · pasó hace ${plural(Math.abs(days), 'día', 'días')}`;
+}
+
+/** El `<input type="file">` va oculto dentro de su etiqueta: acá se recoge. */
+function pickFile(event) {
+  deliverModal.file = event.target.files?.[0] || null;
+}
+
 // ------------------------------------------------------------------- LECTURA
 
 async function fetchOverview() {
   isLoading.value = true;
   loadError.value = '';
+  // Las filas se vuelven a dibujar: dejar abierto el panel de opciones de una
+  // fila que quizá ya no está sería dejarlo apuntando a nada.
+  openMoreId.value = null;
   try {
     const response = await apiFetch('/api/deliverables');
     const data = await response.json();
@@ -452,6 +703,7 @@ function openCreateModal(project) {
 }
 
 function openEditModal(project, row) {
+  openMoreId.value = null;
   Object.assign(editModal, {
     open: true, id: row.id, projectId: project.project_id, title: row.title,
     description: row.description || '', dueDate: row.due_date || '', incomeId: row.income_id || '',
@@ -494,7 +746,10 @@ async function saveDeliverable() {
 }
 
 async function removeDeliverable(row) {
-  if (!confirm(`¿Eliminar el entregable "${row.title}"? También se borra el archivo guardado.`)) return;
+  // Los avisos están escritos como una pregunta con su consecuencia: quien usa
+  // esta pantalla tiene que poder decidir sin saber qué hace el sistema por
+  // dentro.
+  if (!confirm(`¿Seguro que quieres borrar "${row.title}"?\n\nSe borra también la copia del archivo guardada. Esto no se puede deshacer.`)) return;
   busyId.value = row.id;
   try {
     const response = await apiFetch(`/api/deliverables/${row.id}`, { method: 'DELETE' });
@@ -515,6 +770,7 @@ const deliverModal = reactive({
 });
 
 function openDeliverModal(project, row) {
+  openMoreId.value = null;
   Object.assign(deliverModal, {
     open: true, id: row.id, title: row.title, deliveredAt: todayIso(), channel: '', notes: row.notes || '',
     file: null,
@@ -552,7 +808,7 @@ async function submitDelivery() {
 }
 
 async function undeliver(row) {
-  if (!confirm(`¿Marcar "${row.title}" como no entregado? El archivo guardado se conserva.`)) return;
+  if (!confirm(`¿"${row.title}" todavía NO se entregó?\n\nVuelve a quedar pendiente. La copia del archivo se conserva.`)) return;
   busyId.value = row.id;
   try {
     const response = await apiFetch(`/api/deliverables/${row.id}/undeliver`, { method: 'POST' });
@@ -604,228 +860,679 @@ onMounted(fetchOverview);
 </script>
 
 <style scoped>
+/*
+ * ESCALA PROPIA DE ESTA PANTALLA
+ *
+ * El resto de /admin usa la escala compacta de `src/style.css` (sección
+ * "DENSIDAD Y ESTILO DEL PANEL INTERNO"), pensada para quien trabaja todo el
+ * día con el panel y quiere ver mucho de un vistazo. Entregables lo usa una
+ * persona que no trabaja con software, así que acá el texto, los botones y las
+ * zonas de toque son deliberadamente más grandes. Es la única pantalla que se
+ * sale de esa escala y lo hace a propósito: no se arregla "unificándola".
+ *
+ * Todo se arma en UNA columna que se ensancha, nunca en tablas: por eso no hay
+ * ningún `overflow-x` en la página y se ve igual en un celular que en un
+ * monitor.
+ */
+
 .deliverables-page {
   padding: var(--page-py) var(--page-px) var(--page-pb);
-  max-width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
   box-sizing: border-box;
+  font-size: 1rem;
 }
+
+.dv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* --- Encabezado ---------------------------------------------------------- */
 
 .dv-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: flex-start;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
   margin-bottom: 1.25rem;
 }
 
-.dv-alert { border-color: rgba(200, 85, 50, 0.4); margin-bottom: 1.25rem; }
+.dv-header-text { flex: 1 1 320px; }
 
-/* --- Contadores ---------------------------------------------------------- */
+.dv-title {
+  font-family: var(--font-heading);
+  font-size: 1.5rem;
+  color: var(--text-main);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dv-subtitle {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text-sub);
+  margin: 0.4rem 0 0;
+  max-width: 62ch;
+}
+
+.dv-alert {
+  border: 1px solid var(--accent-rose);
+  border-left-width: 5px;
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.25rem;
+  color: var(--text-main);
+}
+
+.dv-alert p { margin: 0.35rem 0 0.75rem; font-size: 0.95rem; }
+
+/* --- Botones ------------------------------------------------------------- */
+
+/* Un solo botón para toda la pantalla: alto fijo de 48px (zona de toque
+   cómoda), texto legible y SIEMPRE con palabras — ningún icono suelto. */
+.dv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 48px;
+  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.dv-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.dv-btn:focus-visible { outline: 3px solid var(--border-glow); outline-offset: 2px; }
+
+.dv-btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #FFFFFF;
+}
+
+.dv-btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+
+.dv-btn-ghost:hover:not(:disabled) { background: var(--bg-card-hover); border-color: var(--primary); }
+
+.dv-btn-danger { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.45); }
+.dv-btn-danger:hover:not(:disabled) { background: rgba(200, 85, 50, 0.08); border-color: var(--accent-rose); }
+
+/* --- Resumen / contadores ------------------------------------------------ */
+
+.dv-summary { margin-bottom: 1.25rem; }
+
+.dv-summary-hint {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
 
 .dv-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.7rem;
 }
 
 .dv-kpi {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.2rem;
   text-align: left;
-  padding: 0.75rem 0.9rem;
-  border-radius: 10px;
+  min-height: 108px;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
+  border-top: 4px solid var(--border-strong);
   background: var(--bg-card);
   cursor: pointer;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.dv-kpi:hover { border-color: var(--border-strong); transform: translateY(-1px); }
-.dv-kpi.is-active { border-color: var(--border-glow); box-shadow: 0 0 0 1px var(--border-glow); }
+.dv-kpi:hover { border-color: var(--border-strong); }
+.dv-kpi:focus-visible { outline: 3px solid var(--border-glow); outline-offset: 2px; }
 
-.dv-kpi-value { font-family: var(--font-heading); font-size: 1.5rem; line-height: 1.1; color: var(--text-main); }
-.dv-kpi-label { font-size: 0.8rem; color: var(--text-sub); font-weight: 600; }
-.dv-kpi-hint { font-size: 0.7rem; color: var(--text-muted); }
+.dv-kpi.is-active {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
 
+.dv-kpi-value {
+  font-family: var(--font-heading);
+  font-size: 2rem;
+  line-height: 1;
+  color: var(--text-main);
+}
+
+.dv-kpi-label { font-size: 0.95rem; color: var(--text-main); font-weight: 600; }
+.dv-kpi-hint { font-size: 0.8rem; line-height: 1.35; color: var(--text-muted); }
+
+.dv-kpi-active {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.dv-kpi.is-ok { border-top-color: var(--accent-emerald); }
+.dv-kpi.is-warn { border-top-color: var(--accent-amber); }
+.dv-kpi.is-bad { border-top-color: var(--accent-rose); }
 .dv-kpi.is-ok .dv-kpi-value { color: var(--accent-emerald); }
 .dv-kpi.is-warn .dv-kpi-value { color: var(--accent-amber); }
 .dv-kpi.is-bad .dv-kpi-value { color: var(--accent-rose); }
 
-/* --- Filtros ------------------------------------------------------------- */
+/* --- Buscador y filtros -------------------------------------------------- */
 
 .dv-filters {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.75rem 1rem;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1.25rem;
+  gap: 0.6rem 0.9rem;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
 }
 
-.dv-search { flex: 1 1 280px; min-width: 220px; }
-
-.dv-check {
-  display: inline-flex;
+.dv-search-wrap {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.82rem;
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.dv-search-icon { position: absolute; left: 0.85rem; font-size: 1rem; pointer-events: none; }
+
+.dv-search {
+  width: 100%;
+  min-height: 48px;
+  padding: 0.6rem 2.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 1rem;
+}
+
+.dv-search:focus { outline: 3px solid var(--border-glow); outline-offset: 0; border-color: var(--primary); }
+
+.dv-search-clear {
+  position: absolute;
+  right: 0.5rem;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-2);
   color: var(--text-sub);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.dv-toggle {
+  min-height: 48px;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
 
-.dv-filter-count { font-size: 0.78rem; color: var(--text-muted); margin-left: auto; }
-.dv-empty { padding: 2rem; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
+.dv-toggle.is-on { border-color: var(--primary); background: rgba(111, 129, 37, 0.1); color: var(--primary); }
+
+.dv-filter-count { font-size: 0.9rem; color: var(--text-sub); margin: 0 0 0 auto; }
+.dv-filter-count strong { color: var(--text-main); }
+
+.dv-empty {
+  padding: 2.5rem 1.25rem;
+  text-align: center;
+  color: var(--text-sub);
+  font-size: 1rem;
+  line-height: 1.6;
+  background: var(--bg-card);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.dv-empty p { margin: 0 0 0.75rem; }
+.dv-empty-sub { font-size: 0.92rem; color: var(--text-muted); }
 
 /* --- Proyecto ------------------------------------------------------------ */
 
-.dv-project { padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.dv-project {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.15rem 1.25rem 1.25rem;
+  margin-bottom: 1.25rem;
+  box-shadow: var(--shadow-sm);
+}
 
 .dv-project-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   flex-wrap: wrap;
-  gap: 0.75rem 1.25rem;
-  padding-bottom: 0.85rem;
-  margin-bottom: 0.85rem;
-  border-bottom: 1px solid var(--border-color);
+  gap: 0.6rem 1.25rem;
+  padding-bottom: 0.9rem;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.dv-project-id { flex: 1 1 260px; min-width: 0; }
+
+/* El cliente va primero y en grande: es como se piensa el trabajo ("lo de la
+   señora X"), no por el título de la tesis. */
+.dv-project-client {
+  font-family: var(--font-heading);
+  font-size: 1.2rem;
+  color: var(--text-main);
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .dv-project-topic {
-  font-family: var(--font-heading);
-  font-size: 1rem;
-  color: var(--text-main);
-  text-decoration: none;
-  font-weight: 600;
+  display: inline-block;
+  margin-top: 0.2rem;
+  font-size: 0.95rem;
+  color: var(--accent-cyan);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
 }
 
-.dv-project-topic:hover { color: var(--accent-cyan); }
-.dv-project-client { font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0; }
-.dv-project-locked { font-size: 0.78rem; color: var(--accent-amber); margin: 0.4rem 0 0; max-width: 60ch; }
+.dv-project-extra { font-size: 0.88rem; color: var(--text-muted); margin: 0.25rem 0 0; }
 
-.dv-project-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: flex-end; }
+.dv-project-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
 .dv-chip {
-  font-size: 0.72rem;
-  padding: 0.2rem 0.55rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.3rem 0.7rem;
   border-radius: 999px;
   border: 1px solid var(--border-color);
   color: var(--text-sub);
   white-space: nowrap;
 }
 
-.dv-chip.is-ok { color: var(--accent-emerald); border-color: rgba(46, 125, 70, 0.4); }
-.dv-chip.is-warn { color: var(--accent-amber); border-color: rgba(222, 117, 75, 0.4); }
-.dv-chip.is-bad { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.4); }
+.dv-chip.is-ok { color: var(--accent-emerald); border-color: rgba(46, 125, 70, 0.45); background: rgba(46, 125, 70, 0.07); }
+.dv-chip.is-warn { color: var(--accent-amber); border-color: rgba(222, 117, 75, 0.45); background: rgba(222, 117, 75, 0.07); }
+.dv-chip.is-bad { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.45); background: rgba(200, 85, 50, 0.07); }
+
+.dv-note {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text-sub);
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.dv-note.is-warn { color: var(--accent-amber); background: rgba(222, 117, 75, 0.08); }
 
 .dv-project-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
-  margin-top: 0.85rem;
-  padding-top: 0.85rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
   border-top: 1px solid var(--border-color);
 }
 
-/* --- Tabla --------------------------------------------------------------- */
+/* --- Tarjeta de entregable ----------------------------------------------- */
 
-.dv-table-scroll { overflow-x: auto; }
-.dv-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+/* Una tarjeta por entregable en vez de una fila de tabla: la tabla obligaba a
+   desplazarse de lado en el celular y escondía justo las columnas que importan
+   (estado y acción). Acá cada dato lleva su nombre al lado. */
+.dv-list { display: flex; flex-direction: column; gap: 0.85rem; }
 
-.dv-table th {
-  text-align: left;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-color);
-  white-space: nowrap;
+.dv-item {
+  border: 1px solid var(--border-color);
+  border-left: 6px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.1rem;
+  background: var(--bg-card);
 }
 
-.dv-table td {
-  padding: 0.55rem 0.6rem;
-  border-bottom: 1px solid var(--border-color);
-  color: var(--text-sub);
-  vertical-align: top;
+.dv-item.is-ok { border-left-color: var(--accent-emerald); }
+.dv-item.is-warn { border-left-color: var(--accent-amber); }
+.dv-item.is-bad { border-left-color: var(--accent-rose); }
+.dv-item.is-neutral { border-left-color: var(--border-strong); }
+.dv-item.is-open { background: var(--bg-card-hover); }
+
+.dv-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
 }
 
-.dv-table tbody tr:last-child td { border-bottom: none; }
-.dv-table tr.is-overdue td:first-child { box-shadow: inset 2px 0 0 var(--accent-rose); }
-
-.dv-cell-title { color: var(--text-main); min-width: 16ch; }
-.dv-desc { display: block; font-size: 0.74rem; color: var(--text-muted); margin-top: 0.15rem; }
-.dv-nowrap { white-space: nowrap; }
-
-.dv-code { display: block; font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem; }
-
-.dv-overdue-tag {
-  display: inline-block;
-  font-size: 0.65rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 4px;
-  border: 1px solid rgba(200, 85, 50, 0.4);
-  color: var(--accent-rose);
-  margin-top: 0.2rem;
+.dv-item-title {
+  font-family: var(--font-heading);
+  font-size: 1.1rem;
+  color: var(--text-main);
+  margin: 0;
+  flex: 1 1 200px;
+  overflow-wrap: anywhere;
 }
 
-.dv-badge {
-  display: inline-block;
-  font-size: 0.74rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 6px;
+.dv-item-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+.dv-state {
+  font-size: 0.88rem;
+  font-weight: 700;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
   border: 1px solid var(--border-color);
   white-space: nowrap;
 }
 
-.dv-badge.is-ok { color: var(--accent-emerald); border-color: rgba(46, 125, 70, 0.4); }
-.dv-badge.is-warn { color: var(--accent-amber); border-color: rgba(222, 117, 75, 0.4); }
-.dv-badge.is-bad { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.4); }
-.dv-badge.is-neutral { color: var(--text-muted); }
+.dv-state.is-ok { color: var(--accent-emerald); border-color: rgba(46, 125, 70, 0.45); background: rgba(46, 125, 70, 0.08); }
+.dv-state.is-warn { color: var(--accent-amber); border-color: rgba(222, 117, 75, 0.45); background: rgba(222, 117, 75, 0.08); }
+.dv-state.is-bad { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.45); background: rgba(200, 85, 50, 0.08); }
+.dv-state.is-neutral { color: var(--text-sub); background: var(--surface-1); }
 
-.dv-work-meta { display: block; font-size: 0.7rem; color: var(--text-muted); }
-.dv-muted { color: var(--text-muted); }
-.dv-pending { display: block; font-size: 0.72rem; color: var(--text-muted); margin-top: 0.25rem; max-width: 30ch; }
-.dv-no-rows { font-size: 0.82rem; padding: 0.5rem 0; }
-
-.dv-link-btn {
-  background: none;
-  border: none;
-  padding: 0;
-  margin-top: 0.25rem;
-  font-size: 0.74rem;
-  color: var(--accent-cyan);
-  cursor: pointer;
-  text-align: left;
+/* La frase que dice qué hacer. Va antes que cualquier dato suelto. */
+.dv-item-todo {
+  font-size: 1rem;
+  line-height: 1.5;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0.6rem 0 0;
 }
 
-.dv-actions { display: flex; gap: 0.3rem; white-space: nowrap; }
+.dv-item-todo.is-bad { color: var(--accent-rose); }
+.dv-item-todo.is-warn { color: var(--accent-amber); }
+.dv-item-todo.is-ok { color: var(--accent-emerald); }
+.dv-item-todo.is-neutral { color: var(--text-sub); }
 
-.dv-mini-btn { padding: 0.25rem 0.6rem; font-size: 0.75rem; width: auto; }
-.dv-mini-btn.is-danger { color: var(--accent-rose); }
+.dv-item-desc {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text-sub);
+  margin: 0.45rem 0 0;
+  overflow-wrap: anywhere;
+}
 
-/* --- Modales ------------------------------------------------------------- */
+.dv-facts { margin: 0.85rem 0 0; display: flex; flex-direction: column; gap: 0.45rem; }
 
-.dv-modal { max-width: 560px; }
-.dv-modal-title { font-family: var(--font-heading); font-size: 1rem; color: var(--text-main); margin: 0; }
-.dv-modal-subject { font-size: 0.9rem; color: var(--text-main); font-weight: 600; margin: 0 0 0.9rem; }
+.dv-fact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.6rem;
+  font-size: 0.93rem;
+  line-height: 1.45;
+}
 
-.dv-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.dv-fact dt { flex: 0 0 11rem; color: var(--text-muted); font-weight: 600; }
+.dv-fact dd { flex: 1 1 14rem; margin: 0; color: var(--text-main); overflow-wrap: anywhere; }
+.dv-fact.is-bad dd { color: var(--accent-rose); font-weight: 600; }
 
-.dv-modal-hint { font-size: 0.74rem; color: var(--text-muted); margin: 0.35rem 0 0; }
-.dv-modal-warn { font-size: 0.78rem; color: var(--accent-amber); margin: 0.75rem 0 0; }
-.dv-modal-error { font-size: 0.8rem; color: var(--accent-rose); margin: 0.6rem 0 0; }
+.dv-file-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 0.7rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--accent-cyan);
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 
-.dv-modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.1rem; }
-.dv-submit { width: auto; padding: 0 1.25rem; }
+.dv-file-btn:hover { border-color: var(--primary); background: var(--bg-card-hover); }
 
-@media (max-width: 720px) {
-  .dv-project-meta { justify-content: flex-start; }
-  .dv-filter-count { margin-left: 0; }
-  .dv-form-row { grid-template-columns: 1fr; }
+.dv-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.dv-item-actions .dv-btn-primary { flex: 1 1 15rem; }
+.dv-more { flex: 0 1 auto; }
+
+.dv-more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.85rem;
+  border-top: 1px dashed var(--border-strong);
+}
+
+/* --- Formularios en hoja (modales) --------------------------------------- */
+
+.dv-overlay { padding: 1rem; }
+
+.dv-sheet {
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+}
+
+.dv-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dv-sheet-title { font-family: var(--font-heading); font-size: 1.15rem; color: var(--text-main); margin: 0; }
+
+.dv-sheet-close {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-sub);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.dv-sheet-close:hover { border-color: var(--accent-rose); color: var(--accent-rose); }
+
+.dv-sheet-body { padding: 1.1rem; overflow-y: auto; }
+
+.dv-sheet-subject {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  overflow-wrap: anywhere;
+}
+
+.dv-field { margin-bottom: 1.1rem; }
+
+.dv-label {
+  display: block;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-bottom: 0.4rem;
+}
+
+.dv-optional { font-weight: 400; color: var(--text-muted); }
+
+.dv-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  /* 1rem = 16px: por debajo de eso Safari en iPhone hace zoom al enfocar el
+     campo y descoloca la pantalla. */
+  font-size: 1rem;
+}
+
+.dv-input:focus { outline: 3px solid var(--border-glow); border-color: var(--primary); }
+textarea.dv-input { min-height: 80px; resize: vertical; }
+
+.dv-help { font-size: 0.88rem; line-height: 1.5; color: var(--text-muted); margin: 0.4rem 0 0; }
+
+/* El selector de archivo nativo no dice nada: se envuelve en una etiqueta con
+   texto propio que además muestra el nombre del archivo elegido. */
+.dv-file-pick {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0.6rem 0.9rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-size: 0.98rem;
+  font-weight: 600;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.dv-file-pick:hover { border-color: var(--primary); background: var(--bg-card-hover); }
+.dv-file-pick input[type="file"] { display: none; }
+
+.dv-file-clear {
+  margin-top: 0.4rem;
+  padding: 0.3rem 0;
+  border: none;
+  background: none;
+  color: var(--accent-rose);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.dv-sheet-warn {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--accent-amber);
+  background: rgba(222, 117, 75, 0.08);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.85rem;
+  margin: 0 0 1rem;
+}
+
+.dv-sheet-error {
+  font-size: 0.95rem;
+  color: var(--accent-rose);
+  background: rgba(200, 85, 50, 0.08);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.85rem;
+  margin: 0 0 1rem;
+}
+
+/* El botón de confirmar va primero y queda pegado abajo: en un celular el
+   formulario se desplaza y no hay que buscarlo al final. */
+.dv-sheet-actions {
+  position: sticky;
+  /* El desplazamiento negativo iguala el `padding` del cuerpo: así la barra
+     queda pegada al borde real de la hoja y tapa lo que pasa por debajo. */
+  bottom: -1.1rem;
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.85rem 0 1.1rem;
+  margin-top: 0.25rem;
+  background: var(--bg-card-solid);
+  border-top: 1px solid var(--border-color);
+}
+
+.dv-sheet-actions .dv-btn { flex: 1 1 auto; }
+
+/* --- Pantallas chicas ---------------------------------------------------- */
+
+@media (max-width: 860px) {
+  .dv-fact dt { flex: 1 1 100%; }
+  .dv-fact dd { flex: 1 1 100%; }
+}
+
+@media (max-width: 680px) {
+  .dv-title { font-size: 1.3rem; }
+  .dv-subtitle { font-size: 0.92rem; }
+
+  /* Botones a todo el ancho: en el celular es la zona de toque más segura. */
+  .dv-header > .dv-btn,
+  .dv-project-actions .dv-btn,
+  .dv-item-actions .dv-btn,
+  .dv-empty .dv-btn { width: 100%; }
+
+  .dv-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dv-kpi { min-height: 96px; padding: 0.7rem 0.75rem; }
+  .dv-kpi-value { font-size: 1.7rem; }
+  .dv-kpi-label { font-size: 0.88rem; }
+  .dv-kpi-hint { font-size: 0.76rem; }
+
+  .dv-filters { gap: 0.6rem; }
+  .dv-search-wrap { flex: 1 1 100%; }
+  .dv-toggle { flex: 1 1 100%; }
+  .dv-filter-count { margin-left: 0; flex: 1 1 100%; }
+  .dv-clear { width: 100%; }
+
+  .dv-project { padding: 1rem; border-radius: var(--radius-md); }
+  .dv-project-head { gap: 0.6rem; }
+  .dv-project-client { font-size: 1.1rem; }
+  .dv-item { padding: 0.9rem; }
+  .dv-item-title { font-size: 1.05rem; }
+
+  /* La hoja se pega al borde inferior, como cualquier app del teléfono. */
+  .dv-overlay { padding: 0; align-items: flex-end; }
+  .dv-sheet {
+    max-width: none;
+    max-height: 94vh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+  .dv-sheet-actions { flex-direction: column-reverse; }
+}
+
+@media (max-width: 380px) {
+  .dv-kpi-grid { grid-template-columns: 1fr; }
 }
 </style>

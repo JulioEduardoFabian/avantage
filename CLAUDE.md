@@ -146,6 +146,16 @@ antes de tocar el arranque de producción.
   (mismo criterio que las plantillas de tareas), porque un contrato emitido no se reescribe al
   reprogramar una entrega. El portal del cliente **no se tocó**: su línea de tiempo y el bloqueo de
   adjuntos por pago (`project_updates.income_id`) siguen funcionando igual.
+  **Su pantalla es la única de `/admin` que se sale de la escala compacta del panel**, y es a
+  propósito: la usa a diario una persona que no trabaja con software. Por eso tiene su propia escala
+  (texto ~1rem, botones de 48 px de alto, campos de 1rem para que iOS no haga zoom al enfocarlos),
+  cada estado va con una frase que dice **qué hacer** —no solo cómo se llama—, las fechas se cuentan
+  en lenguaje llano ("faltan 3 días", "pasó hace 2 días") y editar/deshacer/eliminar viven detrás de
+  "Más opciones" para que el botón grande sea siempre el de entregar. No hay tabla: cada entregable
+  es una tarjeta en una sola columna, así que se usa igual en el celular que en el escritorio y sin
+  desplazamiento horizontal. Unificarla con la densidad del resto del panel deshace justo lo que se
+  pidió. Los nombres de estado que se ven en pantalla salen de `STATE_META` en la vista, no de
+  `row.state_label` (el vocabulario del dominio): dentro de esa pantalla se habla un solo idioma.
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
   registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
   `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los
