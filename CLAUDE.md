@@ -140,7 +140,15 @@ antes de tocar el arranque de producción.
   operativo se **deriva** en cada lectura cruzándolo con el estado de la cuota —`entregado`,
   `sin_cobrar` (salió el trabajo y Finanzas no verificó), `por_entregar` (ya se cobró y falta
   entregar) y `pendiente`— porque ese dato lo mueve Finanzas desde su propia pantalla. Sin cuota
-  atada no hay nada que esperar del cobro. Como Proyectos, **no muestra importes**: las cuotas se
+  atada no hay nada que esperar del cobro.
+  **Una cuota atada que todavía no se pagó (`finance_income.estado = 'pendiente'`) impide marcar el
+  entregable como entregado**: entregar ahí es regalar el trabajo. La regla es
+  `blocksDelivery()` en `deliverableService.js`, se aplica en `markDelivered()` (la ruta responde
+  409) y viaja a la pantalla en `delivery_blocked`/`delivery_blocked_reason`, que es lo único que
+  mira la vista — el botón que se ve y la regla que se aplica no pueden decir cosas distintas.
+  Una cuota `pagado` (el cliente pagó y Finanzas todavía no da el visto bueno) **sí** deja entregar:
+  esa diferencia es un trámite interno, no una deuda del cliente, y la entrega queda registrada como
+  `sin_cobrar`, que es justamente para lo que existe ese estado. Como Proyectos, **no muestra importes**: las cuotas se
   nombran por `finance_income.code`. El botón "Importar del contrato" **copia** las filas de
   `contract_deliverables` del contrato vigente y saltea las que ya existen con el mismo título
   (mismo criterio que las plantillas de tareas), porque un contrato emitido no se reescribe al

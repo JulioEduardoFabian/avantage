@@ -37,6 +37,20 @@ export const DELIVERY_CHANNELS = ['correo', 'whatsapp', 'presencial', 'drive', '
  */
 export const DELIVERABLE_STATES = ['entregado', 'sin_cobrar', 'por_entregar', 'pendiente'];
 
+/**
+ * ¿El estado de la cuota atada impide entregar?
+ *
+ * Solo `pendiente`: ahí no entró nada de dinero y entregar sería regalar el
+ * trabajo. `pagado` (el cliente pagó y Finanzas todavía no da el visto bueno) y
+ * `verificado` dejan entregar — la diferencia entre esos dos es un trámite
+ * interno, no una deuda del cliente.
+ *
+ * Un entregable sin cuota atada no depende de ningún cobro y nunca se bloquea.
+ */
+export function blocksDelivery(incomeEstado) {
+  return incomeEstado === 'pendiente';
+}
+
 export const DELIVERABLE_STATE_INFO = {
   entregado: { label: 'Entregado', pending: null },
   sin_cobrar: { label: 'Entregado sin cobrar', pending: 'Ya se entregó y Finanzas todavía no verifica el pago.' },
@@ -268,13 +282,38 @@ export class DeliverableService {
    * fuera del sistema, así que puede no haber nada que guardar — pero el
    * registro de cuándo, quién y por dónde sí tiene que quedar.
    *
-   * No se exige que la cuota esté verificada: entregar sin el pago confirmado
-   * pasa, y taparlo sería peor que registrarlo. El tablero lo muestra como
-   * "Entregado sin cobrar", que es exactamente lo que es.
+   * Una cuota atada que TODAVÍA NO SE PAGÓ bloquea la entrega (ver
+   * `blocksDelivery`). No alcanza con esconder el botón en la pantalla: si la
+   * regla no está acá, una pestaña vieja o una llamada directa a la API la
+   * saltan igual.
+   *
+   * No se exige, en cambio, que la cuota esté *verificada*: ahí el cliente ya
+   * pagó y lo único que falta es el visto bueno de Finanzas, así que frenar la
+   * entrega sería castigar al cliente por un trámite interno. Esa entrega se
+   * registra y el tablero la muestra como "Entregado sin cobrar", que es
+   * exactamente lo que es.
    */
   async markDelivered(id, { deliveredAt, deliveredBy, channel, notes, attachment }) {
-    const existing = await db('deliverables').where({ id }).first();
+    const existing = await db('deliverables')
+      .leftJoin('finance_income', 'finance_income.id', 'deliverables.income_id')
+      .where('deliverables.id', id)
+      .first(
+        'deliverables.*',
+        'finance_income.estado as income_estado',
+        'finance_income.code as income_code',
+        'finance_income.cuota as income_cuota'
+      );
     if (!existing) throw new Error('Entregable no encontrado.');
+
+    if (existing.income_id && blocksDelivery(existing.income_estado)) {
+      const error = new Error(
+        `La cuota ${existing.income_cuota} (${existing.income_code}) todavía no está pagada, `
+        + 'así que este entregable no se puede marcar como entregado. '
+        + 'Cuando Finanzas registre el pago, la opción se habilita sola.'
+      );
+      error.code = 'UNPAID_INCOME';
+      throw error;
+    }
 
     if (channel && !DELIVERY_CHANNELS.includes(channel)) {
       throw new Error(`El canal de entrega debe ser uno de: ${DELIVERY_CHANNELS.join(', ')}.`);
@@ -413,6 +452,14 @@ function shapeRow(row, today) {
     income_cuota: row.income_cuota,
     income_estado: row.income_estado,
     payment_verified: Boolean(row.income_id) && row.income_estado === 'verificado',
+
+    // ¿Se puede registrar la entrega? Lo decide el backend, igual que `state`:
+    // la pantalla solo pinta, y así el botón que se ve y la regla que aplica
+    // `markDelivered()` no pueden decir cosas distintas.
+    delivery_blocked: !delivered && Boolean(row.income_id) && blocksDelivery(row.income_estado),
+    delivery_blocked_reason: !delivered && Boolean(row.income_id) && blocksDelivery(row.income_estado)
+      ? `La cuota ${row.income_cuota} (${row.income_code}) todavía no está pagada.`
+      : null,
 
     state,
     state_label: DELIVERABLE_STATE_INFO[state].label,

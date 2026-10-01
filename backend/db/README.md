@@ -144,6 +144,23 @@ sería una copia que se desincroniza:
 Hay dos alarmas y son de áreas distintas, por eso van separadas: `is_overdue` (pasó la fecha pactada
 de la ENTREGA y sigue sin entregarse) y `payment_overdue` (venció la CUOTA y sigue sin verificarse).
 
+### Una cuota sin pagar frena la entrega
+
+Si el entregable está atado a una cuota que **todavía no se pagó** (`finance_income.estado =
+'pendiente'`), no se puede marcar como entregado: entregar ahí es regalar el trabajo. La regla es
+`blocksDelivery()` en `deliverableService.js` y se aplica dentro de `markDelivered()`, no solo en el
+botón — una pestaña abierta hace rato o una llamada directa a la API se saltarían una regla que
+viviera únicamente en la pantalla. La ruta responde **409** (es un estado del cobro, no un error de
+quien lo intentó) y borra el archivo que Multer ya había dejado en disco.
+
+La pantalla no vuelve a derivar la regla: lee `delivery_blocked` y `delivery_blocked_reason`, que
+salen de `shapeRow()` igual que `state`. Así el botón que se ve y la regla que se aplica no pueden
+decir cosas distintas.
+
+Una cuota **`pagado`** (el cliente pagó y subió su comprobante; falta el visto bueno de Finanzas) sí
+deja entregar: esa diferencia es un trámite interno nuestro, no una deuda del cliente. Esa entrega
+queda como `sin_cobrar`, que es exactamente para lo que existe ese estado.
+
 El botón **"Importar del contrato"** copia a `deliverables` las filas de `contract_deliverables` del
 contrato vigente del cliente (el más reciente no anulado) y saltea las que ya existen con el mismo
 título, así que reimportar no duplica nada — mismo criterio que la importación de plantillas de

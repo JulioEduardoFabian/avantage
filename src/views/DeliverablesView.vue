@@ -190,9 +190,19 @@
             @click="downloadAttachment(row)"
           >📎 Descargar {{ row.attachment_original_name }}</button>
 
+          <!-- Cuota sin pagar: no hay botón que apretar. El aviso ocupa su
+               lugar y dice de quién depende, para que no parezca una falla ni
+               haya que preguntar. La regla también está en el backend
+               (`blocksDelivery`): acá solo se pinta lo que él decidió. -->
+          <p v-if="row.delivery_blocked" class="dv-locked">
+            🔒 <strong>Todavía no se puede entregar.</strong>
+            {{ row.delivery_blocked_reason }}
+            Cuando Finanzas registre el pago, el botón aparece solo.
+          </p>
+
           <div class="dv-item-actions">
             <button
-              v-if="row.status !== 'entregado'"
+              v-if="row.status !== 'entregado' && !row.delivery_blocked"
               type="button"
               class="dv-btn dv-btn-primary"
               @click="openDeliverModal(project, row)"
@@ -361,8 +371,9 @@
           </div>
 
           <p v-if="deliverModal.warnUnpaid" class="dv-sheet-warn">
-            ⚠️ Finanzas todavía no confirmó la cuota de este entregable. Se puede registrar igual:
-            va a quedar marcado como <strong>«Entregado sin cobrar»</strong>.
+            ⚠️ El cliente ya pagó esta cuota, pero Finanzas todavía no la revisó. Se puede
+            registrar igual: va a quedar marcado como <strong>«Entregado sin cobrar»</strong>
+            hasta que la confirmen.
           </p>
 
           <p v-if="deliverModal.error" class="dv-sheet-error">⚠️ {{ deliverModal.error }}</p>
@@ -450,7 +461,10 @@ const STATE_META = {
     icon: '⏳',
     tone: 'neutral',
     hint: 'Sin pago confirmado y sin entregar',
-    todo: 'Todavía no toca: falta que paguen y falta entregar.'
+    todo: 'Todavía no toca: falta que paguen y falta entregar.',
+    // El cliente YA pagó y solo falta el visto bueno de Finanzas: decirle a
+    // quien lee "falta que paguen" sería mentirle sobre un pago que ya entró.
+    todoPaidUnverified: 'El cliente ya pagó y Finanzas está revisando el comprobante. Se puede entregar.'
   },
   entregado: {
     label: 'Listo',
@@ -591,7 +605,12 @@ function projectStateChips(project) {
  */
 function todoSentence(row) {
   const meta = STATE_META[row.state] || {};
-  const base = (!row.income_id && meta.todoNoIncome) || meta.todo || row.pending_reason || '';
+  const paidUnverified = row.income_estado === 'pagado' && meta.todoPaidUnverified;
+  const base = paidUnverified
+    || (!row.income_id && meta.todoNoIncome)
+    || meta.todo
+    || row.pending_reason
+    || '';
   if (row.is_overdue) {
     const days = daysFromToday(row.due_date);
     const late = days != null && days < 0
@@ -770,6 +789,14 @@ const deliverModal = reactive({
 });
 
 function openDeliverModal(project, row) {
+  // El botón no se dibuja si la cuota está sin pagar, pero el tablero puede
+  // llevar un rato abierto: si el dato cambió, no se abre el formulario para
+  // que nadie llene algo que el servidor va a rechazar.
+  if (row.delivery_blocked) {
+    loadError.value = `${row.delivery_blocked_reason} No se puede registrar la entrega todavía.`;
+    return;
+  }
+
   openMoreId.value = null;
   Object.assign(deliverModal, {
     open: true, id: row.id, title: row.title, deliveredAt: todayIso(), channel: '', notes: row.notes || '',
@@ -797,7 +824,13 @@ async function submitDelivery() {
 
     const response = await apiFetch(`/api/deliverables/${deliverModal.id}/deliver`, { method: 'POST', body: formData });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo registrar la entrega.');
+    if (!response.ok) {
+      // 409 = el servidor frenó la entrega porque la cuota no está pagada. El
+      // tablero que se está mirando quedó viejo, así que se vuelve a cargar: el
+      // aviso sin la pantalla actualizada deja a la persona sin entender nada.
+      if (response.status === 409) fetchOverview();
+      throw new Error(data.error || 'No se pudo registrar la entrega.');
+    }
     deliverModal.open = false;
     await fetchOverview();
   } catch (error) {
@@ -1314,6 +1347,22 @@ onMounted(fetchOverview);
 }
 
 .dv-file-btn:hover { border-color: var(--primary); background: var(--bg-card-hover); }
+
+/* Ocupa el lugar del botón principal cuando la cuota no está pagada: mismo
+   peso visual, para que se lea como "acá va la acción, y por esto no está". */
+.dv-locked {
+  display: block;
+  margin: 1rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text-sub);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.dv-locked strong { color: var(--text-main); }
 
 .dv-item-actions {
   display: flex;

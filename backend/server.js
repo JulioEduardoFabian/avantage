@@ -4002,6 +4002,12 @@ app.post('/api/deliverables/:id/deliver', requireAuth, requirePermission('delive
     if (replacedFile) fs.unlink(path.join(deliverableDir, replacedFile), () => {});
     res.json({ deliverable });
   } catch (error) {
+    // Multer ya dejó el archivo en disco antes de llegar acá: si la entrega no
+    // se registra, ese archivo no lo referencia nadie.
+    if (req.file) fs.unlink(path.join(deliverableDir, req.file.filename), () => {});
+    // La cuota sin pagar no es un error de quien lo intentó: es un estado del
+    // cobro, y el panel lo muestra como aviso y no como falla.
+    if (error.code === 'UNPAID_INCOME') return res.status(409).json({ error: error.message });
     console.error('❌ Error al registrar la entrega:', error);
     res.status(400).json({ error: error.message || 'Error al registrar la entrega.' });
   }
