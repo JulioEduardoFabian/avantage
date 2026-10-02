@@ -574,6 +574,10 @@
             <p style="color: var(--accent-rose); font-size: 0.85rem; margin: 0;">{{ metaRecError }}</p>
           </div>
 
+          <div v-if="metaRecReport && metaRecReport.aviso" class="info-box" style="border-color: rgba(201, 146, 46, 0.4); background: rgba(201, 146, 46, 0.08); margin-bottom: 0.75rem;">
+            <p style="color: var(--accent-amber); font-size: 0.82rem; margin: 0;">⚠️ {{ metaRecReport.aviso }}</p>
+          </div>
+
           <template v-if="metaRecReport">
             <div class="meta-rec-totals">
               <div class="stat-card">

@@ -70,6 +70,14 @@ export class MetaLeadReconciliationService {
   /**
    * Los formularios instantáneos de la página, incluidos los que hoy no tienen
    * ningún lead en el CRM — que son justamente los más sospechosos.
+   *
+   * Si Meta no deja listarlos se cae a los `form_id` que ya figuran en la base.
+   * No es un detalle de implementación: listar formularios exige
+   * `pages_manage_ads` —un permiso de ADMINISTRACIÓN de la página— mientras
+   * que leer los leads de un formulario solo pide `leads_retrieval`. Abortar
+   * ahí dejaría sin recuperar leads que el token sí puede traer, por un
+   * permiso que no hace falta para traerlos. El precio es que un formulario
+   * que nunca entregó un lead al CRM queda fuera, y eso el reporte lo dice.
    */
   async listForms() {
     const pageId = await this.resolvePageId();
@@ -77,15 +85,27 @@ export class MetaLeadReconciliationService {
     let next = null;
     let pages = 0;
 
-    do {
-      const data = next
-        ? await this.graph(next)
-        : await this.graph(`${pageId}/leadgen_forms`, { fields: 'id,name,status', limit: PAGE_SIZE });
-      forms.push(...(data.data || []));
-      next = data.paging?.next || null;
-    } while (next && ++pages < MAX_PAGES);
+    try {
+      do {
+        const data = next
+          ? await this.graph(next)
+          : await this.graph(`${pageId}/leadgen_forms`, { fields: 'id,name,status', limit: PAGE_SIZE });
+        forms.push(...(data.data || []));
+        next = data.paging?.next || null;
+      } while (next && ++pages < MAX_PAGES);
 
-    return forms;
+      return { forms, source: 'meta', aviso: null };
+    } catch (error) {
+      const knownIds = await this.leadService.getKnownMetaFormIds();
+      if (!knownIds.length) throw error;
+
+      console.warn(`⚠️ [Conciliación Meta] No se pudieron listar los formularios (${error.message}). Se usan los ${knownIds.length} que ya figuran en la base.`);
+      return {
+        forms: knownIds.map((id) => ({ id, name: null, status: null })),
+        source: 'crm',
+        aviso: `No se pudieron listar los formularios desde Meta (${error.message}). Se compararon los ${knownIds.length} que ya tienen al menos un lead en el CRM; un formulario que nunca entregó ninguno queda fuera de esta comparación. Agregá el permiso pages_manage_ads al token para cubrirlos todos.`
+      };
+    }
   }
 
   /** Todos los leads que Meta tiene registrados para un formulario. */
@@ -130,12 +150,14 @@ export class MetaLeadReconciliationService {
     };
 
     const known = await this.leadService.getKnownMetaLeadgenIds();
-    const forms = await this.listForms();
+    const { forms, source, aviso } = await this.listForms();
 
     const report = {
       page_id: await this.resolvePageId(),
       range: { since, until },
       applied: apply,
+      forms_source: source,
+      aviso,
       forms: [],
       by_platform: {},
       totals: { en_meta: 0, en_crm: 0, faltantes: 0, importados: 0, fallidos: 0 },

@@ -175,6 +175,24 @@ export class LeadService {
     return this.findByAdditionalNotesContaining(`[Meta leadgen_id=${id}]`);
   }
 
+  /**
+   * Los `form_id` de Meta que ya produjeron al menos un lead acá.
+   *
+   * Es el plan B para descubrir formularios cuando la Graph API no deja
+   * listarlos: `/{page_id}/leadgen_forms` exige `pages_manage_ads`, que es un
+   * permiso que el token puede no tener, mientras que leer los leads de un
+   * formulario solo pide `leads_retrieval`. Cubre todos los formularios menos
+   * los que nunca entregaron un lead al CRM — y de esos no se puede saber que
+   * existen sin preguntarle a Meta.
+   */
+  async getKnownMetaFormIds() {
+    const rows = await db('leads')
+      .distinct('meta_form_id')
+      .whereNotNull('meta_form_id')
+      .andWhere('meta_form_id', '!=', '');
+    return rows.map((row) => row.meta_form_id);
+  }
+
   /** Los `leadgen_id` ya guardados, para diferenciarlos contra los que
    * devuelve la Graph API sin traer un lead entero por cada uno. */
   async getKnownMetaLeadgenIds() {

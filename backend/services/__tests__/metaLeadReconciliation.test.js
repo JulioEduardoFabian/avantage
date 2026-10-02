@@ -33,11 +33,14 @@ function stubGraph({ forms, leadsByForm }) {
 }
 
 /** leadService mínimo: solo lo que toca la conciliación. */
-function fakeLeadService(knownIds = []) {
+function fakeLeadService(knownIds = [], knownFormIds = []) {
   return {
     creados: [],
     async getKnownMetaLeadgenIds() {
       return new Set(knownIds.map(String));
+    },
+    async getKnownMetaFormIds() {
+      return knownFormIds;
     },
     async createProspect(data) {
       this.creados.push(data);
@@ -169,5 +172,37 @@ test('sin token no se consulta nada', async () => {
   await assert.rejects(
     () => new MetaLeadReconciliationService(fakeLeadService()).reconcile({}),
     /META_PAGE_ACCESS_TOKEN/
+  );
+});
+
+test('si Meta no deja listar los formularios, se comparan los que ya están en la base', async () => {
+  // `/{page_id}/leadgen_forms` exige pages_manage_ads; leer los leads de un
+  // formulario, solo leads_retrieval. Quedarse sin conciliar por un permiso
+  // que no hace falta para traer los leads sería perderlos por nada.
+  globalThis.fetch = async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/leadgen_forms')) {
+      return { ok: false, json: async () => ({ error: { code: 200, message: 'Requires pages_manage_ads permission to manage the object' } }) };
+    }
+    return { ok: true, json: async () => ({ data: [lead('44', 'ig', '2026-09-20T10:00:00+0000')] }) };
+  };
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService([], ['F1'])).reconcile({ apply: false });
+
+  assert.equal(report.forms_source, 'crm');
+  assert.match(report.aviso, /pages_manage_ads/);
+  assert.equal(report.totals.faltantes, 1);
+});
+
+test('sin formularios conocidos en la base, el fallo de listado sí corta', async () => {
+  // Acá no hay nada que conciliar y callar el error escondería el problema.
+  globalThis.fetch = async () => ({
+    ok: false,
+    json: async () => ({ error: { code: 200, message: 'Requires pages_manage_ads permission to manage the object' } })
+  });
+
+  await assert.rejects(
+    () => new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false }),
+    /pages_manage_ads/
   );
 });
