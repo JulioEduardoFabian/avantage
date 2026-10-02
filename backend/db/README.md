@@ -67,7 +67,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261026010000_create_lead_stage_changes_table.js` | Crea `lead_stage_changes`: la bitácora de movimientos de etapa de cada lead (de dónde, a dónde, quién — `user`/`bot`/`system` —, por qué y cuándo), **incluidos los intentos rechazados**, marcados con `blocked`. Sin ella, cada reporte de "este lead se regresó solo" había que reconstruirlo a mano, y un tope que funciona se veía igual que uno que nunca se activó. |
 | `20261027000000_create_deliverable_settings.js` | Crea `deliverable_settings` (fila única): la configuración del módulo de Entregables. Por ahora solo `notice_email`, el correo al que llega el aviso de cuota verificada. Es **uno solo** y no todos los usuarios con `deliverables.view`: de las entregas se encarga una persona, y repartir el aviso lo convierte en ruido que nadie mira. Está en la base y no en el `.env` porque el destinatario cambia cuando cambia quién ocupa el puesto, y eso tiene que poder hacerse desde el panel. |
 | `20261028000000_alter_tasks_add_deliverable_id.js` | Agrega `tasks.deliverable_id`: de qué entregable es cada tarea. Convierte un entregable en lo que de verdad es, un **paquete de trabajo** con su avance propio (hechas/total), y conecta las dos listas del proyecto —tareas y entregas— que hasta ahora no se hablaban. Es **opcional** (hay tareas internas que no corresponden a ninguna entrega) y va con ON DELETE SET NULL, no CASCADE: quitar un entregable del plan no puede borrar el trabajo ya registrado. |
-
+| `20261029000000_create_project_settings.js` | Crea `project_settings` (fila única): la configuración del módulo de Proyectos. Por ahora solo `notice_email`, el correo al que llega el aviso de "se creó un proyecto nuevo" — un proyecto nace casi siempre solo, al cerrarse una venta, así que nadie se enteraba hasta entrar a mirar. Mismo patrón y mismas razones que `deliverable_settings`: un solo destinatario y en la base, no en el `.env`, porque cambia cuando cambia quién ocupa el puesto. |
 ### Cronograma de pagos y entregables bloqueados
 
 El plan de cobro no vive en una tabla propia: **las cuotas del cronograma son las filas de
@@ -192,6 +192,21 @@ Tres decisiones que conviene no deshacer:
   y no escondiendo campos en la pantalla: lo que no viaja no se puede filtrar después por error.
   Atar la cuota es del módulo de Entregables, que tiene el permiso para ver el dinero. Es la misma
   regla de "en Proyectos no se muestran importes", llevada a la asociación completa.
+
+### Y cuando nace un proyecto, también
+
+Un proyecto nace casi siempre **solo**: al cerrarse una venta en el Funnel de Ventas, el sistema lo
+crea sin que nadie lo pida. Nadie se enteraba hasta entrar a mirar la pantalla, y mientras tanto el
+proyecto ya existía con su cliente esperando que alguien lo tomara. `projectNoticeService.js` manda
+el aviso (correo + campana) con el cliente, el tema, la fecha límite y si queda bloqueado esperando
+la verificación del primer pago — nombrado por su **código**, nunca por su monto, como en todo
+Proyectos.
+
+Se dispara desde `projectService` y **no** desde las rutas: hay tres caminos de alta (lead ganado,
+cierre con pago inicial y alta manual) y, puesto en cada ruta, el cuarto que se agregue se olvida.
+Va sin `await` y el servicio no lanza: un correo lento o caído no puede demorar —ni mucho menos
+tumbar— el cierre de una venta. El destinatario es `project_settings.notice_email`, editable en la
+pantalla de Proyectos y con su propio envío de prueba, igual que en Entregables.
 
 ### Y cuando la cuota se verifica, el equipo se entera
 

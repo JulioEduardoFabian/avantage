@@ -21,6 +21,68 @@
       <p>{{ loadError }}</p>
     </div>
 
+    <!-- Correo de avisos. Va plegado: se configura una vez y después estorba.
+         El encabezado muestra la dirección guardada para comprobarla de un
+         vistazo sin abrir nada. Mismo patrón que en Entregables. -->
+    <section class="pv-config">
+      <button
+        type="button"
+        class="pv-config-toggle"
+        :class="{ 'is-open': showSettings }"
+        :aria-expanded="showSettings"
+        @click="showSettings = !showSettings"
+      >
+        <span>✉️ Aviso de proyecto nuevo</span>
+        <span class="pv-config-current">{{ settings.noticeEmail || 'sin configurar' }}</span>
+        <span class="pv-config-caret">{{ showSettings ? '▲' : '▼' }}</span>
+      </button>
+
+      <div v-if="showSettings" class="pv-config-body">
+        <p class="pv-config-intro">
+          Un proyecto nace casi siempre solo, cuando una venta se cierra en el Funnel de Ventas.
+          Cada vez que eso pase llega un correo a esta dirección con el cliente, el tema y si el
+          proyecto queda bloqueado esperando la verificación del primer pago.
+          Es <strong>una sola</strong> dirección.
+        </p>
+
+        <div class="pv-config-field">
+          <label class="form-label" for="pv-notice-email">¿A qué correo mandamos los avisos?</label>
+          <input
+            id="pv-notice-email"
+            v-model="settingsForm.noticeEmail"
+            type="email"
+            class="form-input"
+            placeholder="nombre@empresa.com"
+            autocomplete="email"
+          />
+          <p class="form-hint">
+            Si lo dejas vacío, los avisos van al correo interno configurado en el servidor.
+          </p>
+        </div>
+
+        <div class="pv-config-actions">
+          <button
+            type="button"
+            class="btn-primary pv-btn"
+            :disabled="settingsSaving || !settingsDirty"
+            @click="saveSettings"
+          >{{ settingsSaving ? 'Guardando…' : 'Guardar correo' }}</button>
+
+          <!-- Probar ANTES de guardar es a propósito: si la dirección estaba mal
+               escrita, lo último que se quiere es haberla dejado guardada. -->
+          <button
+            type="button"
+            class="btn-secondary pv-btn"
+            :disabled="settingsTesting"
+            @click="sendTestEmail"
+          >{{ settingsTesting ? 'Enviando…' : '📨 Enviar correo de prueba' }}</button>
+        </div>
+
+        <p v-if="settingsMessage" class="pv-config-ok">✅ {{ settingsMessage }}</p>
+        <p v-if="settingsError" class="pv-config-error">⚠️ {{ settingsError }}</p>
+      </div>
+    </section>
+
     <!-- Buscador y filtro por estado. Los contadores cuentan SIEMPRE todo, no lo
          filtrado: si contaran lo visible, filtrar por "Activo" dejaría todos los
          demás en cero y el resumen dejaría de servir como resumen. -->
@@ -354,6 +416,87 @@ function clearFilters() {
   statusFilter.value = 'all';
 }
 
+// ---------------------------------------------------- CORREO DE LOS AVISOS
+
+/**
+ * A qué correo llega el aviso de proyecto nuevo. Se guarda en
+ * `project_settings` (fila única) y es UNO solo: repartirlo entre todos los que
+ * pueden abrir el módulo lo vuelve ruido que nadie mira.
+ */
+const showSettings = ref(false);
+const settings = ref({ noticeEmail: '' });
+const settingsForm = reactive({ noticeEmail: '' });
+const settingsSaving = ref(false);
+const settingsTesting = ref(false);
+const settingsMessage = ref('');
+const settingsError = ref('');
+
+/** Sin cambios no hay nada que guardar: el botón se apaga en vez de mentir. */
+const settingsDirty = computed(
+  () => settingsForm.noticeEmail.trim() !== (settings.value.noticeEmail || '').trim()
+);
+
+async function fetchSettings() {
+  try {
+    const response = await apiFetch('/api/project-settings');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo leer la configuración.');
+    settings.value = data.settings || { noticeEmail: '' };
+    settingsForm.noticeEmail = settings.value.noticeEmail || '';
+  } catch (error) {
+    settingsError.value = error.message;
+  }
+}
+
+async function saveSettings() {
+  settingsSaving.value = true;
+  settingsMessage.value = '';
+  settingsError.value = '';
+  try {
+    const response = await apiFetch('/api/project-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noticeEmail: settingsForm.noticeEmail })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo guardar el correo.');
+    settings.value = data.settings;
+    settingsForm.noticeEmail = data.settings.noticeEmail || '';
+    settingsMessage.value = data.settings.noticeEmail
+      ? `Listo: los avisos van a ${data.settings.noticeEmail}.`
+      : 'Listo: sin correo propio, los avisos van al correo interno del servidor.';
+  } catch (error) {
+    settingsError.value = error.message;
+  } finally {
+    settingsSaving.value = false;
+  }
+}
+
+/**
+ * Manda el correo de ejemplo a lo que haya ESCRITO en el campo, no a lo
+ * guardado: así se comprueba una dirección nueva antes de dejarla fija.
+ */
+async function sendTestEmail() {
+  settingsTesting.value = true;
+  settingsMessage.value = '';
+  settingsError.value = '';
+  try {
+    const response = await apiFetch('/api/project-settings/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: settingsForm.noticeEmail })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo enviar el correo de prueba.');
+    settingsMessage.value = `Correo de prueba enviado a ${data.recipient}. `
+      + 'Si no llega en unos minutos, revisa la carpeta de spam.';
+  } catch (error) {
+    settingsError.value = error.message;
+  } finally {
+    settingsTesting.value = false;
+  }
+}
+
 // ------------------------------------------------------------------- EQUIPO
 
 /**
@@ -595,6 +738,9 @@ async function deleteProject() {
 
 onMounted(() => {
   fetchProjects();
+  // La configuración se lee aunque el panel esté plegado: el encabezado muestra
+  // la dirección guardada, y ahí es donde se comprueba de un vistazo.
+  fetchSettings();
 });
 </script>
 
@@ -613,6 +759,72 @@ onMounted(() => {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* --- Correo de los avisos ------------------------------------------------ */
+
+.pv-config {
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.pv-config-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pv-config-toggle:hover { background: var(--bg-card-hover); }
+.pv-config-toggle.is-open { border-bottom: 1px solid var(--border-color); }
+
+/* La dirección guardada se lee sin abrir el panel: es la comprobación que se
+   hace más seguido ("¿a dónde está yendo esto?"). */
+.pv-config-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.pv-config-caret { flex: 0 0 auto; color: var(--text-muted); font-size: 0.75rem; }
+
+.pv-config-body { padding: 1rem; }
+
+.pv-config-intro {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-sub);
+  margin: 0 0 1rem;
+  max-width: 70ch;
+}
+
+.pv-config-field { margin-bottom: 0.9rem; max-width: 420px; }
+.pv-config-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+
+.pv-config-ok,
+.pv-config-error {
+  margin: 0.85rem 0 0;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.pv-config-ok { color: var(--accent-emerald); background: rgba(46, 125, 70, 0.08); }
+.pv-config-error { color: var(--accent-rose); background: rgba(200, 85, 50, 0.08); }
 
 /* --- Encabezado y barra de herramientas --------------------------------- */
 
@@ -947,6 +1159,10 @@ onMounted(() => {
 }
 
 @media (max-width: 560px) {
+  .pv-config-toggle { flex-wrap: wrap; }
+  .pv-config-current { flex: 1 1 100%; font-size: 0.8rem; }
+  .pv-config-actions .pv-btn { width: 100%; }
+
   .pv-header-actions { width: 100%; }
   .pv-header-actions .pv-btn { flex: 1 1 auto; }
   .pv-search-wrap { flex: 1 1 100%; }

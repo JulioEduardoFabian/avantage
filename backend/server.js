@@ -47,6 +47,8 @@ import { InstagramWebhookService } from './services/instagramWebhookService.js';
 import { GoogleCalendarService } from './services/googleCalendarService.js';
 import { ScheduledMeetingService } from './services/scheduledMeetingService.js';
 import { NotificationService } from './services/notificationService.js';
+import { ProjectSettingsService } from './services/projectSettingsService.js';
+import { ProjectNoticeService } from './services/projectNoticeService.js';
 import { PaymentNoticeService } from './services/paymentNoticeService.js';
 import { DeliverableSettingsService } from './services/deliverableSettingsService.js';
 import { FinanceService } from './services/financeService.js';
@@ -118,7 +120,18 @@ const leadService = new LeadService();
 const funnelColumnService = new FunnelColumnService();
 const careerCatalogService = new CareerCatalogService();
 const clientAccountService = new ClientAccountService();
-const projectService = new ProjectService({ clientAccountService, emailService });
+// La campana del panel se construye acá arriba porque el aviso de proyecto
+// nuevo la necesita, y ese aviso viaja dentro de projectService.
+const notificationService = new NotificationService();
+const projectSettingsService = new ProjectSettingsService();
+// Avisa al equipo cuando nace un proyecto: casi siempre lo crea el sistema solo
+// al cerrarse una venta, así que sin esto nadie se entera hasta entrar a mirar.
+const projectNoticeService = new ProjectNoticeService({
+  emailService,
+  notificationService,
+  projectSettingsService
+});
+const projectService = new ProjectService({ clientAccountService, emailService, projectNoticeService });
 const taskService = new TaskService();
 const taskTemplateService = new TaskTemplateService();
 const quoteService = new QuoteService();
@@ -145,7 +158,6 @@ const whatsappBotSettingsService = new WhatsappBotSettingsService();
 const metaEmbeddedSignupService = new MetaEmbeddedSignupService();
 const googleCalendarService = new GoogleCalendarService();
 const scheduledMeetingService = new ScheduledMeetingService();
-const notificationService = new NotificationService();
 const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
 // Avisa al equipo de Entregables cuando Finanzas verifica una cuota: es el
@@ -3444,6 +3456,50 @@ app.get('/api/projects', requireAuth, requirePermission('projects.view'), async 
 /**
  * Crear un proyecto manualmente (sin que provenga de un lead ganado en el funnel)
  */
+/*
+ * Configuración del módulo de Proyectos (fila única `project_settings`). Cuelga
+ * de /api/project-settings y no de /api/projects/... para no competir con
+ * `/api/projects/:id`, igual que las notas de lead y los ajustes de Entregables.
+ */
+
+app.get('/api/project-settings', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    res.json({ settings: await projectSettingsService.get() });
+  } catch (error) {
+    console.error('❌ Error al obtener la configuración de proyectos:', error);
+    res.status(500).json({ error: 'Error al obtener la configuración.', details: error.message });
+  }
+});
+
+app.put('/api/project-settings', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    const settings = await projectSettingsService.update({ noticeEmail: req.body?.noticeEmail });
+    console.log(`⚙️ [Proyectos] Correo de avisos → ${settings.noticeEmail || '(sin configurar)'} (${req.user.email})`);
+    res.json({ settings });
+  } catch (error) {
+    if (error.code === 'INVALID_EMAIL') return res.status(400).json({ error: error.message });
+    console.error('❌ Error al guardar la configuración de proyectos:', error);
+    res.status(500).json({ error: 'Error al guardar la configuración.', details: error.message });
+  }
+});
+
+/**
+ * Envío de prueba del aviso de proyecto nuevo. Acepta un correo en el cuerpo
+ * para poder probar ANTES de guardar: si la dirección estaba mal escrita, lo
+ * último que se quiere es haberla dejado guardada.
+ */
+app.post('/api/project-settings/test', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    const result = await projectNoticeService.sendTestNotice(req.body?.email);
+    console.log(`📧 [Proyectos] Correo de prueba enviado a ${result.recipient} (${req.user.email})`);
+    res.json(result);
+  } catch (error) {
+    if (error.code === 'NO_RECIPIENT') return res.status(400).json({ error: error.message });
+    console.error('❌ Error al enviar el correo de prueba:', error);
+    res.status(502).json({ error: error.message || 'No se pudo enviar el correo de prueba.' });
+  }
+});
+
 app.post('/api/projects', requireAuth, requirePermission('projects.view'), async (req, res) => {
   try {
     const { topic, clientEmail, clientPhone, academicLevel, fieldOfStudy, deadline } = req.body;
@@ -3470,7 +3526,8 @@ app.post('/api/projects', requireAuth, requirePermission('projects.view'), async
       clientPhone: clientPhone.trim(),
       academicLevel: academicLevel.trim(),
       fieldOfStudy: fieldOfStudy.trim(),
-      deadline
+      deadline,
+      createdByName: req.user?.name || null
     });
 
     console.log(`🚀 [Proyectos] Proyecto #${project.id} creado manualmente (sin lead asociado)`);

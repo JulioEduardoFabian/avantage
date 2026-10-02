@@ -52,9 +52,25 @@ async function attachPaymentGate(rows) {
  * cuando un lead alcanza el estado final del funnel de ventas ("ganado").
  */
 export class ProjectService {
-  constructor({ clientAccountService, emailService } = {}) {
+  /**
+   * `projectNoticeService` avisa al equipo de que nació un proyecto. Se dispara
+   * desde acá y no desde las rutas porque hay TRES caminos de alta (lead
+   * ganado, cierre con pago inicial y alta manual): puesto en cada ruta, el
+   * cuarto que se agregue se olvida.
+   */
+  constructor({ clientAccountService, emailService, projectNoticeService } = {}) {
     this.clientAccountService = clientAccountService;
     this.emailService = emailService;
+    this.projectNoticeService = projectNoticeService;
+  }
+
+  /**
+   * Avisa de un proyecto recién creado sin hacer esperar a quien lo creó: el
+   * aviso es un efecto secundario y un correo lento o caído no puede demorar
+   * —ni mucho menos tumbar— el cierre de una venta.
+   */
+  #announceCreated(project, context) {
+    this.projectNoticeService?.notifyProjectCreated(project, context).catch(() => {});
   }
 
   /**
@@ -95,13 +111,16 @@ export class ProjectService {
       status: 'Creado'
     });
     await this.#inviteClientToPortal(lead.email, lead.full_name);
-    return this.getProjectById(id);
+
+    const project = await this.getProjectById(id);
+    this.#announceCreated(project, { origin: 'lead', clientName: lead.full_name || null });
+    return project;
   }
 
   /**
    * Crea un proyecto manualmente, sin que provenga de un lead ganado en el funnel.
    */
-  async createManualProject({ topic, clientEmail, clientPhone, academicLevel, fieldOfStudy, deadline }) {
+  async createManualProject({ topic, clientEmail, clientPhone, academicLevel, fieldOfStudy, deadline, createdByName = null }) {
     const [id] = await db('projects').insert({
       lead_id: null,
       topic,
@@ -113,7 +132,10 @@ export class ProjectService {
       status: 'Creado'
     });
     await this.#inviteClientToPortal(clientEmail, null);
-    return this.getProjectById(id);
+
+    const project = await this.getProjectById(id);
+    this.#announceCreated(project, { origin: 'manual', createdByName });
+    return project;
   }
 
   /** Proyectos del cliente autenticado en el portal, por su correo. */

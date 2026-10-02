@@ -126,6 +126,15 @@ antes de tocar el arranque de producción.
   puede filtrar después por error. Atar la cuota es del módulo de Entregables, que es el que tiene
   el permiso para ver el dinero. Es la misma regla de "en Proyectos no se muestran importes",
   llevada a la asociación completa.
+- Cuando **nace un proyecto** sale un aviso automático al equipo (`projectNoticeService.js`): correo
+  + campana del panel con el cliente, el tema, la fecha límite y si queda bloqueado esperando la
+  verificación del primer pago (nombrado por su **código**, nunca por su monto). Se dispara desde
+  `projectService` y no desde las rutas porque hay **tres** caminos de alta (lead ganado, cierre con
+  pago inicial y alta manual): puesto en cada ruta, el cuarto que se agregue se olvida. Va a un solo
+  correo, `project_settings.notice_email`, que se edita en la pantalla de Proyectos
+  (`/api/project-settings`) y tiene su botón de envío de prueba — mismo patrón y mismas razones que
+  `deliverable_settings`; `INTERNAL_ALERT_EMAIL` es la red de seguridad mientras esté vacío. El
+  aviso no espera ni lanza: un correo lento o caído no puede demorar el cierre de una venta.
 - La **tabla de Proyectos** muestra el equipo (líder + colaboradores) como círculos con las
   iniciales: `getAllProjects()` trae ya el `leader_name`, los `collaborators` —en UNA consulta para
   todos los proyectos, no una por fila— y el `client_name` del lead. El color del círculo se deriva
