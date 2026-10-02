@@ -34,7 +34,11 @@ npm run migrate:make -- nombre_migracion   # crea un nuevo archivo de migración
 npm run seed               # ejecuta los seeds (roles/permisos base, usuario admin, columnas del funnel)
 ```
 
-No hay suite de tests ni linter configurados en `package.json`.
+```bash
+npm test                  # suite de pruebas (node --test sobre backend/**/*.test.js)
+```
+
+No hay linter configurado en `package.json`.
 
 ## Arquitectura
 
@@ -258,6 +262,28 @@ antes de tocar el arranque de producción.
   (`phoneMatchKey`): el `wa_id` del bot (`51987654321`) y lo que escribe la persona en el formulario
   de Meta (`+51 987 654 321`) son el mismo contacto, y compararlos tal cual hacía que el bot le
   creara un gemelo en "conversación abierta" y lo trabajara de cero.
+- Los leads de **Meta Lead Ads** entran por el webhook (`metaWebhookService.importLead()`), que es
+  un punto único de falla **silencioso**: `/api/webhooks/meta` responde 200 ANTES de procesar (Meta
+  espera una respuesta rápida), así que un fallo posterior no se reintenta y solo deja una línea en
+  un log que se rota. En septiembre de 2026 se perdió así el 39% de los leads de formulario (95 en
+  el Administrador de anuncios contra 58 en la base). La **conciliación**
+  (`metaLeadReconciliationService.js`, `GET`/`POST /api/leads/meta-reconciliation` bajo
+  `leads.view`, botón "Conciliar Meta" en el Kanban) le pregunta a la Graph API qué leads tiene cada
+  formulario y los compara contra los guardados: el `GET` solo reporta y el `POST` importa lo que
+  falta — traer leads perdidos agrega gente al funnel que el equipo va a trabajar, así que no puede
+  ser un efecto de abrir una pantalla. Meta conserva los leads de un formulario **90 días**: pasado
+  ese plazo lo que no se concilió se perdió de verdad.
+  `persistMetaLead()` (exportado por `metaWebhookService.js`) es el único camino de alta y lo usan
+  las dos vías; repetido en cada llamador, la conciliación termina guardando campos distintos que el
+  webhook y las dos mitades de la misma tabla dejan de ser comparables, que es justo lo que viene a
+  medir. La atribución vive en columnas propias (`meta_leadgen_id`, `meta_form_id`, `meta_ad_id`,
+  `meta_adset_id`, `meta_campaign_id`, `meta_platform`, `meta_created_time`) y ya no solo en el
+  marcador de texto de `additional_notes`, que se sigue escribiendo porque es lo que hace legible la
+  ficha. `meta_created_time` es el momento del envío en Meta y **no** `created_at` (cuándo entró
+  acá): un lead recuperado hoy pertenece al día en que la persona llenó el formulario, y mezclar las
+  dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
+  El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
+  y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`). Los
   permisos son "herramientas" habilitables (`leads.view`, `projects.view`, `roles.manage`,
   `finance.view`, ...); se resuelven una vez en el login y se embeben en el JWT.

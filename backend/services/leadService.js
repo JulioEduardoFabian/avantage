@@ -62,7 +62,14 @@ export class LeadService {
     address,
     assignedTo,
     source,
-    status
+    status,
+    metaLeadgenId,
+    metaFormId,
+    metaAdId,
+    metaAdsetId,
+    metaCampaignId,
+    metaPlatform,
+    metaCreatedTime
   }) {
     const [id] = await db('leads').insert({
       topic: topic || 'Asesoría de Tesis',
@@ -86,7 +93,14 @@ export class LeadService {
       address: address || null,
       assigned_to: assignedTo || 'Kevin',
       source: source || 'Chatbot Web',
-      status: status || 'nuevo'
+      status: status || 'nuevo',
+      meta_leadgen_id: metaLeadgenId || null,
+      meta_form_id: metaFormId || null,
+      meta_ad_id: metaAdId || null,
+      meta_adset_id: metaAdsetId || null,
+      meta_campaign_id: metaCampaignId || null,
+      meta_platform: metaPlatform || null,
+      meta_created_time: metaCreatedTime ? new Date(metaCreatedTime) : null
     });
     return this.getLeadById(id);
   }
@@ -110,7 +124,14 @@ export class LeadService {
       assignedTo: data.assignedTo || data.assigned_to || 'Kevin',
       source: data.source || 'Manual',
       status: data.status || 'nuevo',
-      additionalNotes: data.additionalNotes || data.additional_notes || null
+      additionalNotes: data.additionalNotes || data.additional_notes || null,
+      metaLeadgenId: data.metaLeadgenId,
+      metaFormId: data.metaFormId,
+      metaAdId: data.metaAdId,
+      metaAdsetId: data.metaAdsetId,
+      metaCampaignId: data.metaCampaignId,
+      metaPlatform: data.metaPlatform,
+      metaCreatedTime: data.metaCreatedTime
     });
   }
 
@@ -134,6 +155,42 @@ export class LeadService {
 
   async findByAdditionalNotesContaining(text) {
     return db('leads').where('additional_notes', 'like', `%${text}%`).first();
+  }
+
+  /**
+   * El lead ya importado de un `leadgen_id` de Meta, o nada.
+   *
+   * Mira la columna y TAMBIÉN el marcador viejo en las notas: los leads
+   * anteriores a la migración de atribución tienen el id solo ahí, y la
+   * conciliación los tiene que reconocer o los volvería a importar a todos
+   * como si faltaran.
+   */
+  async findByMetaLeadgenId(leadgenId) {
+    const id = String(leadgenId || '').trim();
+    if (!id) return null;
+
+    const byColumn = await db('leads').where({ meta_leadgen_id: id }).first();
+    if (byColumn) return byColumn;
+
+    return this.findByAdditionalNotesContaining(`[Meta leadgen_id=${id}]`);
+  }
+
+  /** Los `leadgen_id` ya guardados, para diferenciarlos contra los que
+   * devuelve la Graph API sin traer un lead entero por cada uno. */
+  async getKnownMetaLeadgenIds() {
+    const rows = await db('leads')
+      .select('meta_leadgen_id', 'additional_notes')
+      .where((builder) => {
+        builder.whereNotNull('meta_leadgen_id').orWhere('additional_notes', 'like', '%[Meta leadgen_id=%');
+      });
+
+    const ids = new Set();
+    for (const row of rows) {
+      if (row.meta_leadgen_id) ids.add(String(row.meta_leadgen_id));
+      const legacy = String(row.additional_notes || '').match(/\[Meta leadgen_id=(\d+)\]/);
+      if (legacy) ids.add(legacy[1]);
+    }
+    return ids;
   }
 
   /**

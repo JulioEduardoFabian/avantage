@@ -31,6 +31,7 @@ import { RoleService } from './services/roleService.js';
 import { ProjectUpdateService } from './services/projectUpdateService.js';
 import { DeliverableService } from './services/deliverableService.js';
 import { MetaWebhookService } from './services/metaWebhookService.js';
+import { MetaLeadReconciliationService } from './services/metaLeadReconciliationService.js';
 import { runMetaLeadgenBackfill } from './scripts/backfillMetaLeadgenFields.js';
 import { PageInteractionService } from './services/pageInteractionService.js';
 import { PageMessageService } from './services/pageMessageService.js';
@@ -150,6 +151,7 @@ const projectUpdateService = new ProjectUpdateService();
 // la puerta del pago inicial por su cuenta.
 const deliverableService = new DeliverableService({ projectService, taskService });
 const metaWebhookService = new MetaWebhookService();
+const metaLeadReconciliationService = new MetaLeadReconciliationService(leadService);
 const pageInteractionService = new PageInteractionService();
 const pageMessageService = new PageMessageService();
 const pageFollowerService = new PageFollowerService();
@@ -1650,6 +1652,44 @@ app.post('/api/leads/backfill-meta-fields', requireAuth, requirePermission('lead
   } catch (error) {
     console.error('❌ Error en el backfill de campos de Meta Lead Ads:', error);
     res.status(500).json({ error: 'Error al ejecutar el backfill.', details: error.message });
+  }
+});
+
+/*
+ * Conciliación con Meta Lead Ads. Las dos rutas van ANTES de
+ * `/api/leads/:id`, que si no se queda con "meta-reconciliation" como id.
+ *
+ * GET  = solo compara y reporta (no escribe nada).
+ * POST = además importa los leads que falten.
+ *
+ * Separadas a propósito: traer leads perdidos es una escritura sobre el
+ * funnel del equipo y no algo que deba pasar por mirar una pantalla.
+ */
+app.get('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    const report = await metaLeadReconciliationService.reconcile({
+      since: req.query.since || null,
+      until: req.query.until || null,
+      apply: false
+    });
+    res.json(report);
+  } catch (error) {
+    console.error('❌ Error al conciliar los leads de Meta:', error);
+    res.status(502).json({ error: 'No se pudo consultar a Meta.', details: error.message });
+  }
+});
+
+app.post('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    const report = await metaLeadReconciliationService.reconcile({
+      since: req.body?.since || null,
+      until: req.body?.until || null,
+      apply: true
+    });
+    res.json(report);
+  } catch (error) {
+    console.error('❌ Error al recuperar los leads faltantes de Meta:', error);
+    res.status(502).json({ error: 'No se pudieron recuperar los leads.', details: error.message });
   }
 });
 

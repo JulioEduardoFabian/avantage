@@ -100,6 +100,72 @@ export function formatCustomFieldsNote(custom) {
 }
 
 /**
+ * Campos que se le piden a la Graph API por cada lead de un formulario
+ * instantáneo. `ad_id`/`adset_id`/`campaign_id` son los que permiten
+ * responder desde el panel "¿cuántos leads trajo este anuncio y cuántos
+ * llegaron al CRM?" sin exportar a mano el CSV del Administrador de anuncios,
+ * y `created_time` es el momento real del envío, distinto de cuándo el lead
+ * entró a este sistema (ver la migración de atribución de Meta).
+ */
+export const META_LEAD_FIELDS = 'id,created_time,field_data,form_id,platform,ad_id,adset_id,campaign_id';
+
+/**
+ * Convierte la respuesta de la Graph API de UN lead en el prospecto del CRM.
+ *
+ * Es el único camino de alta de un lead de formulario: lo usan tanto el
+ * webhook (`importLead`) como la conciliación que rescata los que el webhook
+ * nunca llegó a procesar (`metaLeadReconciliationService`). Repetido en cada
+ * llamador, el segundo termina guardando campos distintos que el primero y
+ * las dos mitades de la misma tabla dejan de ser comparables — que es
+ * exactamente el problema que la conciliación viene a medir.
+ */
+export async function persistMetaLead(leadService, data) {
+  const leadgenId = String(data.id || '');
+
+  const fields = {};
+  for (const item of data.field_data || []) {
+    fields[item.name] = item.values?.[0] || '';
+  }
+
+  // "platform" indica si el formulario se llenó en Facebook ("fb") o
+  // Instagram ("ig"); sin ese dato, se etiqueta genéricamente como Meta Ads.
+  const source = data.platform === 'ig' ? 'Instagram Ads' : data.platform === 'fb' ? 'Facebook Ads' : 'Meta Ads';
+
+  const custom = extractCustomFields(data.field_data);
+  // El marcador sigue escribiéndose en las notas aunque el leadgen_id ya viva
+  // en su propia columna: es lo que hace legible la ficha para el equipo, y
+  // lo que permite reconocer estos leads si alguna vez hay que rehacer la
+  // columna.
+  const notesParts = [`[Meta leadgen_id=${leadgenId}] form_id=${data.form_id || 'desconocido'}`];
+  const customNote = formatCustomFieldsNote(custom);
+  if (customNote) notesParts.push(customNote);
+
+  return leadService.createProspect({
+    fullName: fields.full_name || fields.nombre_completo || 'Prospecto de Facebook',
+    email: fields.email || fields.correo_electronico || '',
+    phone: fields.phone_number || fields.phone || '',
+    source,
+    academicLevel: custom.academicLevel,
+    university: custom.university,
+    fieldOfStudy: custom.fieldOfStudy,
+    // Arranca igual que un contacto nuevo de WhatsApp que Avan todavía no
+    // calificó: esta persona llenó el formulario pero nunca llegó a escribir
+    // (o recibir) un mensaje de WhatsApp real, así que no es un lead comercial
+    // todavía — debe quedarse en el Setter Funnel, no "graduar" directo al
+    // Funnel de Ventas (ver SETTER_ONLY_STATUSES en LeadsView.vue).
+    status: 'conversacion_abierta',
+    additionalNotes: notesParts.join('\n'),
+    metaLeadgenId: leadgenId || null,
+    metaFormId: data.form_id || null,
+    metaAdId: data.ad_id || null,
+    metaAdsetId: data.adset_id || null,
+    metaCampaignId: data.campaign_id || null,
+    metaPlatform: data.platform || null,
+    metaCreatedTime: data.created_time || null
+  });
+}
+
+/**
  * Recepción e importación de leads generados por Meta Lead Ads (Facebook/Instagram)
  * vía el webhook de la app de Meta (campo "leadgen").
  */
@@ -194,8 +260,8 @@ export class MetaWebhookService {
   }
 
   /**
-   * Recupera los datos de un lead desde la Graph API y lo registra como
-   * prospecto, evitando duplicados si el evento se reenvía.
+   * Recupera un lead desde la Graph API y lo registra como prospecto,
+   * evitando duplicados si Meta reenvía el mismo evento.
    */
   async importLead(leadgenId) {
     const pageAccessToken = process.env.META_PAGE_ACCESS_TOKEN;
@@ -204,14 +270,13 @@ export class MetaWebhookService {
       return null;
     }
 
-    const marker = `[Meta leadgen_id=${leadgenId}]`;
-    const existing = await this.leadService.findByAdditionalNotesContaining(marker);
+    const existing = await this.leadService.findByMetaLeadgenId(leadgenId);
     if (existing) {
       console.log(`↩️ [Meta Webhook] Lead ${leadgenId} ya importado como prospecto #${existing.id}, se omite.`);
       return existing;
     }
 
-    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${leadgenId}?fields=field_data,form_id,platform&access_token=${encodeURIComponent(pageAccessToken)}`;
+    const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${leadgenId}?fields=${META_LEAD_FIELDS}&access_token=${encodeURIComponent(pageAccessToken)}`;
     const response = await fetch(url);
     const data = await response.json();
 
@@ -220,38 +285,9 @@ export class MetaWebhookService {
       return null;
     }
 
-    const fields = {};
-    for (const item of data.field_data || []) {
-      fields[item.name] = item.values?.[0] || '';
-    }
     console.log(`📋 [Meta Webhook] field_data del lead ${leadgenId}:`, JSON.stringify(data.field_data));
 
-    // "platform" indica si el formulario se llenó en Facebook ("fb") o
-    // Instagram ("ig"); sin ese dato, se etiqueta genéricamente como Meta Ads.
-    const source = data.platform === 'ig' ? 'Instagram Ads' : data.platform === 'fb' ? 'Facebook Ads' : 'Meta Ads';
-
-    const custom = extractCustomFields(data.field_data);
-    const notesParts = [`${marker} form_id=${data.form_id || 'desconocido'}`];
-    const customNote = formatCustomFieldsNote(custom);
-    if (customNote) notesParts.push(customNote);
-
-    const prospect = await this.leadService.createProspect({
-      fullName: fields.full_name || fields.nombre_completo || 'Prospecto de Facebook',
-      email: fields.email || fields.correo_electronico || '',
-      phone: fields.phone_number || fields.phone || '',
-      source,
-      academicLevel: custom.academicLevel,
-      university: custom.university,
-      fieldOfStudy: custom.fieldOfStudy,
-      // Arranca igual que un contacto nuevo de WhatsApp que Avan todavía no
-      // calificó: esta persona llenó el formulario pero nunca llegó a
-      // escribir (o recibir) un mensaje de WhatsApp real, así que no es un
-      // lead comercial todavía — debe quedarse en el Setter Funnel, no
-      // "graduar" directo al Funnel de Ventas (ver SETTER_ONLY_STATUSES en
-      // LeadsView.vue).
-      status: 'conversacion_abierta',
-      additionalNotes: notesParts.join('\n')
-    });
+    const prospect = await persistMetaLead(this.leadService, { ...data, id: data.id || leadgenId });
 
     console.log(`📥 [Meta Webhook] Lead importado como prospecto #${prospect.id} (leadgen_id=${leadgenId})`);
     return prospect;

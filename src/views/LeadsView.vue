@@ -19,6 +19,9 @@
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
         </button>
+        <button class="btn-action-ghost" @click="openMetaReconciliation" title="Comparar los leads de los formularios de Meta contra los que llegaron al CRM">
+          🧮 Conciliar Meta
+        </button>
         <button class="btn-action-ghost" @click="confirmResetColumns" title="Restablecer columnas originales">
           ⚙️ Restablecer
         </button>
@@ -534,6 +537,121 @@
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- MODAL: Conciliación con Meta Lead Ads                             -->
+    <!-- ================================================================= -->
+    <!--
+      Compara, formulario por formulario, los leads que Meta registró contra
+      los que llegaron acá. El desglose por plataforma es el que contesta de
+      un vistazo si lo que se pierde viene de Facebook o de Instagram, que es
+      la pregunta que hoy obliga a exportar el CSV del Administrador de
+      anuncios y cruzarlo a mano.
+    -->
+    <div v-if="showMetaRecModal" class="modal-overlay" @click.self="showMetaRecModal = false">
+      <div class="modal-content column-modal-card" style="max-width: 760px;">
+        <div class="modal-header">
+          <h3 class="modal-title">🧮 Conciliación con Meta Lead Ads</h3>
+          <button class="modal-close-btn" @click="showMetaRecModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="meta-rec-range">
+            <label class="form-label" style="font-size: 0.8rem;">Desde</label>
+            <input v-model="metaRecForm.since" type="date" class="form-control" />
+            <label class="form-label" style="font-size: 0.8rem;">Hasta</label>
+            <input v-model="metaRecForm.until" type="date" class="form-control" />
+            <button class="btn-action-secondary" @click="runMetaReconciliation(false)" :disabled="metaRecLoading">
+              {{ metaRecLoading ? 'Consultando…' : 'Comparar' }}
+            </button>
+          </div>
+          <p class="section-subheading" style="margin: 0.5rem 0 1rem 0;">
+            Las fechas son las del envío del formulario en Meta, no las de alta en el CRM. Vacías, compara todo lo que Meta conserva (90 días).
+          </p>
+
+          <div v-if="metaRecError" class="info-box" style="border-color: rgba(220, 90, 90, 0.4); background: rgba(220, 90, 90, 0.08);">
+            <p style="color: var(--accent-rose); font-size: 0.85rem; margin: 0;">{{ metaRecError }}</p>
+          </div>
+
+          <template v-if="metaRecReport">
+            <div class="meta-rec-totals">
+              <div class="stat-card">
+                <div class="stat-info">
+                  <span class="stat-label">En Meta</span>
+                  <span class="stat-value">{{ metaRecReport.totals.en_meta }}</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-info">
+                  <span class="stat-label">En el CRM</span>
+                  <span class="stat-value">{{ metaRecReport.totals.en_crm }}</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-info">
+                  <span class="stat-label">Faltantes</span>
+                  <span class="stat-value" :style="{ color: metaRecReport.totals.faltantes ? 'var(--accent-rose)' : 'var(--accent-green)' }">
+                    {{ metaRecReport.totals.faltantes }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <h4 class="form-label" style="margin-top: 1rem;">Por plataforma</h4>
+            <table class="meta-rec-table">
+              <thead>
+                <tr><th>Plataforma</th><th>En Meta</th><th>En el CRM</th><th>Faltantes</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, platform) in metaRecReport.by_platform" :key="platform">
+                  <td>{{ platformLabel(platform) }}</td>
+                  <td>{{ row.en_meta }}</td>
+                  <td>{{ row.en_crm }}</td>
+                  <td :style="{ color: row.faltantes ? 'var(--accent-rose)' : 'inherit' }">{{ row.faltantes }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h4 class="form-label" style="margin-top: 1rem;">Por formulario</h4>
+            <table class="meta-rec-table">
+              <thead>
+                <tr><th>Formulario</th><th>En Meta</th><th>En el CRM</th><th>Faltantes</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="form in metaRecReport.forms" :key="form.form_id">
+                  <td>
+                    {{ form.nombre || form.form_id }}
+                    <span v-if="form.error" style="color: var(--accent-rose);" :title="form.error">⚠️</span>
+                  </td>
+                  <td>{{ form.en_meta }}</td>
+                  <td>{{ form.en_crm }}</td>
+                  <td :style="{ color: form.faltantes ? 'var(--accent-rose)' : 'inherit' }">{{ form.faltantes }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div v-if="metaRecReport.applied" class="info-box" style="margin-top: 1rem; border-color: rgba(70, 180, 120, 0.4); background: rgba(70, 180, 120, 0.08);">
+              <p style="color: var(--accent-green); font-size: 0.85rem; margin: 0;">
+                Se recuperaron {{ metaRecReport.totals.importados }} lead(s).
+                <template v-if="metaRecReport.totals.fallidos">{{ metaRecReport.totals.fallidos }} fallaron.</template>
+                Entran al Setter Funnel como "conversación abierta".
+              </p>
+            </div>
+
+            <div class="modal-footer-actions">
+              <button type="button" class="btn-action-ghost" @click="showMetaRecModal = false">Cerrar</button>
+              <button
+                type="button"
+                class="btn-action-primary"
+                :disabled="metaRecLoading || !metaRecReport.totals.faltantes"
+                @click="runMetaReconciliation(true)"
+              >
+                Recuperar {{ metaRecReport.totals.faltantes }} lead(s) faltante(s)
+              </button>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -1230,6 +1348,58 @@ const editColumnForm = reactive({
 });
 
 const showDeleteColModal = ref(false);
+
+/* ------------------- Conciliación con Meta Lead Ads -------------------- */
+/*
+ * Dos pasos a propósito: "Comparar" solo lee y "Recuperar" escribe. Traer
+ * leads perdidos agrega gente al funnel que el equipo va a trabajar, así que
+ * no puede ser un efecto de abrir una pantalla.
+ */
+const showMetaRecModal = ref(false);
+const metaRecLoading = ref(false);
+const metaRecError = ref('');
+const metaRecReport = ref(null);
+const metaRecForm = reactive({ since: '', until: '' });
+
+const PLATFORM_LABELS = { fb: 'Facebook', ig: 'Instagram', desconocida: 'Sin dato' };
+function platformLabel(platform) {
+  return PLATFORM_LABELS[platform] || platform;
+}
+
+function openMetaReconciliation() {
+  metaRecError.value = '';
+  showMetaRecModal.value = true;
+  if (!metaRecReport.value) runMetaReconciliation(false);
+}
+
+async function runMetaReconciliation(apply) {
+  if (apply && !window.confirm('Se van a importar los leads faltantes al Setter Funnel. ¿Continuar?')) return;
+
+  metaRecLoading.value = true;
+  metaRecError.value = '';
+  try {
+    const query = new URLSearchParams();
+    if (metaRecForm.since) query.set('since', metaRecForm.since);
+    if (metaRecForm.until) query.set('until', metaRecForm.until);
+
+    const response = apply
+      ? await apiFetch('/api/leads/meta-reconciliation', {
+          method: 'POST',
+          body: JSON.stringify({ since: metaRecForm.since || null, until: metaRecForm.until || null })
+        })
+      : await apiFetch(`/api/leads/meta-reconciliation?${query.toString()}`);
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.details || data.error || 'Error al consultar a Meta.');
+
+    metaRecReport.value = data;
+    if (apply && data.totals.importados) await fetchAll();
+  } catch (error) {
+    metaRecError.value = error.message;
+  } finally {
+    metaRecLoading.value = false;
+  }
+}
 const deletingColumn = ref(null);
 const targetReassignColKey = ref('nuevo');
 
@@ -2235,6 +2405,39 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.meta-rec-range {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.meta-rec-range .form-control { width: auto; }
+.meta-rec-range .form-label { margin: 0; }
+
+.meta-rec-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.6rem;
+}
+
+/* La tabla se desplaza dentro de su caja: un formulario con nombre largo no
+   puede hacer que el modal entero se mueva en horizontal. */
+.meta-rec-table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.meta-rec-table th,
+.meta-rec-table td {
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  white-space: nowrap;
+}
+.meta-rec-table th { color: var(--text-muted); font-weight: 600; }
+
 /* ── Edición de los datos del lead (dentro del modal de detalle) ── */
 .lead-edit-btn {
   margin-left: 0.6rem;
