@@ -132,18 +132,55 @@ export class ProjectService {
     return attachPaymentGate(rows.map(this.withProgress));
   }
 
+  /**
+   * El listado de Proyectos. Trae además **quién lo trabaja** (líder y
+   * colaboradores) y el nombre del cliente, que vive en el lead: la tabla los
+   * muestra como círculos y antes había que entrar a cada proyecto para saber
+   * de quién era.
+   *
+   * Los colaboradores se piden en UNA consulta para todos los proyectos y se
+   * reparten acá: una por fila convertía abrir la pantalla en N+1 consultas.
+   */
   async getAllProjects() {
     const rows = await db('projects')
       .select(
         'projects.*',
+        db.raw('MAX(leader.name) as leader_name'),
+        db.raw('MAX(lead.full_name) as client_name'),
         db.raw('COUNT(tasks.id) as total_tasks'),
         db.raw("SUM(CASE WHEN tasks.status = 'completado' THEN 1 ELSE 0 END) as completed_tasks")
       )
       .leftJoin('tasks', 'tasks.project_id', 'projects.id')
+      .leftJoin('users as leader', 'leader.id', 'projects.leader_id')
+      .leftJoin('leads as lead', 'lead.id', 'projects.lead_id')
       .groupBy('projects.id')
       .orderBy('projects.created_at', 'desc');
 
-    return attachPaymentGate(rows.map(this.withProgress));
+    const collaboratorsByProject = await this.#collaboratorsByProject(rows.map((row) => row.id));
+    const withTeam = rows.map((row) => ({
+      ...this.withProgress(row),
+      collaborators: collaboratorsByProject.get(row.id) || []
+    }));
+
+    return attachPaymentGate(withTeam);
+  }
+
+  /** Los colaboradores de varios proyectos de una sola vez, agrupados por proyecto. */
+  async #collaboratorsByProject(projectIds) {
+    const byProject = new Map();
+    if (projectIds.length === 0) return byProject;
+
+    const rows = await db('project_collaborators')
+      .join('users', 'users.id', 'project_collaborators.user_id')
+      .whereIn('project_collaborators.project_id', projectIds)
+      .select('project_collaborators.project_id', 'users.id', 'users.name')
+      .orderBy('users.name', 'asc');
+
+    for (const row of rows) {
+      if (!byProject.has(row.project_id)) byProject.set(row.project_id, []);
+      byProject.get(row.project_id).push({ id: row.id, name: row.name });
+    }
+    return byProject;
   }
 
   async getProjectById(id) {

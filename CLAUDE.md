@@ -126,6 +126,13 @@ antes de tocar el arranque de producción.
   puede filtrar después por error. Atar la cuota es del módulo de Entregables, que es el que tiene
   el permiso para ver el dinero. Es la misma regla de "en Proyectos no se muestran importes",
   llevada a la asociación completa.
+- La **tabla de Proyectos** muestra el equipo (líder + colaboradores) como círculos con las
+  iniciales: `getAllProjects()` trae ya el `leader_name`, los `collaborators` —en UNA consulta para
+  todos los proyectos, no una por fila— y el `client_name` del lead. El color del círculo se deriva
+  del nombre (`avatarColor()`), así que la misma persona se ve siempre igual y no hay nada que
+  guardar; el líder lleva anillo y estrella, y si además figura como colaborador no se repite. Los
+  usuarios **no tienen foto** hoy: el template ya usa `member.avatar_url` si existe, así que
+  agregarla después es sumar la columna y el formulario de carga, sin tocar la tabla.
 - Los **proyectos** tienen tareas (`tasks`, N:1) cuyo `% avance = completadas / total`, colaboradores
   (N:N vía `project_collaborators`), un líder (`leader_id` → `users`) y una línea de tiempo de
   hitos con adjuntos opcionales (`project_updates`).

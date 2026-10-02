@@ -1,70 +1,136 @@
 <template>
   <main class="container-fluid projects-page">
-    <div style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
-      <div>
+    <header class="pv-header">
+      <div class="pv-header-text">
         <h2 class="section-heading"><span>🚀</span> Proyectos</h2>
-        <p class="section-subheading" style="margin-bottom: 0;">
+        <p class="section-subheading pv-subtitle">
           Se generan automáticamente cuando un lead llega al estado "Ganado" en el
-          <router-link to="/admin/leads" style="color: var(--accent-cyan);">Funnel de Ventas</router-link>.
+          <router-link to="/admin/leads">Funnel de Ventas</router-link>.
         </p>
       </div>
-      <div style="display: flex; gap: 0.6rem;">
-        <button class="btn-primary" style="width: auto; padding: 0 1.25rem;" @click="openCreateModal">
-          + Nuevo Proyecto
-        </button>
-        <button class="btn-secondary" @click="fetchProjects" :disabled="isLoading">
-          {{ isLoading ? 'Cargando...' : '🔄 Actualizar' }}
+      <div class="pv-header-actions">
+        <button class="btn-primary pv-btn" @click="openCreateModal">+ Nuevo Proyecto</button>
+        <button class="btn-secondary pv-btn" :disabled="isLoading" @click="fetchProjects">
+          {{ isLoading ? 'Cargando…' : '🔄 Actualizar' }}
         </button>
       </div>
-    </div>
+    </header>
 
-    <div v-if="loadError" class="info-box" style="border-color: rgba(200, 85, 50, 0.4); margin-bottom: 1.5rem;">
-      <h4 style="color: var(--accent-rose);">⚠️ No se pudo cargar los proyectos</h4>
+    <div v-if="loadError" class="info-box pv-alert">
+      <h4>⚠️ No se pudo cargar los proyectos</h4>
       <p>{{ loadError }}</p>
     </div>
 
-    <!-- Resumen por estado -->
-    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-      <div v-for="s in STATUSES" :key="s" class="status-summary-chip">
-        <span :class="['status-pill', statusClass(s)]">{{ s }}</span>
-        <span style="color: var(--text-muted);">{{ countByStatus[s] || 0 }}</span>
-      </div>
-    </div>
+    <!-- Buscador y filtro por estado. Los contadores cuentan SIEMPRE todo, no lo
+         filtrado: si contaran lo visible, filtrar por "Activo" dejaría todos los
+         demás en cero y el resumen dejaría de servir como resumen. -->
+    <section class="pv-toolbar">
+      <label class="pv-search-wrap">
+        <span class="pv-search-icon" aria-hidden="true">🔎</span>
+        <input
+          v-model="search"
+          type="search"
+          class="pv-search"
+          placeholder="Buscar por tema, cliente, correo o carrera…"
+        />
+        <button v-if="search" type="button" class="pv-search-clear" title="Borrar la búsqueda" @click="search = ''">✕</button>
+      </label>
 
-    <div class="glass-panel" style="padding: 1.5rem; overflow-x: auto;">
-      <table v-if="projects.length > 0" class="projects-table">
+      <div class="pv-status-filters">
+        <button
+          type="button"
+          class="pv-status-chip"
+          :class="{ 'is-on': statusFilter === 'all' }"
+          @click="statusFilter = 'all'"
+        >
+          Todos <span class="pv-chip-count">{{ projects.length }}</span>
+        </button>
+        <button
+          v-for="s in STATUSES"
+          :key="s"
+          type="button"
+          class="pv-status-chip"
+          :class="{ 'is-on': statusFilter === s, 'is-empty': !countByStatus[s] }"
+          @click="statusFilter = statusFilter === s ? 'all' : s"
+        >
+          <span :class="['status-pill', statusClass(s)]">{{ s }}</span>
+          <span class="pv-chip-count">{{ countByStatus[s] || 0 }}</span>
+        </button>
+      </div>
+    </section>
+
+    <div class="glass-panel pv-panel">
+      <!-- La tabla se convierte en tarjetas apiladas por debajo de 1000 px (ver
+           los estilos): cada celda lleva su rótulo en `data-label`, así que en
+           el celular se lee "Cliente: …" en vez de una columna sin cabecera. -->
+      <table v-if="visibleProjects.length > 0" class="projects-table">
         <thead>
           <tr>
             <th>Proyecto</th>
             <th>Cliente</th>
             <th>Nivel / Carrera</th>
+            <th>Equipo</th>
             <th>Estado</th>
             <th>Avance</th>
-            <th>Fecha Límite</th>
-            <th>Creado</th>
-            <th></th>
+            <th>Fecha límite</th>
+            <th><span class="pv-sr-only">Acciones</span></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="project in projects" :key="project.id">
-            <td class="topic-cell">
-              <router-link :to="`/admin/projects/${project.id}`" style="color: var(--text-main); text-decoration: none; font-weight: 600;">
+          <tr v-for="project in visibleProjects" :key="project.id" :class="{ 'is-locked': project.is_locked }">
+            <td class="topic-cell" data-label="Proyecto">
+              <router-link :to="`/admin/projects/${project.id}`" class="pv-topic-link">
                 {{ project.topic }}
               </router-link>
+              <div class="pv-created">Creado el {{ formatDate(project.created_at) }}</div>
               <!-- Bloqueado hasta que Finanzas verifique el primer pago -->
               <div v-if="project.is_locked" class="locked-note" :title="lockedTitle(project)">
                 🔒 Esperando la verificación del primer pago
               </div>
             </td>
-            <td>
-              <div>{{ project.client_email }}</div>
-              <div style="color: var(--text-muted); font-size: 0.78rem;">📱 {{ project.client_phone }}</div>
+
+            <td data-label="Cliente">
+              <div class="pv-client-name">{{ project.client_name || project.client_email || '—' }}</div>
+              <div v-if="project.client_name && project.client_email" class="pv-sub">✉️ {{ project.client_email }}</div>
+              <div v-if="project.client_phone" class="pv-sub">📱 {{ project.client_phone }}</div>
             </td>
-            <td style="white-space: nowrap;">
+
+            <td data-label="Nivel / Carrera">
               <div>{{ project.academic_level }}</div>
-              <div style="color: var(--text-muted); font-size: 0.78rem;">{{ project.field_of_study }}</div>
+              <div class="pv-sub">{{ project.field_of_study }}</div>
             </td>
-            <td>
+
+            <!-- Equipo: el líder primero y con anillo, los colaboradores
+                 después. Sin esto había que entrar a cada proyecto para saber
+                 de quién era. -->
+            <td data-label="Equipo">
+              <div v-if="teamOf(project).length > 0" class="pv-avatars">
+                <span
+                  v-for="member in teamOf(project).slice(0, 4)"
+                  :key="member.id"
+                  class="pv-avatar"
+                  :class="{ 'is-leader': member.isLeader }"
+                  :style="{ background: avatarColor(member.name) }"
+                  :title="member.isLeader ? `${member.name} · líder del proyecto` : member.name"
+                >
+                  <!-- Hoy los usuarios no tienen foto; cuando la tengan, basta
+                       con que venga `avatar_url` y esta imagen la usa. -->
+                  <img v-if="member.avatar_url" :src="member.avatar_url" :alt="member.name" />
+                  <template v-else>{{ initials(member.name) }}</template>
+                  <span v-if="member.isLeader" class="pv-avatar-crown" aria-hidden="true">★</span>
+                </span>
+                <span
+                  v-if="teamOf(project).length > 4"
+                  class="pv-avatar is-more"
+                  :title="teamOf(project).slice(4).map((m) => m.name).join(', ')"
+                >+{{ teamOf(project).length - 4 }}</span>
+              </div>
+              <span v-else class="pv-unassigned" title="Este proyecto no tiene líder ni colaboradores">
+                <span class="pv-avatar is-empty">?</span> Sin asignar
+              </span>
+            </td>
+
+            <td data-label="Estado">
               <select
                 v-if="!project.is_locked"
                 :value="project.status"
@@ -77,27 +143,47 @@
                 🔒 {{ project.status }}
               </span>
             </td>
-            <td style="min-width: 140px;">
-              <div class="metric-bar-bg" style="margin-bottom: 0.25rem;">
-                <div class="metric-bar-fill" :style="{ width: (project.progress_percentage || 0) + '%', background: progressColor(project.progress_percentage) }"></div>
+
+            <td class="pv-progress-cell" data-label="Avance">
+              <div class="metric-bar-bg pv-bar">
+                <div
+                  class="metric-bar-fill"
+                  :style="{ width: (project.progress_percentage || 0) + '%', background: progressColor(project.progress_percentage) }"
+                ></div>
               </div>
-              <span style="font-size: 0.75rem; color: var(--text-muted);">
-                {{ project.progress_percentage || 0 }}% ({{ project.completed_tasks || 0 }}/{{ project.total_tasks || 0 }})
+              <span class="pv-sub">
+                {{ project.progress_percentage || 0 }}% · {{ project.completed_tasks || 0 }}/{{ project.total_tasks || 0 }} tareas
               </span>
             </td>
-            <td style="white-space: nowrap; font-size: 0.8rem;" :style="{ color: isOverdue(project) ? 'var(--accent-rose)' : 'var(--text-muted)' }">
-              {{ project.deadline ? formatDate(project.deadline) : '—' }}
-              <span v-if="isOverdue(project)">⚠️</span>
+
+            <td class="pv-deadline" :class="{ 'is-overdue': isOverdue(project) }" data-label="Fecha límite">
+              <template v-if="project.deadline">
+                {{ formatDate(project.deadline) }}
+                <span v-if="isOverdue(project)" title="El plazo ya pasó">⚠️ vencido</span>
+              </template>
+              <span v-else class="pv-sub">Sin fecha</span>
             </td>
-            <td style="white-space: nowrap; color: var(--text-muted); font-size: 0.8rem;">{{ formatDate(project.created_at) }}</td>
-            <td>
-              <button class="btn-secondary row-edit-btn" title="Editar o eliminar el proyecto" @click="openEditModal(project)">✏️</button>
+
+            <td class="pv-actions" data-label="">
+              <button class="btn-secondary row-edit-btn" title="Editar o eliminar el proyecto" @click="openEditModal(project)">
+                ✏️ <span class="pv-action-label">Editar</span>
+              </button>
             </td>
           </tr>
         </tbody>
       </table>
 
-      <div v-else-if="!isLoading" class="projects-empty-card">
+      <p v-else-if="isLoading" class="pv-loading">Cargando proyectos…</p>
+
+      <!-- Dos vacíos distintos: "no hay nada" y "no hay nada que coincida".
+           Mostrar el mismo mensaje en los dos casos hace creer que se borraron
+           los proyectos. -->
+      <div v-else-if="projects.length > 0" class="pv-no-results">
+        <p>Ningún proyecto coincide con lo que estás buscando.</p>
+        <button class="btn-secondary pv-btn" @click="clearFilters">✕ Quitar filtros</button>
+      </div>
+
+      <div v-else class="projects-empty-card">
         <div class="empty-state-visual">
           <img src="/images/empty_projects_state.jpg" alt="Proyectos y Avances" class="empty-state-photo" />
         </div>
@@ -105,9 +191,7 @@
         <p class="projects-empty-desc">
           Los proyectos se generan automáticamente cuando un prospecto llega al estado "Ganado" en el funnel comercial, o puedes crearlo manualmente.
         </p>
-        <button class="btn-primary" style="width: auto; padding: 0.55rem 1.25rem; font-size: 0.85rem;" @click="openCreateModal">
-          + Registrar Primer Proyecto
-        </button>
+        <button class="btn-primary pv-btn" @click="openCreateModal">+ Registrar Primer Proyecto</button>
       </div>
     </div>
 
@@ -245,6 +329,80 @@ const ACADEMIC_LEVELS = ['Pregrado (Bachiller/Título)', 'Posgrado (Maestría)',
 const projects = ref([]);
 const isLoading = ref(false);
 const loadError = ref('');
+const search = ref('');
+const statusFilter = ref('all');
+
+/**
+ * Lo que la tabla muestra. Los contadores de arriba siguen contando TODO a
+ * propósito: si contaran lo filtrado, elegir "Activo" dejaría los demás en cero
+ * y el resumen dejaría de ser un resumen.
+ */
+const visibleProjects = computed(() => {
+  const query = search.value.trim().toLowerCase();
+  return projects.value.filter((project) => {
+    if (statusFilter.value !== 'all' && project.status !== statusFilter.value) return false;
+    if (!query) return true;
+    return [
+      project.topic, project.client_name, project.client_email, project.client_phone,
+      project.field_of_study, project.academic_level, project.leader_name
+    ].filter(Boolean).join(' ').toLowerCase().includes(query);
+  });
+});
+
+function clearFilters() {
+  search.value = '';
+  statusFilter.value = 'all';
+}
+
+// ------------------------------------------------------------------- EQUIPO
+
+/**
+ * Quién trabaja el proyecto, en el orden en que se mira: el líder primero.
+ *
+ * Si además está como colaborador no se repite — en la tabla saldrían dos
+ * círculos iguales y parecería que son dos personas.
+ */
+function teamOf(project) {
+  const members = [];
+  if (project.leader_id) {
+    members.push({
+      id: project.leader_id,
+      name: project.leader_name || 'Sin nombre',
+      avatar_url: project.leader_avatar_url || null,
+      isLeader: true
+    });
+  }
+  for (const collaborator of project.collaborators || []) {
+    if (Number(collaborator.id) === Number(project.leader_id)) continue;
+    members.push({ ...collaborator, isLeader: false });
+  }
+  return members;
+}
+
+/** Las iniciales que van dentro del círculo: una o dos letras, nunca más. */
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+/**
+ * Color del círculo, derivado del nombre. Es estable —la misma persona se ve
+ * siempre del mismo color en todas las filas, que es lo que la hace
+ * reconocible de un vistazo— y no se guarda en ningún lado.
+ *
+ * Todos los tonos de la paleta tienen contraste suficiente con el texto blanco
+ * de las iniciales.
+ */
+const AVATAR_COLORS = ['#6F8125', '#2E7D46', '#56624A', '#C85532', '#8A3F28', '#3A6B8A', '#6B4E8C', '#8A6A1F'];
+
+function avatarColor(name) {
+  const text = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) % 100000;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
 
 const showCreateModal = ref(false);
 // Proyecto que se está editando en el modal (null = modal cerrado).
@@ -447,11 +605,252 @@ onMounted(() => {
   box-sizing: border-box;
 }
 
+.pv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* --- Encabezado y barra de herramientas --------------------------------- */
+
+.pv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.pv-header-text { flex: 1 1 320px; }
+.pv-subtitle { margin-bottom: 0; }
+.pv-subtitle a { color: var(--accent-cyan); }
+.pv-header-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.pv-btn { width: auto; padding: 0 1.25rem; white-space: nowrap; }
+
+.pv-alert { border-color: rgba(200, 85, 50, 0.4); margin-bottom: 1.25rem; }
+.pv-alert h4 { color: var(--accent-rose); }
+
+.pv-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.pv-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.pv-search-icon { position: absolute; left: 0.75rem; font-size: 0.9rem; pointer-events: none; }
+
+.pv-search {
+  width: 100%;
+  padding: 0.55rem 2.4rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+}
+
+.pv-search:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--border-glow); }
+
+.pv-search-clear {
+  position: absolute;
+  right: 0.45rem;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-sub);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.pv-status-filters { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+
+/* Los contadores de estado ahora filtran. Antes solo informaban y la tabla
+   había que recorrerla a ojo para encontrar los de un estado. */
+.pv-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-2);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pv-status-chip:hover { border-color: var(--border-strong); }
+.pv-status-chip.is-on { border-color: var(--primary); background: rgba(111, 129, 37, 0.1); }
+.pv-status-chip.is-empty { opacity: 0.55; }
+.pv-chip-count { font-weight: 700; color: var(--text-main); }
+
+.pv-panel { padding: 1.25rem; overflow-x: auto; }
+
+/* --- Tabla --------------------------------------------------------------- */
+
+.projects-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.projects-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  /* La cabecera se queda a la vista al desplazar una lista larga: sin esto, a
+     partir de la fila diez ya no se sabe qué columna es cuál. */
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+  z-index: 1;
+}
+
+.projects-table td {
+  padding: 0.8rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-sub);
+  vertical-align: middle;
+}
+
+.projects-table tbody tr { transition: background 0.15s ease; }
+.projects-table tbody tr:hover { background: var(--surface-1); }
+.projects-table tbody tr:last-child td { border-bottom: none; }
+
+/* Una franja al borde dice de un vistazo cuáles están esperando el pago. */
+.projects-table tbody tr.is-locked td:first-child { box-shadow: inset 3px 0 0 var(--accent-amber); }
+
+.topic-cell { max-width: 320px; }
+
+.pv-topic-link {
+  color: var(--text-main);
+  text-decoration: none;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.pv-topic-link:hover { color: var(--accent-cyan); text-decoration: underline; }
+
+.pv-created { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem; }
+.pv-client-name { color: var(--text-main); font-weight: 600; }
+.pv-sub { color: var(--text-muted); font-size: 0.76rem; }
+
+.pv-progress-cell { min-width: 150px; }
+.pv-bar { margin-bottom: 0.3rem; }
+
+.pv-deadline { white-space: nowrap; font-size: 0.8rem; color: var(--text-muted); }
+.pv-deadline.is-overdue { color: var(--accent-rose); font-weight: 600; }
+
+.pv-actions { text-align: right; }
+.pv-action-label { display: none; }
+
 .row-edit-btn {
   padding: 0.3rem 0.6rem;
   font-size: 0.85rem;
   line-height: 1;
 }
+
+/* --- Equipo: círculos ---------------------------------------------------- */
+
+/* Los círculos se superponen un poco: así cuatro personas ocupan lo que
+   ocuparían dos y la columna no empuja al resto de la tabla. */
+.pv-avatars { display: flex; align-items: center; }
+.pv-avatars > * + * { margin-left: -0.5rem; }
+
+.pv-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--bg-card);
+  background: var(--surface-4);
+  color: #FFFFFF;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  overflow: visible;
+  cursor: default;
+}
+
+.pv-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* El líder se distingue sin leer nada: anillo propio y una estrella. */
+.pv-avatar.is-leader { box-shadow: 0 0 0 2px var(--primary); z-index: 2; }
+
+.pv-avatar-crown {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  font-size: 0.6rem;
+  color: var(--primary);
+  text-shadow: 0 0 2px var(--bg-card), 0 0 2px var(--bg-card);
+}
+
+.pv-avatar.is-more {
+  background: var(--surface-3);
+  color: var(--text-sub);
+  font-size: 0.7rem;
+}
+
+.pv-avatar.is-empty {
+  background: transparent;
+  border: 2px dashed var(--border-strong);
+  color: var(--text-muted);
+}
+
+.pv-unassigned {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* --- Vacíos y carga ------------------------------------------------------ */
+
+.pv-loading { padding: 2rem; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
+
+.pv-no-results {
+  padding: 2.5rem 1.25rem;
+  text-align: center;
+  color: var(--text-sub);
+  font-size: 0.9rem;
+}
+
+.pv-no-results p { margin: 0 0 1rem; }
 
 .btn-danger {
   background: rgba(200, 85, 50, 0.12);
@@ -465,14 +864,8 @@ onMounted(() => {
   transition: all 0.2s ease;
 }
 
-.btn-danger:hover:not(:disabled) {
-  background: rgba(200, 85, 50, 0.2);
-}
-
-.btn-danger:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+.btn-danger:hover:not(:disabled) { background: rgba(200, 85, 50, 0.2); }
+.btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .form-hint {
   font-size: 0.75rem;
@@ -481,46 +874,87 @@ onMounted(() => {
   margin-top: 0.35rem;
 }
 
-.status-summary-chip {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: var(--surface-2);
-  border: 1px solid var(--border-color);
-  border-radius: 9999px;
-  padding: 0.35rem 0.9rem;
-  font-size: 0.8rem;
+/* --- Pantallas chicas: la tabla pasa a tarjetas -------------------------- */
+
+/*
+ * Por debajo de 1000 px una tabla de ocho columnas solo se puede usar
+ * arrastrándola de lado, y lo primero que se sale de la pantalla es el estado y
+ * las acciones. Cada fila pasa a ser una tarjeta y cada celda lleva su rótulo
+ * (el `data-label` del template), que es lo que la cabecera ya no puede decir.
+ */
+@media (max-width: 1000px) {
+  .pv-panel { overflow-x: visible; padding: 0.75rem; }
+
+  .projects-table,
+  .projects-table tbody,
+  .projects-table tr,
+  .projects-table td { display: block; width: 100%; }
+
+  .projects-table thead { display: none; }
+
+  .projects-table tbody tr {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .projects-table tbody tr.is-locked { border-left: 4px solid var(--accent-amber); }
+  .projects-table tbody tr.is-locked td:first-child { box-shadow: none; }
+
+  .projects-table td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.4rem 0;
+    border-bottom: none;
+    text-align: right;
+  }
+
+  .projects-table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    text-align: left;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  /* El tema del proyecto es el título de la tarjeta: ocupa la línea entera. */
+  .projects-table td.topic-cell {
+    display: block;
+    text-align: left;
+    padding-bottom: 0.6rem;
+    margin-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .projects-table td.topic-cell::before { content: none; }
+  .topic-cell { max-width: none; }
+  .pv-topic-link { font-size: 0.95rem; }
+
+  .pv-avatars { justify-content: flex-end; }
+  .pv-progress-cell .metric-bar-bg { min-width: 140px; }
+  .pv-actions { justify-content: flex-end; padding-top: 0.6rem; }
+  .pv-actions::before { content: none; }
+  .pv-action-label { display: inline; }
+  .row-edit-btn { padding: 0.45rem 0.9rem; }
+  .status-select { max-width: 60%; }
 }
 
-.projects-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
+@media (max-width: 560px) {
+  .pv-header-actions { width: 100%; }
+  .pv-header-actions .pv-btn { flex: 1 1 auto; }
+  .pv-search-wrap { flex: 1 1 100%; }
 }
 
-.projects-table th {
-  text-align: left;
-  color: var(--text-muted);
-  font-weight: 600;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  padding: 0.6rem 0.75rem;
-  border-bottom: 1px solid var(--border-color);
-}
+/* --- Estados, aviso de bloqueo y vacío (sin cambios) --------------------- */
 
-.projects-table td {
-  padding: 0.7rem 0.75rem;
-  border-bottom: 1px solid var(--border-color);
-  color: var(--text-sub);
-  vertical-align: top;
-}
-
-.topic-cell {
-  max-width: 320px;
-  color: var(--text-main);
-  font-weight: 500;
-}
+.topic-cell { color: var(--text-main); font-weight: 500; }
 
 .status-select {
   width: auto;
@@ -538,6 +972,10 @@ onMounted(() => {
 
 .status-creado { background: rgba(191, 194, 199, 0.18); color: var(--text-muted); border: 1px solid rgba(191, 194, 199, 0.4); }
 .status-activo { background: rgba(46, 125, 70, 0.15); color: #5FBE79; border: 1px solid rgba(46, 125, 70, 0.35); }
+.status-iniciado { background: rgba(201, 146, 46, 0.15); color: var(--accent-amber); border: 1px solid rgba(201, 146, 46, 0.35); }
+.status-en-desarrollo { background: rgba(111, 129, 37, 0.15); color: var(--on-tint-strong); border: 1px solid rgba(111, 129, 37, 0.35); }
+.status-entregado { background: rgba(191, 194, 199, 0.15); color: var(--accent-silver); border: 1px solid rgba(191, 194, 199, 0.35); }
+.status-cancelado { background: rgba(200, 85, 50, 0.15); color: var(--accent-rose); border: 1px solid rgba(200, 85, 50, 0.35); }
 
 /* Aviso de proyecto a la espera del visto bueno de Finanzas. */
 .locked-note {
@@ -547,10 +985,6 @@ onMounted(() => {
   color: var(--accent-amber);
   cursor: help;
 }
-.status-iniciado { background: rgba(201, 146, 46, 0.15); color: var(--accent-amber); border: 1px solid rgba(201, 146, 46, 0.35); }
-.status-en-desarrollo { background: rgba(111, 129, 37, 0.15); color: var(--on-tint-strong); border: 1px solid rgba(111, 129, 37, 0.35); }
-.status-entregado { background: rgba(191, 194, 199, 0.15); color: var(--accent-silver); border: 1px solid rgba(191, 194, 199, 0.35); }
-.status-cancelado { background: rgba(200, 85, 50, 0.15); color: var(--accent-rose); border: 1px solid rgba(200, 85, 50, 0.35); }
 
 .projects-empty-card {
   padding: 2.5rem 1.5rem;
