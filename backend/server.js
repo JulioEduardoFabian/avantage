@@ -3741,11 +3741,13 @@ app.get('/api/projects/:id/deliverables', requireAuth, requirePermission('projec
 app.post('/api/projects/:id/deliverables', requireAuth, requirePermission('projects.view'), async (req, res) => {
   try {
     if (!await guardProjectManageable(req.params.id, res)) return;
-    const { title, description, dueDate, incomeId } = req.body || {};
-    if (!await assertIncomeBelongsToProject(req.params.id, incomeId, res)) return;
+    // `incomeId` NO se lee del cuerpo: desde el proyecto se planifica QUÉ se
+    // entrega y para cuándo, nunca contra qué cobro. Atar la cuota es del
+    // módulo de Entregables, que es el que tiene el permiso para ver el dinero.
+    const { title, description, dueDate } = req.body || {};
 
     const deliverable = await deliverableService.create({
-      projectId: req.params.id, title, description, dueDate, incomeId, createdBy: req.user.id
+      projectId: req.params.id, title, description, dueDate, createdBy: req.user.id
     });
     res.status(201).json({ deliverable });
   } catch (error) {

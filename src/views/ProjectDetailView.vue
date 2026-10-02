@@ -145,20 +145,16 @@
               <label class="form-label">Fecha pactada</label>
               <input v-model="deliverableForm.dueDate" type="date" class="form-input" />
             </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label">Se entrega contra la cuota…</label>
-              <!-- Sin importes, como en todo el módulo de Proyectos: la cuota se
-                   nombra por su código. -->
-              <select v-model="deliverableForm.incomeId" class="form-select">
-                <option value="">Sin cuota atada</option>
-                <option v-for="item in deliverableSchedule" :key="item.income_id" :value="item.income_id">
-                  Cuota {{ item.cuota }} · {{ item.code }} ({{ item.estado }})
-                </option>
-              </select>
-            </div>
             <button type="submit" class="btn-primary deliverable-submit" :disabled="!deliverableForm.title.trim() || deliverableSaving">
               {{ deliverableSaving ? 'Guardando…' : 'Agregar' }}
             </button>
+            <!-- Acá se planifica QUÉ se entrega y para cuándo. Contra qué cuota
+                 se entrega es del módulo de Entregables: Proyectos no muestra
+                 ni registra nada del cobro (el backend tampoco lo manda). -->
+            <p class="deliverable-hint">
+              El cobro no se toca desde acá: si esta entrega depende de una cuota, se ata en
+              el módulo de Entregables.
+            </p>
             <p v-if="deliverableError" class="deliverable-error">⚠️ {{ deliverableError }}</p>
           </form>
 
@@ -186,10 +182,13 @@
                 @click="deliverableFilter = String(deliverableFilter) === String(item.id) ? 'all' : item.id"
               >
                 <span class="deliverable-card-title">{{ item.title }}</span>
+                <!-- Solo el trabajo: qué se entrega, para cuándo y si ya salió.
+                     La cuota atada y el estado que sale de cruzarla con el pago
+                     ("sin cobrar", "por entregar") son del módulo de
+                     Entregables — el backend ni siquiera los manda acá. -->
                 <span class="deliverable-card-meta">
                   <span v-if="item.due_date">📅 {{ formatDate(item.due_date) }}</span>
                   <span v-if="item.is_overdue" class="deliverable-tag is-bad">fuera de fecha</span>
-                  <span v-if="item.income_code" class="deliverable-tag">cuota {{ item.income_cuota }} · {{ item.income_code }}</span>
                   <span v-if="item.status === 'entregado'" class="deliverable-tag is-ok">entregado</span>
                 </span>
                 <span class="deliverable-card-tasks">
@@ -587,13 +586,13 @@ async function uploadVoucher(event) {
  * tablero se queda solo con ellas.
  */
 const deliverables = ref([]);
-const deliverableSchedule = ref([]);
 const contractPlanAvailable = ref(0);
 const deliverableFilter = ref('all');
 const newTaskDeliverableId = ref('');
 const isImportingPlan = ref(false);
 const showDeliverableForm = ref(false);
-const deliverableForm = reactive({ title: '', dueDate: '', incomeId: '' });
+// Sin `incomeId`: desde el proyecto se planifica el trabajo, no el cobro.
+const deliverableForm = reactive({ title: '', dueDate: '' });
 const deliverableSaving = ref(false);
 const deliverableError = ref('');
 
@@ -655,7 +654,6 @@ async function fetchDeliverables() {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Error al obtener los entregables.');
   deliverables.value = data.deliverables || [];
-  deliverableSchedule.value = data.schedule || [];
   contractPlanAvailable.value = data.contract_plan_available || 0;
 
   // Si el entregable que se estaba mirando ya no está, el tablero vuelve a
@@ -675,15 +673,11 @@ async function addDeliverable() {
     const response = await apiFetch(`/api/projects/${props.id}/deliverables`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        dueDate: deliverableForm.dueDate || null,
-        incomeId: deliverableForm.incomeId ? Number(deliverableForm.incomeId) : null
-      })
+      body: JSON.stringify({ title, dueDate: deliverableForm.dueDate || null })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudo agregar el entregable.');
-    Object.assign(deliverableForm, { title: '', dueDate: '', incomeId: '' });
+    Object.assign(deliverableForm, { title: '', dueDate: '' });
     showDeliverableForm.value = false;
     await fetchDeliverables();
   } catch (err) {
@@ -1475,7 +1469,7 @@ onMounted(() => {
 
 .deliverable-form {
   display: grid;
-  grid-template-columns: 2fr 1fr 1.5fr auto;
+  grid-template-columns: 2fr 1fr auto;
   align-items: end;
   gap: 0.6rem;
   padding: 0.9rem;
@@ -1486,6 +1480,7 @@ onMounted(() => {
 
 .deliverable-submit { width: auto; padding: 0 1.2rem; border-radius: 10px; }
 .deliverable-error { grid-column: 1 / -1; margin: 0; font-size: 0.8rem; color: var(--accent-rose); }
+.deliverable-hint { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; color: var(--text-muted); }
 
 .deliverables-empty { font-size: 0.85rem; color: var(--text-muted); margin: 0; }
 

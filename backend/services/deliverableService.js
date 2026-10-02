@@ -38,6 +38,42 @@ export const DELIVERY_CHANNELS = ['correo', 'whatsapp', 'presencial', 'drive', '
 export const DELIVERABLE_STATES = ['entregado', 'sin_cobrar', 'por_entregar', 'pendiente'];
 
 /**
+ * El entregable tal como puede verse DESDE EL PROYECTO: qué hay que entregar,
+ * para cuándo, si ya salió y cuánto trabajo lleva.
+ *
+ * Lo que se quita es todo el cruce con el cobro —la cuota atada, su estado, el
+ * bloqueo por pago y el estado operativo que sale de cruzarlos
+ * (`por_entregar`, `sin_cobrar`)—, por la misma regla por la que Proyectos no
+ * muestra importes: el dinero se consulta en Finanzas y se opera en
+ * Entregables, cada uno con su permiso. Se filtra acá, en el servidor, y no
+ * escondiendo campos en la pantalla: lo que no viaja no se puede filtrar
+ * después por error.
+ */
+function forProjectView(deliverable) {
+  return {
+    id: deliverable.id,
+    project_id: deliverable.project_id,
+    position: deliverable.position,
+    title: deliverable.title,
+    description: deliverable.description,
+    due_date: deliverable.due_date,
+    status: deliverable.status,
+    delivered_at: deliverable.delivered_at,
+    delivered_by_name: deliverable.delivered_by_name,
+    delivery_channel: deliverable.delivery_channel,
+    has_attachment: deliverable.has_attachment,
+    attachment_original_name: deliverable.attachment_original_name,
+    notes: deliverable.notes,
+    // La fecha de ENTREGA vencida sí es del proyecto; `payment_overdue`, que es
+    // la de la cuota, no.
+    is_overdue: deliverable.is_overdue,
+    task_total: deliverable.task_total,
+    task_done: deliverable.task_done,
+    task_progress: deliverable.task_progress
+  };
+}
+
+/**
  * Avance de un entregable por sus tareas, en porcentaje.
  *
  * Sin tareas devuelve `null` y NO 0: un entregable que todavía no se desglosó
@@ -250,14 +286,8 @@ export class DeliverableService {
     if (!project) return null;
 
     const leadId = project.lead_id || null;
-    const [deliverables, schedule, contractPlan] = await Promise.all([
+    const [deliverables, contractPlan] = await Promise.all([
       this.listByProjectWithTasks(projectId),
-      leadId
-        ? db('finance_income')
-          .where({ lead_id: leadId })
-          .select('id', 'code', 'cuota', 'estado', 'due_date')
-          .orderBy('due_date', 'asc').orderBy('id', 'asc')
-        : [],
       leadId ? this.#contractPlanByLead([leadId]) : new Map()
     ]);
 
@@ -265,14 +295,7 @@ export class DeliverableService {
     return {
       project_id: project.id,
       is_locked: Boolean(project.is_locked),
-      deliverables,
-      schedule: schedule.map((income) => ({
-        income_id: income.id,
-        code: income.code,
-        cuota: income.cuota,
-        estado: income.estado,
-        due_date: isoDay(income.due_date)
-      })),
+      deliverables: deliverables.map(forProjectView),
       contract_plan_available: plan.filter((item) => !hasTitle(deliverables, item.avance)).length
     };
   }

@@ -119,6 +119,13 @@ antes de tocar el arranque de producción.
   el trabajo ya registrado — las tareas quedan sueltas). Elegir un entregable filtra el tablero de
   tareas del proyecto. Un entregable sin tareas tiene `task_progress: null`, no 0 (`taskProgress()`):
   un plan que recién se arma no es un plan atrasado.
+  **Desde Proyectos no se ve ni se registra nada del cobro del entregable**: ni la cuota atada, ni su
+  estado, ni el estado operativo que sale de cruzarlos (`por_entregar`, `sin_cobrar`), ni el bloqueo
+  por pago. El filtro vive en el servidor (`forProjectView()` en `deliverableService.js`, y la ruta
+  de alta ni siquiera lee `incomeId`), no escondiendo campos en la pantalla: lo que no viaja no se
+  puede filtrar después por error. Atar la cuota es del módulo de Entregables, que es el que tiene
+  el permiso para ver el dinero. Es la misma regla de "en Proyectos no se muestran importes",
+  llevada a la asociación completa.
 - Los **proyectos** tienen tareas (`tasks`, N:1) cuyo `% avance = completadas / total`, colaboradores
   (N:N vía `project_collaborators`), un líder (`leader_id` → `users`) y una línea de tiempo de
   hitos con adjuntos opcionales (`project_updates`).

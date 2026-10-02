@@ -184,7 +184,14 @@ Tres decisiones que conviene no deshacer:
   que no corresponden a ninguna entrega, y obligarlas a colgar de un entregable inventado sería peor
   que dejarlas sueltas. El tablero tiene un filtro "Sueltas" para que no desaparezcan;
 - un entregable sin tareas tiene `task_progress: null`, **no 0** (`taskProgress()`): pintarle una
-  barra en cero haría ver como atrasado un plan que recién se está armando.
+  barra en cero haría ver como atrasado un plan que recién se está armando;
+- **desde el proyecto no se ve ni se registra nada del cobro.** `getProjectPlan()` pasa cada fila
+  por `forProjectView()`, que deja solo el trabajo (título, fecha pactada, si ya salió, tareas) y
+  quita la cuota atada, su estado, el bloqueo por pago y el estado operativo que sale de cruzarlos
+  (`por_entregar`, `sin_cobrar`); la ruta de alta tampoco lee `incomeId`. Se filtra en el servidor
+  y no escondiendo campos en la pantalla: lo que no viaja no se puede filtrar después por error.
+  Atar la cuota es del módulo de Entregables, que tiene el permiso para ver el dinero. Es la misma
+  regla de "en Proyectos no se muestran importes", llevada a la asociación completa.
 
 ### Y cuando la cuota se verifica, el equipo se entera
 
