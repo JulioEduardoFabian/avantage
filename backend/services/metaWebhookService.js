@@ -140,10 +140,38 @@ export async function persistMetaLead(leadService, data) {
   const customNote = formatCustomFieldsNote(custom);
   if (customNote) notesParts.push(customNote);
 
-  return leadService.createProspect({
+  const phone = fields.phone_number || fields.phone || '';
+  const atribucion = {
+    leadgenId: leadgenId || null,
+    formId: data.form_id || null,
+    adId: data.ad_id || null,
+    adsetId: data.adset_id || null,
+    campaignId: data.campaign_id || null,
+    platform: data.platform || null,
+    createdTime: data.created_time || null
+  };
+
+  /*
+   * Si ese teléfono YA es un lead, el envío se cuelga de esa ficha en vez de
+   * abrir una segunda. Una persona es un lead, no uno por cada formulario que
+   * llena. Duplicarla no es solo ruido: la fila nueva nace en "conversación
+   * abierta" y, al indexar por teléfono, tapa a la que el equipo venía
+   * trabajando — un contacto con cita agendada o ya ganado se cae de las
+   * métricas de campaña (ver `esMejorLead` en campaignService.js).
+   */
+  const existente = phone ? await leadService.findByPhone(phone) : null;
+  if (existente) {
+    const lead = await leadService.attachMetaLeadToExisting(existente, {
+      ...atribucion,
+      note: notesParts.join('\n')
+    });
+    return { lead, created: false };
+  }
+
+  const lead = await leadService.createProspect({
     fullName: fields.full_name || fields.nombre_completo || 'Prospecto de Facebook',
     email: fields.email || fields.correo_electronico || '',
-    phone: fields.phone_number || fields.phone || '',
+    phone,
     source,
     academicLevel: custom.academicLevel,
     university: custom.university,
@@ -155,14 +183,16 @@ export async function persistMetaLead(leadService, data) {
     // Funnel de Ventas (ver SETTER_ONLY_STATUSES en LeadsView.vue).
     status: 'conversacion_abierta',
     additionalNotes: notesParts.join('\n'),
-    metaLeadgenId: leadgenId || null,
-    metaFormId: data.form_id || null,
-    metaAdId: data.ad_id || null,
-    metaAdsetId: data.adset_id || null,
-    metaCampaignId: data.campaign_id || null,
-    metaPlatform: data.platform || null,
-    metaCreatedTime: data.created_time || null
+    metaLeadgenId: atribucion.leadgenId,
+    metaFormId: atribucion.formId,
+    metaAdId: atribucion.adId,
+    metaAdsetId: atribucion.adsetId,
+    metaCampaignId: atribucion.campaignId,
+    metaPlatform: atribucion.platform,
+    metaCreatedTime: atribucion.createdTime
   });
+
+  return { lead, created: true };
 }
 
 /**
@@ -287,9 +317,11 @@ export class MetaWebhookService {
 
     console.log(`📋 [Meta Webhook] field_data del lead ${leadgenId}:`, JSON.stringify(data.field_data));
 
-    const prospect = await persistMetaLead(this.leadService, { ...data, id: data.id || leadgenId });
+    const { lead, created } = await persistMetaLead(this.leadService, { ...data, id: data.id || leadgenId });
 
-    console.log(`📥 [Meta Webhook] Lead importado como prospecto #${prospect.id} (leadgen_id=${leadgenId})`);
-    return prospect;
+    console.log(created
+      ? `📥 [Meta Webhook] Lead importado como prospecto #${lead.id} (leadgen_id=${leadgenId})`
+      : `🔗 [Meta Webhook] Lead ${leadgenId} colgado del lead existente #${lead.id} (mismo teléfono).`);
+    return lead;
   }
 }

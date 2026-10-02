@@ -32,6 +32,7 @@ import { ProjectUpdateService } from './services/projectUpdateService.js';
 import { DeliverableService } from './services/deliverableService.js';
 import { MetaWebhookService } from './services/metaWebhookService.js';
 import { MetaLeadReconciliationService } from './services/metaLeadReconciliationService.js';
+import { mergeDuplicateMetaLeads } from './scripts/mergeDuplicateMetaLeads.js';
 import { runMetaLeadgenBackfill } from './scripts/backfillMetaLeadgenFields.js';
 import { PageInteractionService } from './services/pageInteractionService.js';
 import { PageMessageService } from './services/pageMessageService.js';
@@ -1690,6 +1691,31 @@ app.post('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads
   } catch (error) {
     console.error('❌ Error al recuperar los leads faltantes de Meta:', error);
     res.status(502).json({ error: 'No se pudieron recuperar los leads.', details: error.message });
+  }
+});
+
+/*
+ * Reparación del daño de la PRIMERA corrida de la conciliación, que dio de
+ * alta los leads sin cruzar por teléfono y le abrió una segunda ficha a cada
+ * persona que ya era lead (ver backend/scripts/mergeDuplicateMetaLeads.js).
+ * El GET muestra qué fundiría; el POST lo hace. Borra filas, así que la
+ * separación entre mirar y ejecutar acá importa más que en ningún otro lado.
+ */
+app.get('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    res.json(await mergeDuplicateMetaLeads({ apply: false }));
+  } catch (error) {
+    console.error('❌ Error al revisar los leads duplicados de Meta:', error);
+    res.status(500).json({ error: 'No se pudo revisar los duplicados.', details: error.message });
+  }
+});
+
+app.post('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    res.json(await mergeDuplicateMetaLeads({ apply: true }));
+  } catch (error) {
+    console.error('❌ Error al fundir los leads duplicados de Meta:', error);
+    res.status(500).json({ error: 'No se pudieron fundir los duplicados.', details: error.message });
   }
 });
 

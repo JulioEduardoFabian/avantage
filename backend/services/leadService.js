@@ -176,6 +176,45 @@ export class LeadService {
   }
 
   /**
+   * Cuelga un envío de formulario de Meta de un lead que YA existe con ese
+   * teléfono, en vez de crear una segunda ficha de la misma persona.
+   *
+   * Los leads de formulario no se cruzaban por teléfono —solo por
+   * `leadgen_id`— así que la misma persona que ya venía trabajándose por
+   * WhatsApp, o que llenó el formulario dos veces, terminaba con dos filas. Y
+   * una fila nueva en "conversación abierta" al lado de una que ya tenía cita
+   * agendada o estaba ganada no es solo ruido: tapaba a la buena en los
+   * índices por teléfono y el contacto desaparecía de las métricas de campaña.
+   *
+   * Nunca pisa el estado ni los datos que el equipo ya trabajó: suma el
+   * marcador y las respuestas del formulario a las notas, y completa la
+   * atribución de Meta solo si estaba vacía.
+   */
+  async attachMetaLeadToExisting(lead, { leadgenId, formId, adId, adsetId, campaignId, platform, createdTime, note }) {
+    const patch = {};
+    if (!lead.meta_leadgen_id && leadgenId) patch.meta_leadgen_id = leadgenId;
+    if (!lead.meta_form_id && formId) patch.meta_form_id = formId;
+    if (!lead.meta_ad_id && adId) patch.meta_ad_id = adId;
+    if (!lead.meta_adset_id && adsetId) patch.meta_adset_id = adsetId;
+    if (!lead.meta_campaign_id && campaignId) patch.meta_campaign_id = campaignId;
+    if (!lead.meta_platform && platform) patch.meta_platform = platform;
+    if (!lead.meta_created_time && createdTime) patch.meta_created_time = new Date(createdTime);
+
+    // El marcador va SIEMPRE a las notas aunque la columna ya esté ocupada por
+    // un envío anterior: es lo que hace que la conciliación reconozca este
+    // leadgen_id como ya visto y no lo reporte como faltante para siempre.
+    const notasPrevias = String(lead.additional_notes || '').trim();
+    if (note && !notasPrevias.includes(`[Meta leadgen_id=${leadgenId}]`)) {
+      patch.additional_notes = notasPrevias ? `${notasPrevias}
+
+${note}` : note;
+    }
+
+    if (Object.keys(patch).length) await db('leads').where({ id: lead.id }).update(patch);
+    return this.getLeadById(lead.id);
+  }
+
+  /**
    * Los `form_id` de Meta que ya produjeron al menos un lead acá.
    *
    * Es el plan B para descubrir formularios cuando la Graph API no deja
@@ -205,8 +244,9 @@ export class LeadService {
     const ids = new Set();
     for (const row of rows) {
       if (row.meta_leadgen_id) ids.add(String(row.meta_leadgen_id));
-      const legacy = String(row.additional_notes || '').match(/\[Meta leadgen_id=(\d+)\]/);
-      if (legacy) ids.add(legacy[1]);
+      for (const m of String(row.additional_notes || '').matchAll(/\[Meta leadgen_id=(\d+)\]/g)) {
+        ids.add(m[1]);
+      }
     }
     return ids;
   }

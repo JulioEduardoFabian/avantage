@@ -160,7 +160,7 @@ export class MetaLeadReconciliationService {
       aviso,
       forms: [],
       by_platform: {},
-      totals: { en_meta: 0, en_crm: 0, faltantes: 0, importados: 0, fallidos: 0 },
+      totals: { en_meta: 0, en_crm: 0, faltantes: 0, importados: 0, adjuntados: 0, fallidos: 0 },
       errores: []
     };
 
@@ -173,6 +173,7 @@ export class MetaLeadReconciliationService {
         en_crm: 0,
         faltantes: 0,
         importados: 0,
+        adjuntados: 0,
         fallidos: 0,
         ejemplos_faltantes: []
       };
@@ -191,7 +192,7 @@ export class MetaLeadReconciliationService {
         if (!inRange(lead.created_time)) continue;
 
         const platform = lead.platform || 'desconocida';
-        report.by_platform[platform] ??= { en_meta: 0, en_crm: 0, faltantes: 0, importados: 0 };
+        report.by_platform[platform] ??= { en_meta: 0, en_crm: 0, faltantes: 0, importados: 0, adjuntados: 0 };
 
         row.en_meta++;
         report.totals.en_meta++;
@@ -214,14 +215,29 @@ export class MetaLeadReconciliationService {
         if (!apply) continue;
 
         try {
-          const prospect = await persistMetaLead(this.leadService, lead);
+          const { lead: prospect, created } = await persistMetaLead(this.leadService, lead);
           // Se marca como conocido en el acto: si el mismo leadgen_id volviera
           // a aparecer en esta misma corrida, no se duplica.
           known.add(String(lead.id));
-          row.importados++;
-          report.totals.importados++;
-          report.by_platform[platform].importados++;
-          console.log(`🔁 [Conciliación Meta] Lead ${lead.id} recuperado como prospecto #${prospect.id}.`);
+
+          // "Adjuntado" se cuenta aparte de "importado" porque no es lo mismo
+          // para quien lee el reporte: un lead nuevo es una persona más para
+          // trabajar, y un adjuntado es un envío que se sumó a una ficha que
+          // el equipo ya tenía. Sumarlos juntos haría ver gente nueva donde no
+          // la hay.
+          if (created) {
+            row.importados++;
+            report.totals.importados++;
+            report.by_platform[platform].importados++;
+          } else {
+            row.adjuntados++;
+            report.totals.adjuntados++;
+            report.by_platform[platform].adjuntados++;
+          }
+
+          console.log(created
+            ? `🔁 [Conciliación Meta] Lead ${lead.id} recuperado como prospecto #${prospect.id}.`
+            : `🔗 [Conciliación Meta] Lead ${lead.id} colgado del lead existente #${prospect.id} (mismo teléfono).`);
         } catch (error) {
           row.fallidos++;
           report.totals.fallidos++;

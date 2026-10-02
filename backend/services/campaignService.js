@@ -49,6 +49,17 @@ const LOST_STATUSES = new Set(['perdido', 'descartado']);
 const APPOINTMENT_STATUSES = new Set(['cita_agendada']);
 
 /**
+ * De dos filas del mismo teléfono, cuál representa al lead real: primero la
+ * que ya graduó al Funnel de Ventas (es la que el closer está trabajando) y,
+ * entre iguales, la más reciente. Espejo de `leadService.findByPhone()`.
+ */
+export function esMejorLead(candidato, actual) {
+  const graduado = (l) => (l.sales_funnel_at ? 1 : 0);
+  if (graduado(candidato) !== graduado(actual)) return graduado(candidato) > graduado(actual);
+  return new Date(candidato.created_at) > new Date(actual.created_at);
+}
+
+/**
  * Etapas en las que el lead ya tiene una propuesta económica sobre la mesa.
  * Se miran además de las tablas de cotizaciones/contratos/ingresos porque el
  * equipo negocia por WhatsApp y a veces mueve la tarjeta antes de emitir el
@@ -216,7 +227,7 @@ export class CampaignService {
       db('leads').whereIn('phone', waIds)
         .select('id', 'phone', 'status', 'created_at', 'full_name', 'topic', 'overall_viability_score',
           // Correo y carrera solo los usa la hoja "Ruta de leads" del Excel.
-          'email', 'field_of_study'),
+          'email', 'field_of_study', 'sales_funnel_at'),
       db('whatsapp_bot_sessions').whereIn('wa_id', waIds)
         .select('wa_id', 'status', 'started_at', 'updated_at'),
       db('scheduled_meetings').whereIn('wa_id', waIds)
@@ -224,7 +235,26 @@ export class CampaignService {
     ]);
 
     const firstOutByWa = new Map(outboundRows.map((r) => [r.wa_id, r.firstOut]));
-    const leadByWa = new Map(leads.map((l) => [l.phone, l]));
+    /*
+     * Un teléfono puede tener MÁS de una fila en `leads` (la misma persona que
+     * escribió por WhatsApp y además llenó un formulario de Meta, o que llenó
+     * el formulario dos veces). Armar el índice con `new Map()` a secas dejaba
+     * ganar a la última fila que devolviera MySQL —sin ORDER BY, en la
+     * práctica la de id más alto, o sea la más nueva— y entonces un contacto
+     * con cita agendada o ganado se leía con el status de su gemelo recién
+     * creado y desaparecía de las métricas de la campaña.
+     *
+     * Gana el lead que ya graduó al Funnel de Ventas y, entre iguales, el más
+     * reciente: la misma regla que `leadService.findByPhone()`, porque es la
+     * misma pregunta ("de estas filas, ¿cuál es el lead de verdad?") y dos
+     * respuestas distintas para eso es como se llega a que dos pantallas
+     * cuenten cosas diferentes.
+     */
+    const leadByWa = new Map();
+    for (const lead of leads) {
+      const previo = leadByWa.get(lead.phone);
+      if (!previo || esMejorLead(lead, previo)) leadByWa.set(lead.phone, lead);
+    }
     const sessionByWa = new Map(sessions.map((s) => [s.wa_id, s]));
     const meetingByWa = new Map();
     for (const m of meetings) {

@@ -42,6 +42,16 @@ function fakeLeadService(knownIds = [], knownFormIds = []) {
     async getKnownMetaFormIds() {
       return knownFormIds;
     },
+    adjuntados: [],
+    // Por defecto ningun telefono existe todavia; los tests que necesitan el
+    // cruce lo sobreescriben.
+    async findByPhone() {
+      return null;
+    },
+    async attachMetaLeadToExisting(lead, datos) {
+      this.adjuntados.push({ leadId: lead.id, datos });
+      return lead;
+    },
     async createProspect(data) {
       this.creados.push(data);
       return { id: 900 + this.creados.length };
@@ -123,8 +133,8 @@ test('el desglose por plataforma dice de dónde se pierden los leads', async () 
   // Facebook llegó entero; de Instagram no llegó nada.
   const report = await new MetaLeadReconciliationService(fakeLeadService(['1', '2'])).reconcile({ apply: false });
 
-  assert.deepEqual(report.by_platform.fb, { en_meta: 2, en_crm: 2, faltantes: 0, importados: 0 });
-  assert.deepEqual(report.by_platform.ig, { en_meta: 2, en_crm: 0, faltantes: 2, importados: 0 });
+  assert.deepEqual(report.by_platform.fb, { en_meta: 2, en_crm: 2, faltantes: 0, importados: 0, adjuntados: 0 });
+  assert.deepEqual(report.by_platform.ig, { en_meta: 2, en_crm: 0, faltantes: 2, importados: 0, adjuntados: 0 });
 });
 
 test('el rango se mide por la fecha de envío en Meta, no por la de alta en el CRM', async () => {
@@ -205,4 +215,26 @@ test('sin formularios conocidos en la base, el fallo de listado sí corta', asyn
     () => new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false }),
     /pages_manage_ads/
   );
+});
+
+test('un envio de un telefono que ya es lead se cuelga de esa ficha, no abre otra', async () => {
+  // Es lo que rompio las metricas de campana: la fila nueva nace en
+  // "conversacion abierta" y, al indexar por telefono, tapaba a la que el
+  // equipo venia trabajando — un contacto ganado desaparecia del tablero.
+  stubGraph({
+    forms: [{ id: 'F1', name: 'Bachiller', status: 'ACTIVE' }],
+    leadsByForm: { F1: [lead('77', 'fb', '2026-09-20T10:00:00+0000')] }
+  });
+  const leadService = fakeLeadService();
+  leadService.findByPhone = async () => ({ id: 42, status: 'ganado', additional_notes: null });
+
+  const report = await new MetaLeadReconciliationService(leadService).reconcile({ apply: true });
+
+  assert.deepEqual(leadService.creados, []);
+  assert.equal(leadService.adjuntados.length, 1);
+  assert.equal(leadService.adjuntados[0].leadId, 42);
+  assert.equal(leadService.adjuntados[0].datos.leadgenId, '77');
+  // Y se cuenta aparte: no es una persona nueva para trabajar.
+  assert.equal(report.totals.importados, 0);
+  assert.equal(report.totals.adjuntados, 1);
 });
