@@ -110,6 +110,15 @@ antes de tocar el arranque de producción.
   proyecto sin tareas sugiere por defecto la plantilla de su universidad (la del lead), o la
   general. Importar **copia** las tareas al proyecto y saltea las que ya existen con el mismo
   título, así que reimportar no duplica nada.
+- El **plan de entregas se trabaja también desde la ficha del proyecto**
+  (`/api/projects/:id/deliverables`, bajo `projects.view` y no `deliverables.view`: planificar QUÉ
+  hay que entregar es parte de llevar el proyecto; marcar entregado, el archivo de respaldo y el
+  cruce con el cobro siguen siendo del módulo de Entregables). Ahí se agregan, se quitan y se traen
+  del contrato, y cada entregable muestra **su** avance porque las tareas cuelgan de él
+  (`tasks.deliverable_id`, opcional y ON DELETE SET NULL: quitar un entregable del plan nunca borra
+  el trabajo ya registrado — las tareas quedan sueltas). Elegir un entregable filtra el tablero de
+  tareas del proyecto. Un entregable sin tareas tiene `task_progress: null`, no 0 (`taskProgress()`):
+  un plan que recién se arma no es un plan atrasado.
 - Los **proyectos** tienen tareas (`tasks`, N:1) cuyo `% avance = completadas / total`, colaboradores
   (N:N vía `project_collaborators`), un líder (`leader_id` → `users`) y una línea de tiempo de
   hitos con adjuntos opcionales (`project_updates`).

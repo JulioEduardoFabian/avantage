@@ -135,7 +135,7 @@ const projectUpdateService = new ProjectUpdateService();
 // Entregables: no tiene tablas propias, cruza las cuotas de Finanzas con los
 // avances subidos. Usa projectService para no recalcular el avance de tareas ni
 // la puerta del pago inicial por su cuenta.
-const deliverableService = new DeliverableService({ projectService });
+const deliverableService = new DeliverableService({ projectService, taskService });
 const metaWebhookService = new MetaWebhookService();
 const pageInteractionService = new PageInteractionService();
 const pageMessageService = new PageMessageService();
@@ -3665,14 +3665,17 @@ app.get('/api/projects/:id/tasks', requireAuth, requirePermission('projects.view
  */
 app.post('/api/projects/:id/tasks', requireAuth, requirePermission('projects.view'), async (req, res) => {
   try {
-    const { title } = req.body;
+    const { title, deliverableId } = req.body;
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'El título de la tarea es requerido.' });
     }
     if (!await guardProjectManageable(req.params.id, res)) return;
-    const task = await taskService.createTask(req.params.id, title.trim());
+    // `deliverableId` es opcional: una tarea puede ser interna y no colgar de
+    // ninguna entrega. Si viene, taskService comprueba que sea de ESTE proyecto.
+    const task = await taskService.createTask(req.params.id, title.trim(), { deliverableId });
     res.json({ task });
   } catch (error) {
+    if (error.code === 'INVALID_DELIVERABLE') return res.status(400).json({ error: error.message });
     console.error('❌ Error al crear la tarea:', error);
     res.status(500).json({ error: 'Error al crear la tarea.', details: error.message });
   }
@@ -3692,6 +3695,97 @@ app.post('/api/projects/:id/tasks/import', requireAuth, requirePermission('proje
   } catch (error) {
     console.error('❌ Error al importar la plantilla de tareas:', error);
     res.status(400).json({ error: error.message || 'Error al importar la plantilla.' });
+  }
+});
+
+/**
+ * Mueve una tarea a otro entregable del mismo proyecto, o la deja suelta
+ * (`deliverableId: null`). Es lo que permite armar el paquete de trabajo de una
+ * entrega sin volver a escribir las tareas.
+ */
+app.patch('/api/tasks/:id/deliverable', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    const existing = await taskService.getTaskById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Tarea no encontrada.' });
+    if (!await guardProjectManageable(existing.project_id, res)) return;
+
+    const task = await taskService.setTaskDeliverable(req.params.id, req.body?.deliverableId ?? null);
+    res.json({ task });
+  } catch (error) {
+    console.error('❌ Error al mover la tarea de entregable:', error);
+    res.status(400).json({ error: error.message || 'Error al mover la tarea.' });
+  }
+});
+
+/* ------------------- Plan de entregas DENTRO del proyecto ------------------ */
+/*
+ * El mismo plan que gestiona el módulo de Entregables, visto desde la ficha del
+ * proyecto. Va bajo `projects.view` y no bajo `deliverables.view` a propósito:
+ * planificar QUÉ hay que entregar es parte de llevar el proyecto, y quien lo
+ * lleva no tiene por qué poder abrir el tablero operativo de todas las entregas.
+ * Marcar entregado, el archivo de respaldo y el cruce con el cobro siguen
+ * siendo del módulo de Entregables, con su propio permiso.
+ */
+
+app.get('/api/projects/:id/deliverables', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    const plan = await deliverableService.getProjectPlan(req.params.id);
+    if (!plan) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+    res.json(plan);
+  } catch (error) {
+    console.error('❌ Error al obtener el plan de entregas del proyecto:', error);
+    res.status(500).json({ error: 'Error al obtener los entregables.', details: error.message });
+  }
+});
+
+app.post('/api/projects/:id/deliverables', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    if (!await guardProjectManageable(req.params.id, res)) return;
+    const { title, description, dueDate, incomeId } = req.body || {};
+    if (!await assertIncomeBelongsToProject(req.params.id, incomeId, res)) return;
+
+    const deliverable = await deliverableService.create({
+      projectId: req.params.id, title, description, dueDate, incomeId, createdBy: req.user.id
+    });
+    res.status(201).json({ deliverable });
+  } catch (error) {
+    console.error('❌ Error al agregar el entregable al proyecto:', error);
+    res.status(400).json({ error: error.message || 'Error al agregar el entregable.' });
+  }
+});
+
+/**
+ * Quita un entregable del plan del proyecto. Las tareas que colgaban de él NO
+ * se borran: quedan sueltas en el tablero (ON DELETE SET NULL), porque sacar
+ * algo del plan no puede borrar el trabajo que ya se registró.
+ */
+app.delete('/api/projects/:id/deliverables/:deliverableId', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    if (!await guardProjectManageable(req.params.id, res)) return;
+    const existing = await deliverableService.getById(req.params.deliverableId);
+    if (!existing || Number(existing.project_id) !== Number(req.params.id)) {
+      return res.status(404).json({ error: 'Ese entregable no es de este proyecto.' });
+    }
+
+    const removed = await deliverableService.remove(req.params.deliverableId);
+    if (removed?.attachment_filename) {
+      fs.unlink(path.join(deliverableDir, removed.attachment_filename), () => {});
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error al quitar el entregable del proyecto:', error);
+    res.status(400).json({ error: error.message || 'Error al quitar el entregable.' });
+  }
+});
+
+/** Copia al plan las entregas comprometidas en el contrato vigente del cliente. */
+app.post('/api/projects/:id/deliverables/import', requireAuth, requirePermission('projects.view'), async (req, res) => {
+  try {
+    if (!await guardProjectManageable(req.params.id, res)) return;
+    res.json(await deliverableService.importFromContract(req.params.id, { createdBy: req.user.id }));
+  } catch (error) {
+    console.error('❌ Error al importar el cronograma de entregas del contrato:', error);
+    res.status(400).json({ error: error.message || 'Error al importar el cronograma de entregas.' });
   }
 });
 

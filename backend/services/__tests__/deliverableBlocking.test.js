@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { blocksDelivery } from '../deliverableService.js';
+import { blocksDelivery, taskProgress } from '../deliverableService.js';
 
 /**
  * Reporte del equipo: un entregable atado a una cuota que todavía NO se pagó
@@ -27,4 +27,23 @@ test('sin cuota atada no hay cobro del que depender', () => {
   // estado vacío tampoco debe bloquear.
   assert.equal(blocksDelivery(null), false);
   assert.equal(blocksDelivery(undefined), false);
+});
+
+/**
+ * Un entregable es además el paquete de trabajo que hay que terminar para poder
+ * entregarlo: sus tareas (`tasks.deliverable_id`) le dan avance propio dentro
+ * de la ficha del proyecto.
+ */
+test('el avance de un entregable sale de sus tareas', () => {
+  assert.equal(taskProgress(0, 4), 0);
+  assert.equal(taskProgress(1, 4), 25);
+  assert.equal(taskProgress(3, 4), 75);
+  assert.equal(taskProgress(4, 4), 100);
+});
+
+test('un entregable sin tareas no tiene avance, que no es lo mismo que 0 %', () => {
+  // Pintarle una barra en cero haría ver como atrasado un plan que recién se
+  // está armando. La pantalla dice "Sin tareas todavía".
+  assert.equal(taskProgress(0, 0), null);
+  assert.equal(taskProgress(0, undefined), null);
 });

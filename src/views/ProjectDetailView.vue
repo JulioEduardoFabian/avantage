@@ -106,6 +106,125 @@
       </div>
 
       <div v-if="activeTab === 'tasks'">
+        <!-- Plan de entregas del proyecto. Es el mismo que trabaja el módulo de
+             Entregables (de ahí salen el estado y el cruce con el cobro), pero
+             visto desde adentro: acá cada entregable es el PAQUETE DE TRABAJO
+             que hay que terminar, con sus tareas y su avance. Al elegir uno, el
+             tablero de abajo se queda solo con sus tareas. -->
+        <div class="glass-panel deliverables-panel">
+          <div class="deliverables-head">
+            <h3 class="deliverables-title">📦 Entregables del proyecto</h3>
+            <div class="deliverables-head-actions">
+              <button
+                v-if="contractPlanAvailable > 0"
+                type="button"
+                class="btn-secondary deliverable-btn"
+                :disabled="isLocked || isImportingPlan"
+                title="Copia las entregas comprometidas en el contrato vigente"
+                @click="importContractPlan"
+              >
+                {{ isImportingPlan ? 'Importando…' : `📄 Traer ${contractPlanAvailable} del contrato` }}
+              </button>
+              <button
+                type="button"
+                class="btn-secondary deliverable-btn"
+                :disabled="isLocked"
+                @click="showDeliverableForm = !showDeliverableForm"
+              >
+                {{ showDeliverableForm ? '✕ Cancelar' : '➕ Agregar entregable' }}
+              </button>
+            </div>
+          </div>
+
+          <form v-if="showDeliverableForm" class="deliverable-form" @submit.prevent="addDeliverable">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">¿Qué se entrega?</label>
+              <input v-model="deliverableForm.title" type="text" class="form-input" placeholder="Ej: Capítulo I y II" required />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">Fecha pactada</label>
+              <input v-model="deliverableForm.dueDate" type="date" class="form-input" />
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">Se entrega contra la cuota…</label>
+              <!-- Sin importes, como en todo el módulo de Proyectos: la cuota se
+                   nombra por su código. -->
+              <select v-model="deliverableForm.incomeId" class="form-select">
+                <option value="">Sin cuota atada</option>
+                <option v-for="item in deliverableSchedule" :key="item.income_id" :value="item.income_id">
+                  Cuota {{ item.cuota }} · {{ item.code }} ({{ item.estado }})
+                </option>
+              </select>
+            </div>
+            <button type="submit" class="btn-primary deliverable-submit" :disabled="!deliverableForm.title.trim() || deliverableSaving">
+              {{ deliverableSaving ? 'Guardando…' : 'Agregar' }}
+            </button>
+            <p v-if="deliverableError" class="deliverable-error">⚠️ {{ deliverableError }}</p>
+          </form>
+
+          <p v-if="deliverables.length === 0" class="deliverables-empty">
+            Este proyecto todavía no tiene entregables.
+            <template v-if="contractPlanAvailable > 0">
+              Puedes traer los del contrato con el botón de arriba.
+            </template>
+            <template v-else>Agrega el primero para empezar a colgarle tareas.</template>
+          </p>
+
+          <div v-else class="deliverable-cards">
+            <!-- Cada tarjeta filtra el tablero: es la forma de pasar del "qué
+                 hay que entregar" al "qué falta hacer para entregarlo". -->
+            <article
+              v-for="item in deliverables"
+              :key="item.id"
+              class="deliverable-card"
+              :class="{ 'is-active': String(deliverableFilter) === String(item.id) }"
+            >
+              <button
+                type="button"
+                class="deliverable-card-main"
+                :title="`Ver solo las tareas de ${item.title}`"
+                @click="deliverableFilter = String(deliverableFilter) === String(item.id) ? 'all' : item.id"
+              >
+                <span class="deliverable-card-title">{{ item.title }}</span>
+                <span class="deliverable-card-meta">
+                  <span v-if="item.due_date">📅 {{ formatDate(item.due_date) }}</span>
+                  <span v-if="item.is_overdue" class="deliverable-tag is-bad">fuera de fecha</span>
+                  <span v-if="item.income_code" class="deliverable-tag">cuota {{ item.income_cuota }} · {{ item.income_code }}</span>
+                  <span v-if="item.status === 'entregado'" class="deliverable-tag is-ok">entregado</span>
+                </span>
+                <span class="deliverable-card-tasks">
+                  <template v-if="item.task_total > 0">
+                    🗂️ {{ item.task_done }}/{{ item.task_total }} tareas ({{ item.task_progress }}%)
+                  </template>
+                  <template v-else>Sin tareas todavía</template>
+                </span>
+                <span v-if="item.task_total > 0" class="deliverable-bar">
+                  <span class="deliverable-bar-fill" :style="{ width: item.task_progress + '%' }"></span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="deliverable-remove"
+                title="Quitar del plan (las tareas no se borran)"
+                :disabled="isLocked"
+                @click="removeDeliverable(item)"
+              >✕</button>
+            </article>
+          </div>
+
+          <!-- Filtro del tablero. "Sueltas" existe para que las tareas internas
+               (coordinar con el asesor, revisar formato) no desaparezcan por no
+               pertenecer a ninguna entrega. -->
+          <div v-if="deliverables.length > 0" class="deliverable-filters">
+            <button type="button" class="deliverable-filter" :class="{ 'is-on': deliverableFilter === 'all' }" @click="deliverableFilter = 'all'">
+              Ver todas ({{ tasks.length }})
+            </button>
+            <button type="button" class="deliverable-filter" :class="{ 'is-on': deliverableFilter === 'none' }" @click="deliverableFilter = 'none'">
+              Sueltas ({{ looseTaskCount }})
+            </button>
+          </div>
+        </div>
+
         <!-- Agregar tarea (todo) -->
         <div class="glass-panel" style="padding: 1.25rem 1.5rem; margin-bottom: 1.5rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
@@ -114,7 +233,7 @@
               📋 Plantillas
             </button>
           </div>
-          <form style="display: flex; gap: 0.6rem;" @submit.prevent="addTask">
+          <form class="add-task-form" @submit.prevent="addTask">
             <input
               v-model="newTaskTitle"
               type="text"
@@ -123,6 +242,10 @@
               style="border-radius: 10px;"
               :disabled="isLocked"
             />
+            <select v-if="deliverables.length > 0" v-model="newTaskDeliverableId" class="form-select add-task-deliverable" :disabled="isLocked">
+              <option value="">Sin entregable</option>
+              <option v-for="item in deliverables" :key="item.id" :value="item.id">{{ item.title }}</option>
+            </select>
             <button type="submit" class="btn-primary" style="width: auto; padding: 0 1.5rem; border-radius: 10px;" :disabled="!newTaskTitle.trim() || isLocked">
               Agregar
             </button>
@@ -194,6 +317,23 @@
                   </span>
                 </label>
                 <button v-if="!isLocked" class="task-delete-btn" title="Eliminar tarea" @click="removeTask(task)">✕</button>
+
+                <!-- De qué entregable es esta tarea. Se ve siempre (si no, al
+                     mirar el tablero completo no habría forma de saber para qué
+                     entrega es cada cosa) y se puede cambiar sin reescribirla. -->
+                <select
+                  v-if="deliverables.length > 0"
+                  class="task-deliverable-select"
+                  :class="{ 'is-loose': !task.deliverable_id }"
+                  :value="task.deliverable_id || ''"
+                  :disabled="isLocked"
+                  :title="task.deliverable_id ? deliverableById.get(task.deliverable_id)?.title : 'Esta tarea no cuelga de ningún entregable'"
+                  @click.stop
+                  @change="moveTaskToDeliverable(task, $event.target.value)"
+                >
+                  <option value="">📄 Sin entregable</option>
+                  <option v-for="item in deliverables" :key="item.id" :value="item.id">📦 {{ item.title }}</option>
+                </select>
               </div>
 
               <div v-if="(tasksByColumn[col.key] || []).length === 0" class="kanban-empty">
@@ -435,10 +575,47 @@ async function uploadVoucher(event) {
   }
 }
 
+// ------------------------------------------------- Entregables del proyecto
+
+/**
+ * El plan de entregas visto desde el proyecto: qué hay que entregarle al
+ * cliente, con qué fecha y contra qué cuota. Sale del contrato (importado) o se
+ * agrega a mano, y es el mismo plan que trabaja el módulo de Entregables.
+ *
+ * Acá vive para que el tablero deje de ser treinta tareas sueltas: cada
+ * entregable es un paquete de trabajo con SUS tareas, y al elegir uno el
+ * tablero se queda solo con ellas.
+ */
+const deliverables = ref([]);
+const deliverableSchedule = ref([]);
+const contractPlanAvailable = ref(0);
+const deliverableFilter = ref('all');
+const newTaskDeliverableId = ref('');
+const isImportingPlan = ref(false);
+const showDeliverableForm = ref(false);
+const deliverableForm = reactive({ title: '', dueDate: '', incomeId: '' });
+const deliverableSaving = ref(false);
+const deliverableError = ref('');
+
+const deliverableById = computed(() => new Map(deliverables.value.map((d) => [d.id, d])));
+
+/**
+ * Las tareas que el tablero muestra. `all` es todo; `none` son las tareas
+ * internas que no cuelgan de ninguna entrega (coordinar con el asesor, revisar
+ * formato) y que por eso no desaparecen del tablero.
+ */
+const visibleTasks = computed(() => {
+  if (deliverableFilter.value === 'all') return tasks.value;
+  if (deliverableFilter.value === 'none') return tasks.value.filter((t) => !t.deliverable_id);
+  return tasks.value.filter((t) => Number(t.deliverable_id) === Number(deliverableFilter.value));
+});
+
+const looseTaskCount = computed(() => tasks.value.filter((t) => !t.deliverable_id).length);
+
 const tasksByColumn = computed(() => {
   const grouped = {};
   for (const col of TASK_COLUMNS) grouped[col.key] = [];
-  for (const task of tasks.value) {
+  for (const task of visibleTasks.value) {
     (grouped[task.status] || grouped.pendiente).push(task);
   }
   return grouped;
@@ -471,6 +648,101 @@ async function fetchTasks() {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Error al obtener las tareas.');
   tasks.value = data.tasks || [];
+}
+
+async function fetchDeliverables() {
+  const response = await apiFetch(`/api/projects/${props.id}/deliverables`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Error al obtener los entregables.');
+  deliverables.value = data.deliverables || [];
+  deliverableSchedule.value = data.schedule || [];
+  contractPlanAvailable.value = data.contract_plan_available || 0;
+
+  // Si el entregable que se estaba mirando ya no está, el tablero vuelve a
+  // mostrarlo todo en vez de quedarse vacío sin decir por qué.
+  if (deliverableFilter.value !== 'all' && deliverableFilter.value !== 'none'
+    && !deliverables.value.some((d) => Number(d.id) === Number(deliverableFilter.value))) {
+    deliverableFilter.value = 'all';
+  }
+}
+
+async function addDeliverable() {
+  const title = deliverableForm.title.trim();
+  if (!title) return;
+  deliverableSaving.value = true;
+  deliverableError.value = '';
+  try {
+    const response = await apiFetch(`/api/projects/${props.id}/deliverables`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        dueDate: deliverableForm.dueDate || null,
+        incomeId: deliverableForm.incomeId ? Number(deliverableForm.incomeId) : null
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo agregar el entregable.');
+    Object.assign(deliverableForm, { title: '', dueDate: '', incomeId: '' });
+    showDeliverableForm.value = false;
+    await fetchDeliverables();
+  } catch (err) {
+    deliverableError.value = err.message;
+  } finally {
+    deliverableSaving.value = false;
+  }
+}
+
+/**
+ * Quita un entregable del plan. Las tareas que colgaban de él NO se borran:
+ * quedan sueltas en el tablero, porque sacar algo del plan no puede borrar el
+ * trabajo que ya se hizo. El aviso lo dice para que nadie lo descubra después.
+ */
+async function removeDeliverable(deliverable) {
+  const withTasks = deliverable.task_total > 0
+    ? `\n\nSus ${deliverable.task_total} tarea(s) NO se borran: quedan sueltas en el tablero.`
+    : '';
+  if (!window.confirm(`¿Quitar "${deliverable.title}" del plan de entregas?${withTasks}`)) return;
+
+  try {
+    const response = await apiFetch(`/api/projects/${props.id}/deliverables/${deliverable.id}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error((await response.json()).error || 'No se pudo quitar el entregable.');
+    await Promise.all([fetchDeliverables(), fetchTasks()]);
+  } catch (err) {
+    alert('No se pudo quitar el entregable: ' + err.message);
+  }
+}
+
+async function importContractPlan() {
+  isImportingPlan.value = true;
+  try {
+    const response = await apiFetch(`/api/projects/${props.id}/deliverables/import`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo importar el cronograma del contrato.');
+    await fetchDeliverables();
+  } catch (err) {
+    alert('No se pudo importar: ' + err.message);
+  } finally {
+    isImportingPlan.value = false;
+  }
+}
+
+/** Mueve una tarea a otro entregable del proyecto, o la deja suelta. */
+async function moveTaskToDeliverable(task, deliverableId) {
+  const previous = task.deliverable_id;
+  task.deliverable_id = deliverableId ? Number(deliverableId) : null;
+  try {
+    const response = await apiFetch(`/api/tasks/${task.id}/deliverable`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deliverableId: deliverableId || null })
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'No se pudo mover la tarea.');
+    await fetchDeliverables();
+  } catch (err) {
+    task.deliverable_id = previous;
+    alert('No se pudo mover la tarea: ' + err.message);
+  }
 }
 
 async function fetchUpdates() {
@@ -531,7 +803,7 @@ async function fetchTeamDirectory() {
 async function loadAll() {
   loadError.value = '';
   try {
-    await Promise.all([fetchProject(), fetchTasks(), fetchUpdates(), fetchPayments(), fetchTeamDirectory(), fetchTemplates()]);
+    await Promise.all([fetchProject(), fetchTasks(), fetchDeliverables(), fetchUpdates(), fetchPayments(), fetchTeamDirectory(), fetchTemplates()]);
   } catch (err) {
     loadError.value = err.message;
   }
@@ -677,12 +949,15 @@ async function addTask() {
     const response = await apiFetch(`/api/projects/${props.id}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title })
+      body: JSON.stringify({ title, deliverableId: newTaskDeliverableId.value || null })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Error al crear la tarea.');
     tasks.value.push(data.task);
     newTaskTitle.value = '';
+    // El entregable elegido se mantiene: al desglosar una entrega se cargan
+    // varias tareas seguidas, y volver a elegirlo cada vez sobra.
+    if (data.task.deliverable_id) await fetchDeliverables();
   } catch (err) {
     alert('No se pudo agregar la tarea: ' + err.message);
   }
@@ -1173,8 +1448,176 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* El selector de entregable baja a su propia línea: la tarjeta sigue
+     leyéndose como "tarea + borrar" y el entregable queda debajo, como el dato
+     de contexto que es. */
+  flex-wrap: wrap;
   gap: 0.5rem;
   transition: border-color 0.15s ease;
+}
+
+/* ---------------------------------------- Entregables dentro del proyecto */
+
+.deliverables-panel { padding: 1.25rem 1.5rem; margin-bottom: 1.5rem; }
+
+.deliverables-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.deliverables-title { font-size: 0.95rem; color: var(--accent-cyan); }
+.deliverables-head-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.deliverable-btn { padding: 0.35rem 0.8rem; font-size: 0.8rem; white-space: nowrap; }
+
+.deliverable-form {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1.5fr auto;
+  align-items: end;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  margin-bottom: 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+}
+
+.deliverable-submit { width: auto; padding: 0 1.2rem; border-radius: 10px; }
+.deliverable-error { grid-column: 1 / -1; margin: 0; font-size: 0.8rem; color: var(--accent-rose); }
+
+.deliverables-empty { font-size: 0.85rem; color: var(--text-muted); margin: 0; }
+
+.deliverable-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.6rem;
+}
+
+.deliverable-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.deliverable-card:hover { background: var(--surface-2); }
+
+/* El entregable que está filtrando el tablero se marca: si no, el tablero
+   muestra "menos tareas" sin que se vea por qué. */
+.deliverable-card.is-active {
+  border-color: var(--primary);
+  border-left-color: var(--primary);
+  background: var(--surface-2);
+}
+
+.deliverable-card-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.7rem 0.3rem 0.7rem 0.8rem;
+  background: none;
+  border: none;
+  text-align: left;
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+.deliverable-card-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.deliverable-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.deliverable-tag {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.deliverable-tag.is-ok { color: var(--accent-emerald); border-color: rgba(46, 125, 70, 0.4); }
+.deliverable-tag.is-bad { color: var(--accent-rose); border-color: rgba(200, 85, 50, 0.4); }
+
+.deliverable-card-tasks { font-size: 0.76rem; color: var(--text-sub); }
+
+.deliverable-bar {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-4);
+  overflow: hidden;
+}
+
+.deliverable-bar-fill { display: block; height: 100%; background: var(--primary); }
+
+.deliverable-remove {
+  flex: 0 0 auto;
+  padding: 0.7rem 0.6rem;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.deliverable-remove:hover:not(:disabled) { color: var(--accent-rose); }
+.deliverable-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.deliverable-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.9rem; }
+
+.deliverable-filter {
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-sub);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.deliverable-filter.is-on { border-color: var(--primary); color: var(--primary); background: rgba(111, 129, 37, 0.08); }
+
+.add-task-form { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.add-task-form .form-input { flex: 1 1 240px; }
+.add-task-deliverable { flex: 0 1 220px; border-radius: 10px; }
+
+/* El entregable de la tarea, dentro de su tarjeta del tablero. */
+.task-deliverable-select {
+  flex: 1 1 100%;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-sub);
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.task-deliverable-select.is-loose { color: var(--text-muted); border-style: dashed; }
+
+@media (max-width: 820px) {
+  .deliverable-form { grid-template-columns: 1fr; }
+  .deliverable-submit { width: 100%; }
 }
 
 .task-card:hover {

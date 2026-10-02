@@ -38,6 +38,19 @@ export const DELIVERY_CHANNELS = ['correo', 'whatsapp', 'presencial', 'drive', '
 export const DELIVERABLE_STATES = ['entregado', 'sin_cobrar', 'por_entregar', 'pendiente'];
 
 /**
+ * Avance de un entregable por sus tareas, en porcentaje.
+ *
+ * Sin tareas devuelve `null` y NO 0: un entregable que todavía no se desglosó
+ * no es un entregable sin avanzar, y pintarle una barra en cero haría ver como
+ * atrasado el plan que recién se está armando. La pantalla distingue los dos
+ * casos ("Sin tareas todavía" vs. "0/4 tareas").
+ */
+export function taskProgress(done, total) {
+  if (!total || total <= 0) return null;
+  return Math.round((done / total) * 100);
+}
+
+/**
  * ¿El estado de la cuota atada impide entregar?
  *
  * Solo `pendiente`: ahí no entró nada de dinero y entregar sería regalar el
@@ -98,10 +111,12 @@ export class DeliverableService {
   /**
    * `projectService` se inyecta para no reescribir el avance de tareas ni la
    * puerta del pago inicial (`is_locked`): ese criterio ya vive en un solo
-   * lugar y tiene que seguir así.
+   * lugar y tiene que seguir así. `taskService` es quien sabe contar las tareas
+   * de cada entregable — acá solo se pegan al plan.
    */
-  constructor({ projectService } = {}) {
+  constructor({ projectService, taskService } = {}) {
     this.projectService = projectService;
+    this.taskService = taskService;
   }
 
   // ------------------------------------------------------------------ LECTURA
@@ -193,6 +208,73 @@ export class DeliverableService {
     const rows = await this.#baseQuery().where('deliverables.project_id', projectId);
     const today = todayIso();
     return rows.map((row) => shapeRow(row, today));
+  }
+
+  /**
+   * El plan de entregas del proyecto tal como se ve DENTRO del proyecto: cada
+   * entregable con sus tareas contadas.
+   *
+   * Es la vista que convierte el plan en trabajo: "Capítulo I y II — 3 de 5
+   * tareas hechas — vence el viernes". Sin el conteo, el tablero del proyecto y
+   * la lista de entregas seguirían siendo dos cosas que no se hablan.
+   */
+  async listByProjectWithTasks(projectId) {
+    const [deliverables, counts] = await Promise.all([
+      this.listByProject(projectId),
+      this.taskService ? this.taskService.countsByDeliverable(projectId) : new Map()
+    ]);
+
+    return deliverables.map((deliverable) => {
+      const { total = 0, done = 0 } = counts.get(Number(deliverable.id)) || {};
+      return {
+        ...deliverable,
+        task_total: total,
+        task_done: done,
+        task_progress: taskProgress(done, total)
+      };
+    });
+  }
+
+  /**
+   * Todo lo que la pantalla del proyecto necesita para trabajar su plan de
+   * entregas en una sola petición: los entregables con sus tareas contadas, las
+   * cuotas del cliente (para el selector "se entrega contra la cuota…") y
+   * cuántas entregas del contrato todavía no están copiadas.
+   *
+   * Existe aparte de `getOverview()` porque esa arma el tablero de TODOS los
+   * proyectos: pedirla desde la ficha de uno traería el sistema entero para
+   * mostrar cinco filas.
+   */
+  async getProjectPlan(projectId) {
+    const project = await this.projectService.getProjectById(projectId);
+    if (!project) return null;
+
+    const leadId = project.lead_id || null;
+    const [deliverables, schedule, contractPlan] = await Promise.all([
+      this.listByProjectWithTasks(projectId),
+      leadId
+        ? db('finance_income')
+          .where({ lead_id: leadId })
+          .select('id', 'code', 'cuota', 'estado', 'due_date')
+          .orderBy('due_date', 'asc').orderBy('id', 'asc')
+        : [],
+      leadId ? this.#contractPlanByLead([leadId]) : new Map()
+    ]);
+
+    const plan = contractPlan.get(leadId) || [];
+    return {
+      project_id: project.id,
+      is_locked: Boolean(project.is_locked),
+      deliverables,
+      schedule: schedule.map((income) => ({
+        income_id: income.id,
+        code: income.code,
+        cuota: income.cuota,
+        estado: income.estado,
+        due_date: isoDay(income.due_date)
+      })),
+      contract_plan_available: plan.filter((item) => !hasTitle(deliverables, item.avance)).length
+    };
   }
 
   #baseQuery() {

@@ -66,6 +66,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261026000000_alter_leads_add_sales_funnel_at.js` | Agrega `leads.sales_funnel_at`: el sello de que el lead ya graduó al Funnel de Ventas y es del closer. Hasta ahora eso se **deducía** del texto de `leads.status`, y la deducción dejaba de funcionar en cuanto se borraba o recreaba una columna — por ahí volvían los leads cotizados al Setter Funnel. Rellena el sello para los que hoy son comerciales por su status y, además, para los que tienen cotización, proyecto o ingreso aunque su status diga otra cosa (son los que el bot ya había devuelto); excluye `descartado`, que es una decisión explícita de una persona. |
 | `20261026010000_create_lead_stage_changes_table.js` | Crea `lead_stage_changes`: la bitácora de movimientos de etapa de cada lead (de dónde, a dónde, quién — `user`/`bot`/`system` —, por qué y cuándo), **incluidos los intentos rechazados**, marcados con `blocked`. Sin ella, cada reporte de "este lead se regresó solo" había que reconstruirlo a mano, y un tope que funciona se veía igual que uno que nunca se activó. |
 | `20261027000000_create_deliverable_settings.js` | Crea `deliverable_settings` (fila única): la configuración del módulo de Entregables. Por ahora solo `notice_email`, el correo al que llega el aviso de cuota verificada. Es **uno solo** y no todos los usuarios con `deliverables.view`: de las entregas se encarga una persona, y repartir el aviso lo convierte en ruido que nadie mira. Está en la base y no en el `.env` porque el destinatario cambia cuando cambia quién ocupa el puesto, y eso tiene que poder hacerse desde el panel. |
+| `20261028000000_alter_tasks_add_deliverable_id.js` | Agrega `tasks.deliverable_id`: de qué entregable es cada tarea. Convierte un entregable en lo que de verdad es, un **paquete de trabajo** con su avance propio (hechas/total), y conecta las dos listas del proyecto —tareas y entregas— que hasta ahora no se hablaban. Es **opcional** (hay tareas internas que no corresponden a ninguna entrega) y va con ON DELETE SET NULL, no CASCADE: quitar un entregable del plan no puede borrar el trabajo ya registrado. |
 
 ### Cronograma de pagos y entregables bloqueados
 
@@ -161,6 +162,29 @@ decir cosas distintas.
 Una cuota **`pagado`** (el cliente pagó y subió su comprobante; falta el visto bueno de Finanzas) sí
 deja entregar: esa diferencia es un trámite interno nuestro, no una deuda del cliente. Esa entrega
 queda como `sin_cobrar`, que es exactamente para lo que existe ese estado.
+
+### El entregable como paquete de trabajo
+
+El proyecto tenía dos listas que no se hablaban: las **tareas** (lo que hace el equipo por dentro) y
+los **entregables** (lo que el cliente recibe, con su fecha y su cuota). En el tablero se veían
+treinta tareas sueltas sin forma de saber cuáles había que terminar para poder entregar el capítulo
+que vence el viernes.
+
+`tasks.deliverable_id` las une. Desde la ficha del proyecto
+(`GET/POST/DELETE /api/projects/:id/deliverables`, más `PATCH /api/tasks/:id/deliverable`) se agregan
+y se quitan entregables, se traen los del contrato y se les cuelgan tareas; cada entregable muestra
+su avance (`task_done`/`task_total`) y al elegirlo el tablero se queda solo con sus tareas.
+
+Tres decisiones que conviene no deshacer:
+
+- esas rutas van bajo **`projects.view`**, no bajo `deliverables.view`: planificar qué hay que
+  entregar es parte de llevar el proyecto. Marcar entregado, el archivo de respaldo y el cruce con
+  el cobro siguen siendo del módulo de Entregables, con su propio permiso;
+- `deliverable_id` es **opcional**: hay tareas internas (coordinar con el asesor, revisar formato)
+  que no corresponden a ninguna entrega, y obligarlas a colgar de un entregable inventado sería peor
+  que dejarlas sueltas. El tablero tiene un filtro "Sueltas" para que no desaparezcan;
+- un entregable sin tareas tiene `task_progress: null`, **no 0** (`taskProgress()`): pintarle una
+  barra en cero haría ver como atrasado un plan que recién se está armando.
 
 ### Y cuando la cuota se verifica, el equipo se entera
 
