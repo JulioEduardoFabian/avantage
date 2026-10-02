@@ -265,6 +265,19 @@ antes de tocar el arranque de producción.
   leads, agenda reuniones vía `googleCalendarService`/`scheduledMeetingService`, y hace seguimiento
   de conversaciones inactivas (recordatorio a la 1h, estado "Congelado" a las 2h — barrido cada
   `STALE_CONVERSATION_SWEEP_INTERVAL_MS`, definido en `server.js`).
+  Cinco reglas de UX conversacional salieron de revisar las conversaciones del 01/10/2026 (1 cita de
+  25 contactos) y conviene no deshacerlas: (1) la apertura pide **solo la carrera**, y la universidad
+  en el turno siguiente — pedirlas juntas abandonaba 9 de 25 ahí (`nextDataQuestion()` es el único
+  sitio donde vive ese orden); (2) la franja de silencio es **22:00–08:00** y lo acumulado sale
+  escalonado (`NUDGE_BURST_LIMIT`), porque antes era 01:00–05:00 y tres contactos recibieron su
+  recordatorio a las 05:06 en el mismo minuto; (3) un contacto que escribe con el **bot pausado**
+  dispara un aviso al equipo (`_alertPausedInbound`, espaciado por `paused_alert_at`): antes solo
+  quedaba en la bitácora interna y se perdía — así se quedó sin respuesta un lead que preguntó el
+  precio dos veces; (4) el nombre que la persona **escribe** gana sobre el del perfil de WhatsApp en
+  cualquier turno (`_adoptDeclaredName`), y las fichas se leen aunque no lleven dos puntos
+  (`BARE_FORM_LABEL_RE`); (5) un "ok/sí/dale" **suelto** después de una propuesta es una aceptación
+  (`isExplicitYes` + `answers.__awaitingYes`), no un mensaje al que responder repitiendo la pregunta
+  anterior.
 - El **conteo de seguidores de la página de Meta** se sondea periódicamente
   (`FOLLOWER_POLL_INTERVAL_MS` en `server.js`) porque Meta no lo notifica vía webhook.
 - Los **webhooks de Meta/WhatsApp** validan la firma `X-Hub-Signature-256` contra `req.rawBody`

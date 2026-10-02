@@ -95,11 +95,30 @@ test('fallbackParseSchedulingDate reconoce el nombre del día antes que "mañana
 
 // Orden de preguntas (también sin IA): carrera + universidad primero, que se
 // contestan sin pensar; el tema después, con la salida de "desde cero".
-test('fallbackConversationTurn abre preguntando carrera y universidad', () => {
+/*
+ * La apertura pide SOLO la carrera. Pedir carrera y universidad juntas era
+ * pedir dos cosas en el mensaje que decide si te contestan: el 01/10, de 25
+ * contactos, 9 abandonaron sin responder nada justo ahí.
+ */
+test('fallbackConversationTurn abre preguntando SOLO la carrera', () => {
   const turn = ollama.fallbackConversationTurn({}, '¡Hola! Quiero más información', true);
-  assert.match(turn.reply, /carrera.*universidad/);
+  assert.match(turn.reply, /carrera/i);
+  assert.doesNotMatch(turn.reply, /universidad/i);
   assert.deepEqual(turn.extracted, {});
   assert.equal(turn.ready, false);
+});
+
+test('la universidad se pregunta en el turno siguiente, cuando ya hay carrera', () => {
+  const turn = ollama.fallbackConversationTurn({ field: 'Antropología' }, 'ok', false);
+  assert.match(turn.reply, /universidad/i);
+});
+
+test('si contesta las dos de una, no se vuelve a preguntar ninguna', () => {
+  // Partir la pregunta no puede castigar a quien igual responde todo junto.
+  const turn = ollama.fallbackConversationTurn({}, 'Ingeniería civil, Universidad Continental', false);
+  assert.equal(turn.extracted.field, 'Ingeniería civil');
+  assert.match(turn.extracted.university, /Continental/);
+  assert.doesNotMatch(turn.reply, /carrera|universidad/i);
 });
 
 test('fallbackConversationTurn pide el tema después de carrera y universidad', () => {

@@ -189,10 +189,50 @@ export function isAffirmative(text) {
  */
 const EXPLICIT_NO_RE = /^(?:(?:por\s*)?(?:ahora|hoy|ahorita)\s*)?no+(?:\s*(?:gracias|por\s*ahora|por\s*el\s*momento|ahora|ahorita|todav[ií]a|quiero|me\s*interesa))?$/i;
 
+/**
+ * La siguiente pregunta que falta hacer, en el orden del prompt: carrera,
+ * universidad y después el tema. Devuelve `null` cuando ya no falta ninguna.
+ *
+ * Carrera y universidad van de UNA EN UNA: pedirlas juntas era pedir dos
+ * cosas, y ahí se caía el embudo (el 01/10, 9 de 25 contactos abandonaron sin
+ * contestar nada en esa primera pregunta).
+ *
+ * Vive acá, en una sola función, porque hacen falta las mismas preguntas en
+ * dos sitios —cuando el LLM repite algo ya contestado y cuando el contacto
+ * acepta la propuesta con un "ok"— y tenerlas escritas dos veces garantiza que
+ * un día digan cosas distintas.
+ */
+export function nextDataQuestion(answers = {}) {
+  if (!answers.field) return '¡Perfecto! ¿De qué carrera es tu tesis?';
+  if (!answers.university) return '¡Perfecto! ¿Y en qué universidad estudias?';
+  if (!answers.problem) return '¡Perfecto! ¿Ya tienes un tema o una idea para tu tesis, o empiezas desde cero?';
+  return null;
+}
+
 export function isExplicitNo(text) {
   const clean = normalize((text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!clean) return false;
   return EXPLICIT_NO_RE.test(clean);
+}
+
+/**
+ * ¿El contacto dijo que sí, y solo eso?
+ *
+ * Mismo criterio estricto que `isExplicitNo`: la aceptación tiene que venir
+ * SUELTA ("ok", "sí", "dale", "claro", "me parece"). "ok pero cuánto cuesta" o
+ * "si tengo tema" no son aceptaciones — son conversación, y ahí decide el LLM,
+ * que la entiende mejor que una regex.
+ *
+ * Existe porque el 01/10 un lead preguntó el precio, el bot cerró con
+ * "¿Coordinamos?", ella contestó "Ok" y el bot le repitió la MISMA pregunta
+ * que ya le había hecho dos turnos antes. Ese "Ok" era un sí.
+ */
+const EXPLICIT_YES_RE = /^(?:si+|sii+|claro|ok+|oka+y?|dale|listo|dale\s*pues|dale\s*nomas|dale\s*no\s*mas|dale\s*ok|dalee+|dsp|dcl|dele|dale\s*si|dale\s*gracias|dale\s*porfa|me\s*parece|dale\s*entonces|dale\s*va|dale\s*vale|vale|dale\s*listo|perfecto|dale\s*perfecto|de\s*acuerdo|por\s*supuesto|bueno|esta\s*bien|asi\s*es|correcto|afirmativo|coordinemos|coordinamos|agendemos|agendamos|ya|ya\s*pues)(?:\s*(?:gracias|porfa|por\s*favor|pues|nomas|no\s*mas|si|ok|claro|listo))?$/i;
+
+export function isExplicitYes(text) {
+  const clean = normalize((text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return false;
+  return EXPLICIT_YES_RE.test(clean);
 }
 
 // Descuento que se aplica si el lead elige reunión por Google Meet en vez de
@@ -325,11 +365,34 @@ const MAX_INACTIVITY_NUDGES = INACTIVITY_NUDGE_TEXTS.length;
 // se manda de verdad (nudge_sent_at), así que también se aplaza — un lead que
 // escribió de madrugada no se congela sin haber tenido chance de responder.
 //
-// La franja la fijó el equipo. Es estrecha a propósito: fuera de ella el bot
-// puede escribir, incluso a medianoche. Si algún día aparecen quejas por la
-// hora, estos dos números son lo único que hay que mover.
-const NUDGE_QUIET_START_HOUR = 1;
-const NUDGE_QUIET_END_HOUR = 5;
+// La franja era 01:00–05:00 y resultó demasiado estrecha: el 01/10 tres
+// contactos que habían escrito entre las 00:04 y las 00:28 recibieron su
+// recordatorio a las 05:06 — técnicamente fuera del silencio, pero son las
+// cinco de la mañana. Y los tres en el MISMO minuto, porque al abrir la
+// ventana el barrido suelta de golpe todo lo que se acumuló.
+//
+// Ahora la franja cubre la noche completa (22:00–08:00) y lo acumulado sale
+// escalonado (ver NUDGE_BURST_LIMIT), que es el otro medio problema.
+const NUDGE_QUIET_START_HOUR = 22;
+const NUDGE_QUIET_END_HOUR = 8;
+
+/**
+ * Cuántos recordatorios como máximo salen en un mismo barrido.
+ *
+ * Sin tope, la primera pasada después del silencio manda todos los pendientes
+ * a la vez: el 01/10 salieron tres mensajes a las 05:06:xx. Con el barrido
+ * cada 10 minutos, este tope reparte la cola a lo largo de la mañana en vez
+ * de delatar que atrás hay un robot despachando una lista.
+ */
+const NUDGE_BURST_LIMIT = 3;
+
+/**
+ * Cada cuánto, como mucho, se vuelve a avisar de que un contacto escribe con
+ * el bot pausado. Seis horas: lo bastante para no repetir el aviso en una
+ * conversación que alguien ya está atendiendo a mano, y lo bastante poco para
+ * que si vuelve a escribir al día siguiente se entere alguien.
+ */
+const PAUSED_INBOUND_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
  * ¿Esa hora de Lima cae dentro de la franja de silencio?
@@ -480,10 +543,27 @@ function extractEmail(value) {
  * red de seguridad: sea cual sea lo que devuelva el LLM, si el patrón
  * matchea, estos datos SIEMPRE quedan guardados.
  */
+/**
+ * Las fichas que la gente escribe a mano muchas veces NO llevan dos puntos:
+ *
+ *     ▪️ Nombre Lourdes
+ *     ▪️ Carrera Antropología
+ *     ▪️ Universidad UNSA
+ *
+ * Con el separador obligatorio esas tres líneas no devolvían nada, y el 01/10
+ * eso dejó al bot llamando "Jesus" (el nombre del teléfono) a alguien que se
+ * había presentado como Lourdes — hasta en la confirmación de su reunión.
+ *
+ * Sin dos puntos, "etiqueta valor" es ambiguo en general, así que solo se
+ * acepta cuando la línea EMPIEZA por una de las etiquetas conocidas: eso lo
+ * vuelve una lectura segura en vez de una adivinanza.
+ */
+const BARE_FORM_LABEL_RE = /^[^\p{L}\p{N}]*(nombre(?:\s+completo)?|carrera|profesi[oó]n|universidad|instituci[oó]n|ciudad(?:\s+de\s+residencia)?|nivel\s+acad[eé]mico|grado\s+acad[eé]mico|tel[eé]fono|celular|correo|email)\s+(.+)$/iu;
+
 function parseFormAnswerLines(text) {
   return String(text || '')
     .split(/\n+/)
-    .map((line) => line.match(/^[^\S\n]*[¿"'“]*\s*(.+?)\s*[?"'”]*\s*:\s*(.+)$/))
+    .map((line) => line.match(/^[^\S\n]*[¿"'“]*\s*(.+?)\s*[?"'”]*\s*:\s*(.+)$/) || line.match(BARE_FORM_LABEL_RE))
     .filter(Boolean)
     .map((match) => ({ label: match[1].trim(), value: match[2].trim() }))
     .filter((pair) => pair.label && pair.value);
@@ -1712,6 +1792,10 @@ export class WhatsappBotService {
         text,
         reason: 'El bot está pausado para este contacto (alguien respondió manualmente). Actívalo con "▶️ Activar bot" en el panel.'
       });
+      // Y se avisa: con el bot pausado nadie más mira ese mensaje. Antes solo
+      // quedaba en la bitácora interna y se perdía (ver la migración
+      // `20261030000000_alter_whatsapp_bot_sessions_add_paused_alert.js`).
+      await this._alertPausedInbound(waId, session, text);
       return;
     }
 
@@ -2128,7 +2212,11 @@ export class WhatsappBotService {
       .map((m) => ({ direction: m.direction, text: m.body }));
 
     const lead = await this.leadService.findByPhone(waId);
-    const contactName = firstNameOf(lead?.full_name);
+    // El contacto puede presentarse en CUALQUIER momento, no solo en su primer
+    // mensaje: el 01/10 mandó su ficha en el segundo turno y el bot siguió
+    // llamándolo por el nombre del teléfono el resto de la conversación.
+    const declaredName = await this._adoptDeclaredName(waId, lead, incomingText);
+    const contactName = declaredName || firstNameOf(lead?.full_name);
 
     // Lead que llegó del formulario de un anuncio de Meta: su primer mensaje
     // ES el resumen del formulario ("¿Pregunta?: Respuesta" línea a línea),
@@ -2326,8 +2414,36 @@ export class WhatsappBotService {
         return;
       }
 
+      // Queda constancia de que este turno terminó en una PROPUESTA
+      // ("¿Coordinamos?"): lo que conteste a continuación hay que leerlo como
+      // respuesta a eso, no como un mensaje suelto (ver más abajo).
+      answers.__awaitingYes = 'price_anchor';
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
       await this.send(waId, whatsappBotCopy.priceAnchor(isFirstTurn ? contactName : null, meetingDurationLabel(settings)));
       return;
+    }
+
+    // El turno anterior terminó en una propuesta y la respuesta es un sí
+    // suelto ("ok", "dale", "claro"). Eso es una ACEPTACIÓN: se le agradece y
+    // se sigue por el dato que falta, en vez de mandarlo al LLM — que el
+    // 01/10 contestó repitiendo palabra por palabra la pregunta que ya había
+    // hecho dos turnos antes.
+    const awaitingYes = answers.__awaitingYes;
+    if (awaitingYes) {
+      delete answers.__awaitingYes;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+
+      if (isExplicitYes(incomingText)) {
+        const pending = nextDataQuestion(answers);
+        this.logActivity({ type: 'proposal_accepted', waId, after: awaitingYes, pending: pending || 'nada' });
+
+        // Si ya no falta ningún dato, el sí vale por el agendamiento: se le
+        // ofrecen los horarios de una vez.
+        if (!pending) return this.finalize(waId, answers);
+
+        await this.send(waId, `¡Genial! ${pending.replace(/^¡Perfecto!\s*/, '')}`);
+        return;
+      }
     }
 
     // Para pasar a la reunión hacen falta los tres datos: tema, carrera y
@@ -2338,15 +2454,7 @@ export class WhatsappBotService {
     // falta (o se pasa a agendar, si ya no falta ninguno).
     const redundantAsk = detectRedundantAsk(result.reply, answers, isFirstTurn);
     if (redundantAsk) {
-      // Mismo orden que el prompt: carrera y universidad (juntas, un solo
-      // turno) y después el tema, preguntado de forma fácil.
-      const nextQuestion = !answers.field && !answers.university
-        ? '¡Perfecto! ¿De qué carrera eres y en qué universidad estudias?'
-        : (!answers.field
-          ? '¡Perfecto! ¿Y de qué carrera es tu tesis?'
-          : (!answers.university
-            ? '¡Perfecto! ¿Y en qué universidad estudias?'
-            : (!answers.problem ? '¡Perfecto! ¿Ya tienes un tema o una idea para tu tesis, o empiezas desde cero?' : null)));
+      const nextQuestion = nextDataQuestion(answers);
 
       this.logActivity({
         type: 'redundant_question_fixed',
@@ -2901,6 +3009,89 @@ export class WhatsappBotService {
    * Nunca reintenta: si el correo falla se registra y se sigue. Reintentar en
    * cada barrido repetiría el mismo error sin que el aviso llegue antes.
    */
+  /**
+   * Avisa al equipo de que un contacto escribió mientras el bot está pausado.
+   *
+   * Es el único camino por el que ese mensaje llega a una persona: con el bot
+   * apagado nadie responde y nadie se entera. Pasa sobre todo con las
+   * plantillas de reactivación, que son justo las que despiertan a los leads
+   * dormidos — los que más vale la pena atender.
+   *
+   * Se espacia (`PAUSED_INBOUND_ALERT_COOLDOWN_MS`) porque la gente escribe en
+   * varias burbujas seguidas y porque, si alguien del equipo ya está
+   * conversando a mano, un aviso por mensaje sería ruido. El primero de una
+   * tanda sí avisa: ese es el que no puede perderse.
+   */
+  async _alertPausedInbound(waId, session, text) {
+    try {
+      const lastAlert = session.paused_alert_at ? new Date(session.paused_alert_at).getTime() : 0;
+      if (Date.now() - lastAlert < PAUSED_INBOUND_ALERT_COOLDOWN_MS) return;
+
+      // Se reserva la marca ANTES de avisar, con la fecha anterior como
+      // condición: dos burbujas que entren a la vez no pueden mandar dos
+      // avisos (solo una de las dos actualiza la fila).
+      const claimed = await db('whatsapp_bot_sessions')
+        .where({ id: session.id })
+        .where((builder) => (lastAlert
+          ? builder.where('paused_alert_at', session.paused_alert_at)
+          : builder.whereNull('paused_alert_at')))
+        .update({ paused_alert_at: db.fn.now() });
+      if (!claimed) return;
+
+      const lead = await this.leadService.findByPhone(waId).catch(() => null);
+      const who = lead?.full_name || waId;
+
+      await this.alertInternal({
+        waId,
+        type: 'paused_inbound_message',
+        title: `${who} respondió y el bot está pausado`,
+        body: `Este contacto escribió, pero el bot está apagado para él, así que NADIE le va a contestar solo.
+
+`
+          + `Escribió: "${String(text || '').slice(0, 500)}"
+
+`
+          + 'Hay que responderle a mano desde el panel de WhatsApp.'
+      });
+    } catch (error) {
+      console.error(`❌ [WhatsApp Bot] Error al avisar del mensaje con el bot pausado de ${waId}:`, error.message);
+    }
+  }
+
+  /**
+   * Si el contacto escribió su nombre con todas las letras ("Nombre: Lourdes"),
+   * ese gana sobre el del perfil de WhatsApp y se guarda en la ficha.
+   *
+   * El perfil es cómo se llama el TELÉFONO, que muchas veces no es suyo
+   * ("Jesus Mi Fortaleza" para Lourdes) o ni siquiera es un nombre. Solo se
+   * acepta cuando viene con su etiqueta: eso es la persona diciendo cómo se
+   * llama, no una suposición nuestra sobre una frase cualquiera.
+   *
+   * Sí puede pisar una corrección que haya hecho un asesor en la ficha, y es
+   * el comportamiento querido: entre lo que escribió el asesor y lo que
+   * escribió el propio contacto, manda el contacto.
+   *
+   * Devuelve el nombre de pila con el que saludar, o `null` si no declaró
+   * ninguno en este mensaje.
+   */
+  async _adoptDeclaredName(waId, lead, incomingText) {
+    const declared = extractLeadFormFields(incomingText).fullName;
+    const declaredFirst = firstNameOf(declared);
+    if (!declaredFirst) return null;
+    if (!lead || firstNameOf(lead.full_name) === declaredFirst) return declaredFirst;
+
+    try {
+      await this.leadService.updateLead(lead.id, { fullName: declared });
+      this.logActivity({ type: 'contact_name_adopted', waId, from: lead.full_name || null, to: declared });
+      // El objeto en memoria se actualiza para que el resto de ESTE turno no
+      // siga usando el nombre viejo.
+      lead.full_name = declared;
+    } catch (error) {
+      console.error(`❌ [WhatsApp Bot] Error al guardar el nombre declarado por ${waId}:`, error.message);
+    }
+    return declaredFirst;
+  }
+
   async alertInternal({ waId = null, type, title, body }) {
     const link = waId ? `/admin/whatsapp?waId=${encodeURIComponent(waId)}` : '/admin/whatsapp';
 
@@ -4884,6 +5075,7 @@ ${numberedList(fullSlotLabels(offer))}
 
     const limaHour = Number(LIMA_TIME_FORMATTER.format(new Date(now)).slice(0, 2));
     const isQuietHours = isWithinQuietHours(limaHour);
+    let nudgesThisSweep = 0;
 
     for (const session of awaitingReply) {
       if (withUpcomingMeeting.has(session.wa_id)) continue;
@@ -4920,6 +5112,19 @@ ${numberedList(fullSlotLabels(offer))}
 
       if (isQuietHours) continue;
 
+      // Tope por barrido: lo que se acumuló durante la noche se reparte a lo
+      // largo de la mañana en vez de salir todo en el mismo minuto. Las filas
+      // que no entran no se marcan ni se pierden — las toma el barrido
+      // siguiente, diez minutos después.
+      if (nudgesThisSweep >= NUDGE_BURST_LIMIT) {
+        this.logActivity({
+          type: 'inactivity_nudge_deferred',
+          waId: session.wa_id,
+          reason: `Ya salieron ${NUDGE_BURST_LIMIT} recordatorios en este barrido: este va en el siguiente.`
+        });
+        continue;
+      }
+
       // Reserva la fila ANTES de enviar (con la condición nudge_sent_at IS
       // NULL en el propio UPDATE) para que dos barridos que se solapen
       // (p. ej. si el barrido anterior aún no terminó cuando arranca el
@@ -4931,6 +5136,7 @@ ${numberedList(fullSlotLabels(offer))}
         .whereNull('nudge_sent_at')
         .update({ nudge_sent_at: db.fn.now(), nudge_count: nudgesSent + 1 });
       if (!claimed) continue;
+      nudgesThisSweep += 1;
 
       try {
         const nudgeText = await this._inactivityNudgeText(session, nudgesSent);

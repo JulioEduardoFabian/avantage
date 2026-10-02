@@ -10,7 +10,7 @@ import { isWithinQuietHours } from '../whatsappBotService.js';
  * silencio" y el bot dejaría de mandar seguimientos para siempre.
  */
 
-test('franja que NO cruza la medianoche (la configurada: 01:00–05:00)', () => {
+test('franja que NO cruza la medianoche (p. ej. 01:00–05:00)', () => {
   assert.equal(isWithinQuietHours(0, 1, 5), false, 'medianoche: el bot puede escribir');
   assert.equal(isWithinQuietHours(1, 1, 5), true, 'la 1 a.m. ya es silencio');
   assert.equal(isWithinQuietHours(3, 1, 5), true);
@@ -29,8 +29,20 @@ test('franja que SÍ cruza la medianoche (21:00–08:00) sigue funcionando', () 
   assert.equal(isWithinQuietHours(8, 21, 8), false);
 });
 
-test('la franja configurada por defecto deja hablar al bot de día', () => {
-  assert.equal(isWithinQuietHours(10), false);
-  assert.equal(isWithinQuietHours(22), false);
+/*
+ * La franja configurada pasó de 01:00–05:00 a 22:00–08:00. La anterior era
+ * demasiado estrecha: el 01/10 tres contactos que escribieron entre las 00:04
+ * y las 00:28 recibieron su recordatorio a las 05:06 — fuera del silencio
+ * según el código, pero son las cinco de la mañana.
+ */
+test('la franja configurada por defecto cubre la noche entera', () => {
+  assert.equal(isWithinQuietHours(9), false, 'las 9 a.m.: el bot puede escribir');
+  assert.equal(isWithinQuietHours(15), false);
+  assert.equal(isWithinQuietHours(21), false, 'las 9 p.m. todavía es horario razonable');
+  assert.equal(isWithinQuietHours(22), true, 'a las 10 p.m. empieza el silencio');
+  assert.equal(isWithinQuietHours(0), true);
   assert.equal(isWithinQuietHours(2), true);
+  assert.equal(isWithinQuietHours(5), true, 'las 5 a.m. YA NO son horario de escribir');
+  assert.equal(isWithinQuietHours(7), true);
+  assert.equal(isWithinQuietHours(8), false, 'a las 8 vuelve a poder escribir');
 });

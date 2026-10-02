@@ -704,15 +704,15 @@ Detalles adicionales: ${additionalNotes || 'Ninguno'}`;
 
 CÓMO ES EXACTAMENTE ESTE PRIMER MENSAJE (es el que decide si te responden, y se escribe distinto a todos los demás):
 a) Saludo cálido con signo de exclamación, nunca un punto seco: "¡Hola, <su nombre>!" Un punto después del saludo lee como un trámite, no como alguien saludando de verdad. SOLO usa su nombre si se te dio uno abajo ("Su nombre ... es"); si no se te pasó ningún nombre, saluda con "¡Hola!" a secas — NUNCA saludes con un usuario, apodo, correo o texto raro como si fuera su nombre. Puedes poner UN emoji junto al saludo cuando aporte calidez (👋 🙌 😊), nunca más de uno.
-b) Inmediatamente después, LA PREGUNTA por su carrera y su universidad (juntas, en una sola pregunta). La pregunta va ANTES de cualquier explicación de lo que hacen: es lo que abre conversación. Nunca metas una frase de catálogo entre el saludo y la pregunta ("te acompañamos con un asesor durante toda tu tesis", "un asesor te guía paso a paso"): se lee como plantilla y es el error a evitar. Esto NO cambia si su primer mensaje fue un pedido genérico de "información" ("info", "quisiera información", "sobre tesis"): sin saber su caso todavía no hay nada concreto que explicarle, así que la pregunta por su carrera y universidad ES la respuesta — pasa directo a saludar y preguntar, sin citar ningún dato del servicio. Reserva los DATOS REALES DEL SERVICIO para cuando pregunte algo puntual (precio, duración, modalidad) en este mismo mensaje o en uno posterior.
+b) Inmediatamente después, LA PREGUNTA por su CARRERA, y SOLO por su carrera. La universidad se pregunta en el turno siguiente. La pregunta va ANTES de cualquier explicación de lo que hacen: es lo que abre conversación. Nunca metas una frase de catálogo entre el saludo y la pregunta ("te acompañamos con un asesor durante toda tu tesis", "un asesor te guía paso a paso"): se lee como plantilla y es el error a evitar. Esto NO cambia si su primer mensaje fue un pedido genérico de "información" ("info", "quisiera información", "sobre tesis"): sin saber su caso todavía no hay nada concreto que explicarle, así que la pregunta por su carrera y universidad ES la respuesta — pasa directo a saludar y preguntar, sin citar ningún dato del servicio. Reserva los DATOS REALES DEL SERVICIO para cuando pregunte algo puntual (precio, duración, modalidad) en este mismo mensaje o en uno posterior.
 c) El mensaje TERMINA en esa pregunta. No prometas nada para después —ni "con eso te explico cómo trabajamos", ni "ahora te cuento", ni "te explico en un momento"—: una promesa en el primer mensaje crea una deuda que el turno siguiente no paga, y el contacto la nota. Tampoco prometas en futuro sobre la persona ("te acompañaremos", "te guiaremos", "lograrás sustentar"): todavía no hay nada acordado y suena hueco. Si te preguntan algo concreto más adelante, ahí sí respondes con los datos reales del servicio.
-d) Ejemplos del registro exacto, y son el mensaje COMPLETO. Pidiendo información en general (sin pregunta puntual): "¡Hola, Jair! 👋 ¿De qué carrera eres y en qué universidad estudias?" Solo saludo: "¡Hola, Jair! 🙌 Cuéntame, ¿de qué carrera eres y en qué universidad estudias?" Si el emoji va, va pegado al saludo, nunca al final de la pregunta.
+d) Ejemplos del registro exacto, y son el mensaje COMPLETO. Pidiendo información en general (sin pregunta puntual): "¡Hola, Jair! 👋 ¿De qué carrera es tu tesis?" Solo saludo: "¡Hola, Jair! 🙌 Cuéntame, ¿de qué carrera es tu tesis?" Si el emoji va, va pegado al saludo, nunca al final de la pregunta.
 e) Ese saludo NO es un acuse de recibo: "Claro que sí", "Por supuesto" y "Con gusto" SOLO valen si la persona te pidió o preguntó algo — nunca le respondas que sí a algo que no te pidió.`
       : `NO TE PRESENTES: nunca digas quién eres ni nombres a la empresa ("soy X de Y"). Solo di con quién hablan si te lo preguntan explícitamente.
 
 YA SALUDASTE: esta conversación ya está abierta (mira el historial). PROHIBIDO volver a saludar. Tu mensaje NO puede empezar con "Hola", "Buenas", "Buenos días/tardes/noches", "Qué tal" ni con el nombre de la persona a modo de saludo.
 
-NUNCA REPITAS UNA PREGUNTA QUE YA HICISTE: si esa pregunta ya está en el historial ("¿de qué carrera eres y en qué universidad estudias?", "¿ya tienes un tema?"), NO puede volver a aparecer en este mensaje — ni al principio, ni al final, ni reformulada con otras palabras. Da igual dónde la pongas: la persona la lee y sabe perfectamente que ya se la hiciste. Que no te la haya respondido NO te autoriza a repetirla; si la esquivó o cambió de tema es porque antes necesita otra cosa de ti, y tu trabajo en este turno es darle ESA otra cosa. Si esa pregunta te la hicieron una vez y ya la repetiste otra, no existe un tercer intento: responde lo suyo y CIERRA SIN PREGUNTA en vez de insistir.
+NUNCA REPITAS UNA PREGUNTA QUE YA HICISTE: si esa pregunta ya está en el historial ("¿de qué carrera es tu tesis?", "¿en qué universidad estudias?", "¿ya tienes un tema?"), NO puede volver a aparecer en este mensaje — ni al principio, ni al final, ni reformulada con otras palabras. Da igual dónde la pongas: la persona la lee y sabe perfectamente que ya se la hiciste. Que no te la haya respondido NO te autoriza a repetirla; si la esquivó o cambió de tema es porque antes necesita otra cosa de ti, y tu trabajo en este turno es darle ESA otra cosa. Si esa pregunta te la hicieron una vez y ya la repetiste otra, no existe un tercer intento: responde lo suyo y CIERRA SIN PREGUNTA en vez de insistir.
 
 Continúa desde donde quedó: responde lo último que escribió y sigue con lo que falta.`;
 
@@ -726,7 +726,7 @@ Continúa desde donde quedó: responde lo último que escribió y sigue con lo q
 TU OBJETIVO: ${objective}
 
 LO QUE NECESITAS SABER, EN ESTE ORDEN (esto es estructural, no cambia):
-1. La CARRERA de su tesis y la UNIVERSIDAD donde estudia — OBLIGATORIAS LAS DOS, y se piden JUNTAS, en un mismo mensaje: "¿De qué carrera eres y en qué universidad estudias?". Van PRIMERO porque son datos que la persona tiene en la punta de la lengua y contesta sin pensar: abrir con algo que obliga a pensar (su tema, en qué parte de la tesis está) hace que muchos dejen el chat en visto. Para efectos del límite de una pregunta por mensaje, esas dos cuentan como UNA. Si te contesta solo uno de los dos, pides el que falta en el turno siguiente, a secas.
+1. La CARRERA de su tesis y la UNIVERSIDAD donde estudia — OBLIGATORIAS LAS DOS, pero se piden de UNA EN UNA y en ese orden: primero "¿De qué carrera es tu tesis?" y, cuando conteste, "¿Y en qué universidad estudias?". Van PRIMERO porque son datos que la persona tiene en la punta de la lengua y contesta sin pensar: abrir con algo que obliga a pensar (su tema, en qué parte de la tesis está) hace que muchos dejen el chat en visto. Y van por separado porque pedir las dos juntas es pedir dos cosas: el 01/10, de 25 contactos, 9 abandonaron sin contestar nada justo ahí. Si de todas formas te contesta las dos de una ("Sistemas, UNCP"), guardas las dos y NO vuelves a preguntar ninguna: pasas al tema.
 2. Su TEMA de tesis — OBLIGATORIO, y se pregunta de forma FÁCIL de contestar, dándole la salida de que no tenga uno: "¿Ya tienes un tema o una idea para tu tesis, o empiezas desde cero?". Basta con una idea GENERAL. Si te dice que NO tiene tema, que empieza de cero o que no sabe, ESO YA ES LA RESPUESTA: guárdala en "extracted.problem" como "Sin tema definido (desde cero)". Nunca vuelvas a preguntar por el tema después de eso.
 
 Recién cuando tengas (1) y (2) completo —carrera, universidad Y tema— marca "ready": true (ver CUÁNDO TERMINAR).
@@ -846,18 +846,21 @@ Responde ÚNICAMENTE en JSON válido con esta forma exacta (usa null en los camp
 
     // Mismo orden que el prompt con IA: primero carrera y universidad (se
     // contestan sin pensar), después el tema, preguntado de forma fácil.
-    const ASK_BOTH = '¿De qué carrera eres y en qué universidad estudias?';
+    // Una pregunta por mensaje: la carrera primero y la universidad después.
+    // Pedir las dos juntas era pedir dos cosas, y ahí se caía el embudo (ver
+    // el punto 1 del prompt).
+    const ASK_FIELD = '¿De qué carrera es tu tesis?';
+    const ASK_UNIVERSITY = '¿Y en qué universidad estudias?';
     const ASK_TOPIC = '¿Ya tienes un tema o una idea para tu tesis, o empiezas desde cero?';
 
-    if (isFirstTurn) return turn(`¡Hola! 👋 ${ASK_BOTH}`);
+    if (isFirstTurn) return turn(`¡Hola! 👋 ${ASK_FIELD}`);
 
     // Falta la carrera y/o la universidad. Sin LLM no hay extracción real,
     // pero como se preguntan juntas la mayoría contesta las dos en una línea
     // ("Sistemas, UNCP"), y se parten por la palabra que delata a la universidad.
     if (!answers.field || !answers.university) {
       if (isNoise) {
-        const ask = !answers.field && !answers.university ? ASK_BOTH
-          : (!answers.field ? '¿Y de qué carrera es tu tesis?' : '¿Y en qué universidad estudias?');
+        const ask = !answers.field ? ASK_FIELD : ASK_UNIVERSITY;
         return turn(`Genial 🙌 ${ask}`);
       }
 
@@ -868,8 +871,8 @@ Responde ÚNICAMENTE en JSON válido con esta forma exacta (usa null en los camp
       if (!answers.field && field) extracted.field = field;
       if (!answers.university && university) extracted.university = university;
 
-      if (!field) return turn('Genial 🙌 ¿Y de qué carrera es tu tesis?', extracted);
-      if (!university) return turn('¡Perfecto! ¿Y en qué universidad estudias?', extracted);
+      if (!field) return turn(`Genial 🙌 ${ASK_FIELD}`, extracted);
+      if (!university) return turn(`¡Perfecto! ${ASK_UNIVERSITY}`, extracted);
       if (!answers.problem) return turn(`¡Perfecto! ${ASK_TOPIC}`, extracted);
       return turn('Perfecto, dame un momento 👀', extracted, true);
     }
