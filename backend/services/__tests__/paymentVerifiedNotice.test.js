@@ -87,6 +87,82 @@ test('se sostiene sin lead, sin proyecto y sin quién verificó', () => {
 });
 
 /**
+ * Quien recibe el aviso tiene que poder actuar sin abrir el sistema, y para eso
+ * le faltaban dos datos: a QUIÉN pedirle el trabajo (el líder del proyecto, que
+ * en este correo se nombra "Asesor Operativo") y QUÉ cuota del cronograma es la
+ * que se acaba de cobrar — "la segunda de tres" dice mucho más que un código.
+ */
+test('el aviso nombra al líder del proyecto como Asesor Operativo', () => {
+  const notice = buildVerifiedPaymentNotice({
+    income,
+    lead,
+    project: { ...project, leader_name: 'Ana Quispe' },
+    advisorName: 'Ana Quispe',
+    deliverables: []
+  });
+
+  assert.match(notice.body, /Asesor Operativo: Ana Quispe/);
+});
+
+test('un proyecto sin líder lo dice: "No asignado", no un renglón vacío', () => {
+  // Omitir la línea haría creer que el aviso no trae el dato; decir
+  // "No asignado" es información: hay que ponerle líder a ese proyecto.
+  const sinLider = buildVerifiedPaymentNotice({ income, lead, project, deliverables: [] });
+  assert.match(sinLider.body, /Asesor Operativo: No asignado/);
+
+  const sinProyecto = buildVerifiedPaymentNotice({ income, lead, project: null, deliverables: [] });
+  assert.match(sinProyecto.body, /Asesor Operativo: No asignado/);
+});
+
+test('la cuota se nombra por su posición en el cronograma, no por el texto guardado', () => {
+  // `finance_income.cuota` solo se renumera cuando el plan se reemplaza
+  // entero, así que puede quedar diciendo "2da" siendo la tercera que vence.
+  // Manda el cronograma, que es el orden que ve Finanzas en pantalla.
+  const notice = buildVerifiedPaymentNotice({
+    income,
+    lead,
+    project,
+    deliverables: [],
+    cuotaPosition: 3,
+    cuotaTotal: 4
+  });
+
+  assert.match(notice.body, /Cuota: tercera de 4/);
+  // Y el asunto dice lo mismo: si se contradicen, no se sabe a cuál creerle.
+  assert.match(notice.title, /tercera cuota/);
+  assert.doesNotMatch(notice.body, /Cuota: 2da/);
+});
+
+test('más allá de la décima cuota el ordinal pasa a cifras', () => {
+  const notice = buildVerifiedPaymentNotice({
+    income, lead, project, deliverables: [], cuotaPosition: 11, cuotaTotal: 12
+  });
+
+  assert.match(notice.body, /Cuota: 11.ª de 12/);
+});
+
+test('un cronograma de una sola cuota no dice "de 1"', () => {
+  const notice = buildVerifiedPaymentNotice({
+    income, lead, project, deliverables: [], cuotaPosition: 1, cuotaTotal: 1
+  });
+
+  assert.match(notice.body, /Cuota: primera$/m);
+});
+
+test('una cuota sin cronograma del que contar sale como No asignado', () => {
+  // Sin posición y sin ordinal guardado no hay nada que decir: se dice que no
+  // está asignada, igual que con el asesor.
+  const notice = buildVerifiedPaymentNotice({
+    income: { id: 7, code: '20260930-3', due_date: '2026-10-03' },
+    lead,
+    project,
+    deliverables: []
+  });
+
+  assert.match(notice.body, /Cuota: No asignado/);
+});
+
+/**
  * El aviso va a UN solo correo, el que se guarda en la pantalla de Entregables:
  * de las entregas se encarga una persona, y repartirlo entre todos los que
  * pueden abrir el módulo lo convierte en ruido que nadie termina de mirar.
@@ -129,6 +205,10 @@ test('el correo de prueba avisa que lo es antes de abrirlo', async () => {
   // va a llegar el día que llegue de verdad.
   assert.match(sent[0].payload.bodyText, /ENTREGABLES ATADOS A ESTA CUOTA/);
   assert.match(sent[0].payload.bodyText, /FALTA ENTREGAR/);
+  // Los renglones nuevos también: una prueba que no los muestra no sirve para
+  // saber si el día que llegue de verdad van a venir.
+  assert.match(sent[0].payload.bodyText, /Asesor Operativo: .+/);
+  assert.match(sent[0].payload.bodyText, /Cuota: segunda de 3/);
 });
 
 test('el correo de prueba se manda a la dirección escrita, aunque no esté guardada', async () => {

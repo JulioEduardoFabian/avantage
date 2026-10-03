@@ -188,7 +188,16 @@ antes de tocar el arranque de producción.
   Como la verificación ocurre en Finanzas —otra pantalla, casi siempre otra persona—, al verificar
   una cuota sale un **aviso automático al equipo** (`paymentNoticeService.js`): correo + campana del
   panel con los datos del cliente, el pago y los entregables atados a esa cuota, marcando cuáles
-  faltan entregar. Va a **un solo** correo —el de `deliverable_settings.notice_email`, que se edita
+  faltan entregar. Nombra además al **Asesor Operativo** (el líder del proyecto, `projects.leader_id`)
+  y a la cuota por su **posición en el cronograma** ("segunda de 4"): quien entrega necesita saber a
+  quién pedirle el trabajo y de qué cobro se trata, y ninguno de los dos salía en el aviso. La
+  posición se calcula en cada envío con el orden de vencimiento del lead (el mismo de
+  `listScheduleByLead()`, que es el que ve Finanzas en pantalla) y **no** se lee de
+  `finance_income.cuota`: ese texto solo se renumera cuando el plan se reemplaza entero, así que una
+  cuota creada o movida por otro camino queda diciendo "3era" siendo la segunda que vence. Los dos
+  datos salen siempre, y si faltan dicen "No asignado" — omitir el renglón hace creer que el aviso
+  no trae el dato, y el asunto usa el mismo ordinal que el cuerpo para que no se contradigan.
+  Va a **un solo** correo —el de `deliverable_settings.notice_email`, que se edita
   en la propia pantalla de Entregables (`/api/deliverable-settings`), con un botón de envío de
   prueba al lado— y **sin importes**, por la misma razón que el resto del módulo. Es uno y no todos
   los usuarios con `deliverables.view` a propósito: de las entregas se encarga una persona, y

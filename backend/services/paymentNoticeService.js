@@ -80,6 +80,30 @@ export class PaymentNoticeService {
   }
 
   /**
+   * Qué número de cuota es la verificada dentro del cronograma del cliente.
+   *
+   * No se lee de `finance_income.cuota`: ese ordinal es un texto que solo se
+   * renumera cuando el plan se reemplaza entero
+   * (`replaceScheduleForLead()`), así que una cuota creada o movida por otro
+   * camino puede quedar diciendo "3era" siendo la segunda que vence. El orden
+   * de verdad es el del cronograma —vencimiento más antiguo primero, el mismo
+   * de `listScheduleByLead()`—, que es el que ve Finanzas en pantalla.
+   *
+   * Se devuelve también el total para que el aviso diga "segunda de 3": saber
+   * cuántos cobros faltan cambia lo que se entrega.
+   */
+  async #cuotaPosition(income) {
+    if (!income?.lead_id) return { position: null, total: 0 };
+    const schedule = await db('finance_income')
+      .where({ lead_id: income.lead_id })
+      .orderBy('due_date', 'asc')
+      .orderBy('id', 'asc')
+      .select('id');
+    const index = schedule.findIndex((row) => Number(row.id) === Number(income.id));
+    return { position: index >= 0 ? index + 1 : null, total: schedule.length };
+  }
+
+  /**
    * Arma y manda el aviso de una cuota recién verificada. No lanza nunca: un
    * fallo de correo no puede romper la verificación ni la respuesta de la API.
    */
@@ -88,7 +112,18 @@ export class PaymentNoticeService {
       if (!income?.id) return { sent: false, reason: 'sin_ingreso' };
 
       const lead = income.lead_id ? await db('leads').where({ id: income.lead_id }).first() : null;
-      const project = income.lead_id ? await db('projects').where({ lead_id: income.lead_id }).first() : null;
+      // El líder del proyecto viene en la misma consulta porque el correo lo
+      // nombra como "Asesor Operativo": es a quién hay que buscar para que el
+      // entregable salga, y sin ese dato el aviso dice qué entregar pero no a
+      // quién pedírselo.
+      const project = income.lead_id
+        ? await db('projects')
+          .leftJoin('users as leader', 'leader.id', 'projects.leader_id')
+          .where('projects.lead_id', income.lead_id)
+          .select('projects.*', 'leader.name as leader_name')
+          .first()
+        : null;
+      const { position: cuotaPosition, total: cuotaTotal } = await this.#cuotaPosition(income);
       const deliverables = await db('deliverables')
         .where({ income_id: income.id })
         .orderBy('position', 'asc')
@@ -100,6 +135,9 @@ export class PaymentNoticeService {
         lead,
         project,
         deliverables,
+        advisorName: project?.leader_name || null,
+        cuotaPosition,
+        cuotaTotal,
         verifiedByName: verifiedBy?.name || null
       });
 
@@ -152,7 +190,10 @@ const SAMPLE_NOTICE_DATA = {
     university: 'Universidad de Ejemplo',
     field_of_study: 'Administración'
   },
-  project: { id: 0, topic: 'Tesis de ejemplo para probar el aviso' },
+  project: { id: 0, topic: 'Tesis de ejemplo para probar el aviso', leader_name: 'Ana Ejemplo Quispe' },
+  advisorName: 'Ana Ejemplo Quispe',
+  cuotaPosition: 2,
+  cuotaTotal: 3,
   deliverables: [
     { title: 'Capítulo I y II', due_date: '2026-10-03', status: 'pendiente' },
     { title: 'Resumen ejecutivo', due_date: '2026-09-28', status: 'entregado', delivered_at: '2026-09-29' }
@@ -164,12 +205,25 @@ const SAMPLE_NOTICE_DATA = {
  * El texto del aviso, separado del envío para poder leerlo y probarlo sin
  * base de datos ni servidor de correo.
  */
-export function buildVerifiedPaymentNotice({ income, lead, project, deliverables = [], verifiedByName = null }) {
+export function buildVerifiedPaymentNotice({
+  income,
+  lead,
+  project,
+  deliverables = [],
+  advisorName = null,
+  cuotaPosition = null,
+  cuotaTotal = 0,
+  verifiedByName = null
+}) {
   const clientName = lead?.full_name || lead?.email || 'Cliente sin nombre';
-  // "cuota 2da (20260930-3)": el número de cuota es como se habla del cobro y
-  // el código es como se lo identifica sin decir el importe.
-  const cuota = income?.cuota
-    ? `cuota ${income.cuota}${income.code ? ` (${income.code})` : ''}`
+  // "cuota segunda (20260930-3)": el ordinal es como se habla del cobro y el
+  // código es como se lo identifica sin decir el importe. El ordinal sale de la
+  // posición en el cronograma y no del texto guardado, así que el asunto, la
+  // primera línea y el renglón "Cuota:" dicen todos lo mismo — si se
+  // contradicen, quien entrega no sabe a cuál creerle.
+  const ordinal = cuotaOrdinal({ income, cuotaPosition });
+  const cuota = ordinal
+    ? `${ordinal} cuota${income?.code ? ` (${income.code})` : ''}`
     : (income?.code ? `cuota ${income.code}` : 'la cuota');
 
   const title = `Pago verificado: ${clientName} · ${cuota}`;
@@ -187,11 +241,15 @@ export function buildVerifiedPaymentNotice({ income, lead, project, deliverables
   const studies = [lead?.university, lead?.field_of_study].filter(Boolean).join(' · ');
   if (studies) lines.push(`Estudios: ${studies}`);
   if (project?.topic) lines.push(`Proyecto: ${project.topic}`);
+  // El asesor operativo va siempre, aunque falte: "No asignado" es información
+  // —hay que ponerle líder a ese proyecto—, mientras que omitir el renglón deja
+  // creer que el aviso no trae el dato.
+  lines.push(`Asesor Operativo: ${(advisorName || project?.leader_name || '').trim() || 'No asignado'}`);
   lines.push('');
 
   lines.push('PAGO');
   lines.push(`Código: ${income?.code || '—'}`);
-  if (income?.cuota) lines.push(`Cuota: ${income.cuota}`);
+  lines.push(`Cuota: ${cuotaText({ income, cuotaPosition, cuotaTotal })}`);
   if (income?.due_date) lines.push(`Fecha pactada: ${formatDay(income.due_date)}`);
   // El monto no va a propósito: ver la nota de la clase.
   lines.push('El importe se consulta en Finanzas.');
@@ -219,6 +277,37 @@ export function buildVerifiedPaymentNotice({ income, lead, project, deliverables
       ? `La ${cuota} de ${clientName} quedó verificada. No tiene entregables atados.`
       : `La ${cuota} de ${clientName} quedó verificada: ${deliverables.length} entregable(s) atado(s).`
   };
+}
+
+/**
+ * Los ordinales con los que el equipo habla de una cuota. Más allá de la décima
+ * se escribe en cifras ("11.ª"): nadie dice "undécima cuota".
+ */
+const ORDINALES_CUOTA = [
+  'primera', 'segunda', 'tercera', 'cuarta', 'quinta',
+  'sexta', 'séptima', 'octava', 'novena', 'décima'
+];
+
+/**
+ * "segunda de 3": qué cuota del cronograma es la que condiciona estos
+ * entregables. Sin cronograma que contar (una cuota sin cliente asociado) queda
+ * el ordinal guardado en Finanzas, y si tampoco lo hay se dice "No asignado" en
+ * vez de dejar el renglón vacío.
+ */
+function cuotaText({ income, cuotaPosition, cuotaTotal }) {
+  const ordinal = cuotaOrdinal({ income, cuotaPosition });
+  if (!ordinal) return 'No asignado';
+  return cuotaPosition && cuotaTotal > 1 ? `${ordinal} de ${cuotaTotal}` : ordinal;
+}
+
+/**
+ * El ordinal de la cuota: la posición en el cronograma si se pudo calcular y,
+ * si no, el texto que quedó guardado en Finanzas. Devuelve `null` cuando no
+ * hay ninguno de los dos — la cuota no está asociada a ningún cronograma.
+ */
+function cuotaOrdinal({ income, cuotaPosition }) {
+  if (cuotaPosition) return ORDINALES_CUOTA[cuotaPosition - 1] || `${cuotaPosition}.ª`;
+  return income?.cuota ? String(income.cuota) : null;
 }
 
 function deliverableLine(item) {
