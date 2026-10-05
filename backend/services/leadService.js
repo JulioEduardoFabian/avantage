@@ -203,8 +203,21 @@ export class LeadService {
     });
   }
 
-  async getAllLeads() {
-    return db('leads')
+  /**
+   * Todos los leads, o solo los de una persona.
+   *
+   * `viewerId` es el filtro de visibilidad del funnel: quien no administra el
+   * área comercial (`leads.manage_all`) ve únicamente los leads que tiene
+   * asignados. Se filtra en la consulta y no en la pantalla porque lo que no
+   * viaja no se puede mirar con las herramientas del navegador.
+   *
+   * Los leads **sin responsable** no entran en esa vista: un lead que nadie
+   * tiene asignado no es de nadie, y aparecerle a todos sería volver al tablero
+   * compartido por la puerta de atrás. Los ve quien reparte, que es quien puede
+   * hacer algo con ellos.
+   */
+  async getAllLeads({ viewerId = null } = {}) {
+    const query = db('leads')
       .select(
         'leads.*',
         'projects.id as project_id',
@@ -231,6 +244,20 @@ export class LeadService {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
       .orderBy('leads.created_at', 'desc');
+
+    if (viewerId) query.where('leads.assigned_user_id', viewerId);
+    return query;
+  }
+
+  /**
+   * ¿Esta persona puede ver este lead? Es la misma regla de `getAllLeads()`,
+   * escrita una vez para que la lista y la ficha no puedan discrepar: con el
+   * permiso de administrador comercial, todo; sin él, solo lo propio.
+   */
+  canView(lead, user) {
+    if (!lead) return false;
+    if (user?.permissions?.includes('leads.manage_all')) return true;
+    return Boolean(user?.id) && lead.assigned_user_id === user.id;
   }
 
   async findByAdditionalNotesContaining(text) {

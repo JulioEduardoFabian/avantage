@@ -28,6 +28,16 @@
       </div>
     </header>
 
+    <!--
+      Cuando el servidor filtró por responsable hay que decirlo: un tablero
+      vacío sin explicación se lee como "se perdieron los leads".
+    -->
+    <p v-if="leadScope === 'mine'" class="info-box scope-note">
+      👤 Ves solo los leads que tienes asignados. El total y el reparto los maneja quien
+      administra el área comercial.
+    </p>
+    <p v-if="meetingNotice" class="info-box scope-note">{{ meetingNotice }}</p>
+
     <!-- Banner de Métricas del Funnel -->
     <section class="funnel-stats-grid">
       <div class="stat-card">
@@ -547,6 +557,9 @@
 
     <MetaReconciliationModal v-model="showMetaRecModal" @imported="fetchAll" />
 
+    <!-- Agendar una reunión sin salir del funnel: el mismo modal del Calendario. -->
+    <MeetingModal v-model="showMeetingModal" :lead="meetingLead" @created="onMeetingCreated" />
+
     <!-- ================================================================= -->
     <!-- MODAL 3: Eliminar Columna con Reasignación de Leads               -->
     <!-- ================================================================= -->
@@ -859,6 +872,15 @@
             >
               📄 Generar contrato
             </router-link>
+            <button
+              v-if="hasPermission('calendar.view')"
+              type="button"
+              class="btn-action-secondary"
+              title="Agendar una reunión con este lead en el calendario del asesor"
+              @click="openMeeting(selectedLead)"
+            >
+              📅 Agendar reunión
+            </button>
           </div>
 
           <!-- Formulario de Cotización Integrado -->
@@ -1109,6 +1131,7 @@ import WinDealModal from '../components/WinDealModal.vue';
 import LeadNotes from '../components/LeadNotes.vue';
 import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
+import MeetingModal from '../components/MeetingModal.vue';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
@@ -1147,6 +1170,8 @@ const kanbanBoardRef = ref(null);
 
 // Estado de Leads
 const leads = ref([]);
+// 'all' = se ven todos (administrador comercial); 'mine' = solo los propios.
+const leadScope = ref('all');
 const selectedLead = ref(null);
 const isLoading = ref(false);
 const loadError = ref('');
@@ -1817,6 +1842,26 @@ async function fetchLeads() {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Error al obtener los leads.');
   leads.value = data.leads || [];
+  // 'mine' = el servidor filtró por responsable. Se guarda para poder explicar
+  // un tablero vacío en vez de que parezca que se perdieron los leads.
+  leadScope.value = data.scope || 'all';
+}
+
+/* ---- Reunión agendada a mano desde la ficha del lead ---- */
+const meetingLead = ref(null);
+const showMeetingModal = ref(false);
+const meetingNotice = ref('');
+
+function openMeeting(lead) {
+  meetingLead.value = lead;
+  showMeetingModal.value = true;
+}
+
+function onMeetingCreated(data) {
+  meetingNotice.value = data.calendarError
+    ? `Reunión guardada, pero sin evento en Google Calendar (${data.calendarError}).`
+    : '✅ Reunión agendada en el calendario del asesor.';
+  setTimeout(() => { meetingNotice.value = ''; }, 8000);
 }
 
 async function fetchAll() {
@@ -3770,6 +3815,13 @@ onMounted(() => {
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.scope-note {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  border-color: rgba(111, 129, 37, 0.35);
+  background: rgba(111, 129, 37, 0.07);
 }
 
 .info-card-panel {

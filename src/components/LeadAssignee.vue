@@ -27,8 +27,8 @@
   <button
     type="button"
     class="lead-assignee-btn"
-    :class="{ 'is-empty': !assigneeName, 'with-name': showName }"
-    :disabled="saving"
+    :class="{ 'is-empty': !assigneeName, 'with-name': showName, 'is-readonly': !canAssign }"
+    :disabled="saving || !canAssign"
     :title="buttonTitle"
     @click.stop="toggle"
   >
@@ -93,6 +93,7 @@
 import { computed, onUnmounted, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { avatarColor, initials } from '../avatars.js';
+import { hasPermission } from '../auth.js';
 import { commercialTeam as team, loadCommercialTeam } from '../data/commercialTeam.js';
 
 const props = defineProps({
@@ -118,9 +119,22 @@ const popStyle = ref({});
  */
 const assigneeName = computed(() => props.lead.assigned_user_name || props.lead.assigned_to || '');
 
-const buttonTitle = computed(() => (assigneeName.value
-  ? `Asignado a ${assigneeName.value} — clic para cambiar`
-  : 'Sin asignar — clic para asignar a alguien del área comercial'));
+/**
+ * Repartir leads es del administrador del área comercial (`leads.manage_all`).
+ * Para el resto el círculo sigue a la vista —saber de quién es el lead es parte
+ * de leer la tarjeta— pero no abre el menú: si cualquiera pudiera reasignarse
+ * un lead, el filtro por usuario del funnel no significaría nada.
+ */
+const canAssign = computed(() => hasPermission('leads.manage_all'));
+
+const buttonTitle = computed(() => {
+  if (!canAssign.value) {
+    return assigneeName.value ? `Asignado a ${assigneeName.value}` : 'Sin asignar';
+  }
+  return assigneeName.value
+    ? `Asignado a ${assigneeName.value} — clic para cambiar`
+    : 'Sin asignar — clic para asignar a alguien del área comercial';
+});
 
 function onKeydown(event) {
   if (event.key === 'Escape') close();
@@ -218,6 +232,10 @@ async function choose(userId) {
 }
 
 .lead-assignee-btn:disabled { cursor: progress; opacity: 0.6; }
+
+/* Sin permiso para repartir, el círculo es un indicador y no un botón. */
+.lead-assignee-btn.is-readonly { cursor: default; opacity: 1; }
+.lead-assignee-btn.is-readonly:hover .lead-assignee-dot { transform: none; }
 
 .lead-assignee-dot {
   width: 24px;

@@ -19,6 +19,7 @@ import InstagramInteractionsView from '../views/InstagramInteractionsView.vue';
 import CampaignsView from '../views/CampaignsView.vue';
 import FinanceView from '../views/FinanceView.vue';
 import CollectionsView from '../views/CollectionsView.vue';
+import CalendarView from '../views/CalendarView.vue';
 import ContractsView from '../views/ContractsView.vue';
 import DocumentsView from '../views/DocumentsView.vue';
 import PortalLoginView from '../views/portal/PortalLoginView.vue';
@@ -53,6 +54,7 @@ const router = createRouter({
     { path: '/admin/social', name: 'social', component: SocialInteractionsView, meta: { requiresAuth: true, permission: 'social.view' } },
     { path: '/admin/instagram', name: 'instagram', component: InstagramInteractionsView, meta: { requiresAuth: true, permission: 'instagram.view' } },
     { path: '/admin/campaigns', name: 'campaigns', component: CampaignsView, meta: { requiresAuth: true, permission: 'campaigns.view' } },
+    { path: '/admin/calendario', name: 'calendar', component: CalendarView, meta: { requiresAuth: true, permission: 'calendar.view' } },
     { path: '/admin/cobranzas', name: 'collections', component: CollectionsView, meta: { requiresAuth: true, permission: 'collections.view' } },
     { path: '/admin/finance', name: 'finance', component: FinanceView, meta: { requiresAuth: true, permission: 'finance.view' } },
     { path: '/admin/contracts', name: 'contracts', component: ContractsView, meta: { requiresAuth: true, permission: 'contracts.manage' } },

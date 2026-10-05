@@ -316,6 +316,36 @@ antes de tocar el arranque de producción.
   dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
   El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
   y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
+- **Cada quien ve sus leads.** Los dos tableros (y la Base de Datos) muestran solo los leads cuyo
+  responsable es quien mira; `leads.manage_all` —"administrador del área comercial"— es el que ve el
+  total y el **único** que puede asignar (`PATCH /api/leads/:id/assignee` lo exige, y el círculo de
+  la tarjeta queda como indicador para el resto: si cualquiera pudiera reasignarse un lead, el
+  filtro no significaría nada). El filtro vive en el servidor: `getAllLeads({ viewerId })` para la
+  lista y el middleware `requireLeadVisible` en TODAS las rutas de un lead concreto, porque filtrar
+  la lista y dejar la ficha abierta por id sería una cortina y no un permiso. La regla se escribe
+  una vez en `leadService.canView()`.
+  Un lead **sin responsable no lo ve nadie** salvo quien reparte: un lead de nadie que le aparezca a
+  todos es el tablero compartido entrando por la puerta de atrás. El primer día, entonces, los
+  tableros se ven vacíos para todos menos para el administrador — es a propósito, no se borra ni se
+  toca ningún dato, y la pantalla lo dice en vez de parecer rota (`scope: 'mine' | 'all'` viaja en
+  la respuesta justamente para poder explicarlo).
+- El módulo de **Calendario** (`/admin/calendario`, `CalendarView.vue`, permiso `calendar.view`) es
+  la agenda del closer: las reuniones que agendó el bot por WhatsApp y las cargadas a mano, en una
+  grilla mensual. Lee `scheduled_meetings`, que dejó de ser solo del bot — `wa_id` admite nulos (una
+  reunión manual no tiene conversación detrás) y se guarda `created_by`, `attendee_email` y
+  `source` (`bot` | `manual`), que es lo que después deja ver si está agendando el bot o el equipo.
+  Agendar a mano (`scheduledMeetingService.bookManual()`, `POST /api/meetings`) crea el evento en el
+  Google Calendar **del closer**; si él no tiene su cuenta conectada, lo crea en el de quien agenda
+  y lo invita por correo, para que le llegue igual. Si no hay ninguna conexión, **la reunión se
+  guarda lo mismo** sin evento ni enlace de Meet y la pantalla lo avisa: perder la reunión por no
+  poder crear el evento sería el peor desenlace. Borrarla del panel no cancela el evento en Google
+  (el panel no puede tocar el calendario de otra persona) y eso también se dice.
+  El mismo modal (`MeetingModal.vue`) se abre desde la ficha del lead en los **dos funnels**: es la
+  misma reunión y el mismo endpoint, y copiado en cada pantalla el tercero se queda con el
+  formulario viejo. La hora se manda con el huso de Lima escrito a mano (`-05:00`) y no con el del
+  navegador: una laptop configurada en otra zona agendaría a una hora distinta de la que se escribió.
+  Mismo criterio de visibilidad que el funnel: cada uno ve su agenda, y `leads.manage_all` ve la de
+  todos y puede agendarle a cualquiera.
 - El módulo de **Cobranzas** (`/admin/cobranzas`, `CollectionsView.vue`, permiso `collections.view`,
   `collectionService.js`) **no tiene tabla propia**: es `finance_income` mirada desde el trabajo de
   cobrar — las cuotas en `pendiente` y en `pagado`, o sea todo lo que Finanzas todavía no verificó,

@@ -183,6 +183,23 @@
         </router-link>
 
         <router-link
+          v-if="hasPermission('calendar.view')"
+          to="/admin/calendario"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/calendario' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+            <circle cx="12" cy="15" r="1.6" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Calendario</span>
+        </router-link>
+
+        <router-link
           v-if="hasPermission('collections.view')"
           to="/admin/cobranzas"
           class="nav-item"

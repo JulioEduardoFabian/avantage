@@ -317,22 +317,35 @@ export class GoogleCalendarService {
    * link de la reunión. `startTime`/`endTime` deben ser ISO 8601 con
    * timezone (ej: 2026-03-28T14:00:00-05:00).
    */
-  async createMeetEvent(userId, { summary, description, startTime, endTime, attendeeEmail, timeZone = 'America/Lima' }) {
+  /**
+   * `attendeeEmail` es el invitado de siempre (el lead). `extraAttendees` suma
+   * otros correos: lo usa la reunión cargada a mano cuando el closer no tiene
+   * su Google conectado y el evento se crea en el calendario de quien la
+   * agenda — el closer entra como invitado para que igual le llegue a su
+   * correo y le aparezca en su agenda.
+   */
+  async createMeetEvent(userId, { summary, description, startTime, endTime, attendeeEmail, extraAttendees = [], timeZone = 'America/Lima' }) {
     const client = await this.getAuthorizedClient(userId);
     const calendar = google.calendar({ version: 'v3', auth: client });
+
+    const attendees = [...(attendeeEmail ? [attendeeEmail] : []), ...extraAttendees]
+      .map((email) => String(email || '').trim())
+      .filter(Boolean)
+      .filter((email, index, todos) => todos.indexOf(email) === index)
+      .map((email) => ({ email }));
 
     let data;
     try {
       ({ data } = await calendar.events.insert({
       calendarId: 'primary',
       conferenceDataVersion: 1,
-      sendUpdates: attendeeEmail ? 'all' : 'none',
+      sendUpdates: attendees.length > 0 ? 'all' : 'none',
       requestBody: {
         summary,
         description,
         start: { dateTime: startTime, timeZone },
         end: { dateTime: endTime, timeZone },
-        attendees: attendeeEmail ? [{ email: attendeeEmail }] : [],
+        attendees,
         conferenceData: {
           createRequest: {
             requestId: `avan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

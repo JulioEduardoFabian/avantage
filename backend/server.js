@@ -169,7 +169,9 @@ const whatsappMessageService = new WhatsappMessageService();
 const whatsappBotSettingsService = new WhatsappBotSettingsService();
 const metaEmbeddedSignupService = new MetaEmbeddedSignupService();
 const googleCalendarService = new GoogleCalendarService();
-const scheduledMeetingService = new ScheduledMeetingService();
+// Recibe el cliente de Google porque la reunión cargada a mano desde el panel
+// crea el evento ella misma (el bot, en cambio, ya lo trae creado).
+const scheduledMeetingService = new ScheduledMeetingService({ googleCalendarService });
 const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
 // Avisa al equipo de Entregables cuando Finanzas verifica una cuota: es el
@@ -682,6 +684,114 @@ app.get('/api/meetings/upcoming', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('❌ Error al obtener las próximas reuniones:', error);
     res.status(500).json({ error: 'Error al obtener las próximas reuniones.', details: error.message });
+  }
+});
+
+/* -------------------------------- Calendario ------------------------------- */
+/*
+ * La agenda del closer: las reuniones que ya tiene y las que carga a mano.
+ * Mismo criterio de visibilidad que el funnel — cada uno ve las suyas, y quien
+ * administra el área comercial (`leads.manage_all`) ve las de todos y puede
+ * agendarle a cualquiera.
+ */
+
+app.get('/api/meetings', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const manageAll = req.user.permissions?.includes('leads.manage_all');
+    const pedido = req.query.advisorUserId ? Number(req.query.advisorUserId) : null;
+    // Sin el permiso de administrador, el parámetro no manda: la agenda es la
+    // propia, se pida lo que se pida.
+    const advisorUserId = manageAll ? pedido : req.user.id;
+
+    const meetings = await scheduledMeetingService.listRange({
+      from: req.query.from || null,
+      to: req.query.to || null,
+      advisorUserId
+    });
+    res.json({ meetings, scope: manageAll ? 'all' : 'mine' });
+  } catch (error) {
+    console.error('❌ Error al obtener el calendario:', error);
+    res.status(500).json({ error: 'Error al obtener las reuniones.', details: error.message });
+  }
+});
+
+/**
+ * Los asesores a los que se les puede agendar: el área comercial, con el aviso
+ * de quién tiene su Google conectado (sin conexión la reunión se guarda igual,
+ * pero sin evento ni enlace de Meet).
+ */
+app.get('/api/meetings/advisors', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const manageAll = req.user.permissions?.includes('leads.manage_all');
+    const equipo = await userService.listCommercialTeam();
+    const visibles = manageAll ? equipo : equipo.filter((usuario) => usuario.id === req.user.id);
+
+    const conectados = new Set(await db('google_calendar_connections').pluck('user_id'));
+    res.json({
+      advisors: visibles.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) }))
+    });
+  } catch (error) {
+    console.error('❌ Error al obtener los asesores del calendario:', error);
+    res.status(500).json({ error: 'Error al obtener los asesores.', details: error.message });
+  }
+});
+
+/**
+ * Agenda una reunión a mano. Sale del Calendario y también de la ficha del lead
+ * en los dos funnels — por eso vive acá y no colgando de `/api/leads/:id`: es
+ * la misma reunión, se cargue desde donde se cargue.
+ */
+app.post('/api/meetings', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const manageAll = req.user.permissions?.includes('leads.manage_all');
+    const pedido = req.body?.advisorUserId ? Number(req.body.advisorUserId) : null;
+    const advisorUserId = manageAll ? (pedido || req.user.id) : req.user.id;
+
+    if (req.body?.leadId) {
+      const lead = await leadService.getLeadById(req.body.leadId);
+      if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
+      if (!leadService.canView(lead, req.user)) {
+        return res.status(403).json({ error: 'Ese lead está asignado a otra persona.' });
+      }
+    }
+
+    const resultado = await scheduledMeetingService.bookManual({
+      leadId: req.body?.leadId || null,
+      advisorUserId,
+      topic: req.body?.topic || null,
+      startTime: req.body?.startTime,
+      endTime: req.body?.endTime,
+      attendeeEmail: req.body?.attendeeEmail || null,
+      waId: req.body?.waId || null,
+      createdBy: req.user.id
+    });
+    res.status(201).json(resultado);
+  } catch (error) {
+    console.error('❌ Error al agendar la reunión:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * Quita la reunión del panel. No cancela el evento en Google Calendar: el panel
+ * no puede borrar del calendario de otra persona, y hacerlo a medias sería peor
+ * que avisarlo (la pantalla lo dice).
+ */
+app.delete('/api/meetings/:id', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const meeting = await scheduledMeetingService.getById(req.params.id);
+    if (!meeting) return res.status(404).json({ error: 'Reunión no encontrada.' });
+
+    const manageAll = req.user.permissions?.includes('leads.manage_all');
+    if (!manageAll && meeting.advisor_user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Esa reunión es de otra persona.' });
+    }
+
+    await scheduledMeetingService.remove(req.params.id);
+    res.json({ success: true, hadCalendarEvent: Boolean(meeting.calendar_event_id) });
+  } catch (error) {
+    console.error('❌ Error al quitar la reunión:', error);
+    res.status(500).json({ error: 'Error al quitar la reunión.', details: error.message });
   }
 });
 
@@ -1614,12 +1724,44 @@ app.get('/api/history', (req, res) => {
 });
 
 /**
+ * Corta el paso a un lead que es de otra persona.
+ *
+ * Va en TODAS las rutas de un lead concreto y no solo en el listado: filtrar la
+ * lista y dejar abierta la ficha por id sería una cortina, no un permiso —
+ * cualquiera con el id vería (y movería) el lead ajeno. La regla es la misma de
+ * `getAllLeads({ viewerId })`, escrita una sola vez en `leadService.canView()`.
+ *
+ * Deja el lead ya leído en `req.lead`, así el handler no lo vuelve a consultar.
+ */
+async function requireLeadVisible(req, res, next) {
+  try {
+    const lead = await leadService.getLeadById(req.params.id);
+    if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
+    if (!leadService.canView(lead, req.user)) {
+      return res.status(403).json({
+        error: 'Este lead está asignado a otra persona.',
+        code: 'LEAD_NOT_YOURS'
+      });
+    }
+    req.lead = lead;
+    next();
+  } catch (error) {
+    console.error('❌ Error al verificar el acceso al lead:', error);
+    res.status(500).json({ error: 'Error al verificar el acceso al lead.', details: error.message });
+  }
+}
+
+/**
  * Listado de leads registrados (vista de administración / funnel de ventas / base de datos)
  */
 app.get('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
-    const leads = await leadService.getAllLeads();
-    res.json({ total: leads.length, leads });
+    // Cada quien ve sus leads; el que administra el área comercial ve todos y
+    // es el que reparte. `scope` se lo dice a la pantalla para que pueda
+    // explicar por qué el tablero está vacío en vez de parecer roto.
+    const manageAll = req.user.permissions?.includes('leads.manage_all');
+    const leads = await leadService.getAllLeads(manageAll ? {} : { viewerId: req.user.id });
+    res.json({ total: leads.length, leads, scope: manageAll ? 'all' : 'mine' });
   } catch (error) {
     console.error('❌ Error al obtener leads:', error);
     res.status(500).json({ error: 'Error al obtener los leads desde la base de datos.', details: error.message });
@@ -1751,7 +1893,7 @@ app.get('/api/leads/assignable-users', requireAuth, requireAnyPermission('leads.
 /**
  * Detalle de un lead específico
  */
-app.get('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.get('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const lead = await leadService.getLeadById(req.params.id);
     if (!lead) {
@@ -1772,7 +1914,7 @@ app.get('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'sette
  * de /api/leads/... para no competir con `/api/leads/:id`.
  */
 
-app.get('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.get('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const notes = await leadNoteService.listForLead(req.params.id);
     res.json({ notes });
@@ -1782,7 +1924,7 @@ app.get('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 
   }
 });
 
-app.post('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.post('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const note = await leadNoteService.create(req.params.id, { body: req.body?.body, author: req.user });
     res.status(201).json({ note });
@@ -1803,7 +1945,7 @@ app.post('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view',
  * Setter": sin esta lista, la única forma de investigarlos era deducir qué
  * pudo haberlo movido. Ahora se lee desde la ficha del lead.
  */
-app.get('/api/leads/:id/stage-history', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.get('/api/leads/:id/stage-history', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const history = await leadStageChangeService.listForLead(req.params.id);
     res.json({ history });
@@ -1833,7 +1975,7 @@ app.delete('/api/lead-notes/:noteId', requireAuth, requireAnyPermission('leads.v
  * Al llegar al estado final del funnel ("ganado") se crea automáticamente el
  * proyecto asociado, con estado "Creado".
  */
-app.patch('/api/leads/:id/status', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.patch('/api/leads/:id/status', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const { status } = req.body;
     if (!status || typeof status !== 'string') {
@@ -1869,7 +2011,7 @@ app.patch('/api/leads/:id/status', requireAuth, requireAnyPermission('leads.view
  * leads es un gesto de un clic sobre la tarjeta, y mandar la ficha entera
  * desde el tablero arriesga pisar datos que el tablero no cargó.
  */
-app.patch('/api/leads/:id/assignee', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.patch('/api/leads/:id/assignee', requireAuth, requirePermission('leads.manage_all'), requireLeadVisible, async (req, res) => {
   try {
     const { userId } = req.body || {};
     const lead = await leadService.assignLead(req.params.id, userId ?? null);
@@ -1916,7 +2058,7 @@ function parseInstallments(raw) {
   }
 }
 
-app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), uploadFinanceReceipt, async (req, res) => {
+app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), requireLeadVisible, uploadFinanceReceipt, async (req, res) => {
   const vouchers = req.receipts || [];
   try {
     const { monto, banco, emitir, totalAmount } = req.body || {};
@@ -1995,7 +2137,7 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), upl
 /**
  * Actualizar datos completos de un lead / prospecto (desde el modal de Base de Datos)
  */
-app.put('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.put('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const updated = await leadService.updateLead(req.params.id, req.body, { actor: req.user });
     if (!updated) {
@@ -2012,7 +2154,7 @@ app.put('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'sette
 /**
  * Eliminar un lead / prospecto
  */
-app.delete('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+app.delete('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
   try {
     const deleted = await leadService.deleteLead(req.params.id);
     if (!deleted) {
@@ -3030,7 +3172,7 @@ app.delete('/api/careers/:id', requireAuth, requirePermission('careers.manage'),
  * (disponible en cualquier etapa, ya que las columnas del funnel son
  * configurables por el equipo).
  */
-app.post('/api/leads/:id/quote', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/leads/:id/quote', requireAuth, requirePermission('leads.view'), requireLeadVisible, async (req, res) => {
   try {
     const {
       amount,
@@ -3120,7 +3262,7 @@ app.post('/api/leads/:id/quote', requireAuth, requirePermission('leads.view'), a
  * panel: una vez generada, la cotización solo existía en la pestaña que se
  * abría con el documento.
  */
-app.get('/api/leads/:id/quotes', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/:id/quotes', requireAuth, requirePermission('leads.view'), requireLeadVisible, async (req, res) => {
   try {
     const quotes = await quoteService.getQuotesByLead(req.params.id);
     res.json({ quotes });

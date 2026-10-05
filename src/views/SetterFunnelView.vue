@@ -28,6 +28,16 @@
       </div>
     </header>
 
+    <!--
+      Cuando el servidor filtró por responsable hay que decirlo: un tablero
+      vacío sin explicación se lee como "se perdieron los leads".
+    -->
+    <p v-if="leadScope === 'mine'" class="info-box scope-note">
+      👤 Ves solo los leads que tienes asignados. El total y el reparto los maneja quien
+      administra el área comercial.
+    </p>
+    <p v-if="meetingNotice" class="info-box scope-note">{{ meetingNotice }}</p>
+
     <!-- Banner de Métricas del Setter Funnel -->
     <section class="funnel-stats-grid">
       <div class="stat-card">
@@ -739,6 +749,15 @@
               >
                 ✉️ Enviar Correo ({{ selectedLead.email }})
               </a>
+              <button
+                v-if="hasPermission('calendar.view')"
+                type="button"
+                class="setter-btn"
+                title="Agendar una reunión con este lead en el calendario del asesor"
+                @click="openMeeting(selectedLead)"
+              >
+                📅 Agendar reunión
+              </button>
             </div>
 
             <!-- Selector Rápido de Estado en el Setter Funnel -->
@@ -874,6 +893,7 @@
         </div>
       </div>
     </div>
+    <MeetingModal v-model="showMeetingModal" :lead="meetingLead" @created="onMeetingCreated" />
   </main>
 </template>
 
@@ -883,6 +903,8 @@ import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
+import MeetingModal from '../components/MeetingModal.vue';
+import { hasPermission } from '../auth.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
 
 /** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
@@ -974,7 +996,24 @@ const kanbanBoardRef = ref(null);
 
 // Estado de Leads
 const leads = ref([]);
+// 'all' = se ven todos (administrador comercial); 'mine' = solo los propios.
+const leadScope = ref('all');
 const selectedLead = ref(null);
+const meetingLead = ref(null);
+const showMeetingModal = ref(false);
+const meetingNotice = ref('');
+
+function openMeeting(lead) {
+  meetingLead.value = lead;
+  showMeetingModal.value = true;
+}
+
+function onMeetingCreated(data) {
+  meetingNotice.value = data.calendarError
+    ? `Reunión guardada, pero sin evento en Google Calendar (${data.calendarError}).`
+    : '✅ Reunión agendada en el calendario del asesor.';
+  setTimeout(() => { meetingNotice.value = ''; }, 8000);
+}
 
 // Conversación con el bot de WhatsApp (Avan) dentro de la ficha del lead
 const showBotChat = ref(false);
@@ -1724,6 +1763,9 @@ async function fetchAll() {
     if (!res.ok) throw new Error('Error al obtener leads del servidor');
     const data = await res.json();
     leads.value = Array.isArray(data.leads) ? data.leads : (Array.isArray(data) ? data : []);
+    // 'mine' = el servidor filtró por responsable; se guarda para poder explicar
+    // un tablero vacío en vez de que parezca que se perdieron los leads.
+    leadScope.value = data.scope || 'all';
   } catch (err) {
     console.error('Error al cargar leads:', err);
     loadError.value = err.message || 'Error de conexión con el servidor.';
@@ -2552,6 +2594,13 @@ onMounted(() => {
 
 /* Altura fija (--lead-card-h): con todas las tarjetas iguales, el cuerpo de
    la columna se dimensiona para mostrar exactamente diez sin scroll. */
+.scope-note {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  border-color: rgba(111, 129, 37, 0.35);
+  background: rgba(111, 129, 37, 0.07);
+}
+
 .kanban-lead-card {
   background: var(--bg-card-solid);
   border: 1px solid var(--border-color);
