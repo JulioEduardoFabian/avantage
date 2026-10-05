@@ -56,6 +56,7 @@
         <option value="pendiente">Por cobrar</option>
         <option value="vencido">Solo vencidas</option>
         <option value="entregado">Con el trabajo ya entregado</option>
+        <option value="no_asignado">Sin entregable asignado</option>
         <option value="pagado">Cobradas sin verificar</option>
       </select>
     </div>
@@ -78,6 +79,7 @@
             <th>Cuota</th>
             <th>Vence</th>
             <th class="collections-num">Monto</th>
+            <th>Entregable</th>
             <th>Estado</th>
             <th class="collections-actions-col"></th>
           </tr>
@@ -107,6 +109,27 @@
               <span class="collections-sub" :class="{ 'is-late': row.is_overdue }">{{ dueLabel(row) }}</span>
             </td>
             <td class="collections-num" data-label="Monto">S/ {{ money(row.monto) }}</td>
+            <!--
+              Columna propia: lo que se entregó por esta cuota decide a quién
+              llamar primero (si el trabajo ya salió, la deuda no puede esperar)
+              y antes vivía apretado dentro de la columna de estado del cobro,
+              que es otra cosa. "No asignado" se dice con todas las letras: una
+              celda vacía se lee como "falta cargar algo".
+            -->
+            <td data-label="Entregable">
+              <span class="pill" :class="deliveryMeta(row).pill" :title="deliveredTitle(row)">
+                {{ deliveryMeta(row).icon }} {{ deliveryMeta(row).label }}
+              </span>
+              <span v-if="row.delivery_status === 'parcial'" class="collections-sub">
+                {{ row.delivered_count }} de {{ row.deliverables_count }} entregado(s)
+              </span>
+              <span v-else-if="row.work_delivered && row.last_delivered_at" class="collections-sub">
+                el {{ formatDate(row.last_delivered_at) }}
+              </span>
+              <span v-else-if="row.delivery_status === 'pendiente'" class="collections-sub">
+                {{ row.deliverables_count }} por entregar
+              </span>
+            </td>
             <td data-label="Estado">
               <span v-if="row.estado === 'pagado'" class="pill pill-success">
                 Cobrada{{ row.cobrado_por ? ` por ${row.cobrado_por}` : '' }}
@@ -115,17 +138,6 @@
                 {{ row.is_overdue ? 'Vencida' : 'Por cobrar' }}
               </span>
               <span v-if="row.has_commission" class="collections-sub">💰 comisión registrada</span>
-              <!--
-                El trabajo atado a esta cuota ya salió: el cliente lo tiene y el
-                dinero no entró. Es la fila que hay que llamar primero, así que
-                se dice acá y no obliga a abrir el módulo de Entregables.
-              -->
-              <span v-if="row.work_delivered" class="pill pill-delivered" :title="deliveredTitle(row)">
-                📦 Entregado{{ row.last_delivered_at ? ` el ${formatDate(row.last_delivered_at)}` : '' }}
-              </span>
-              <span v-else-if="(row.deliverables || []).length > 0" class="collections-sub">
-                {{ row.deliverables.length }} entregable(s) atado(s), sin entregar
-              </span>
             </td>
             <td class="collections-actions-col">
               <button
@@ -214,6 +226,7 @@ const visible = computed(() => {
   return rows.value.filter((row) => {
     if (estadoFilter.value === 'vencido' && !row.is_overdue) return false;
     if (estadoFilter.value === 'entregado' && !row.work_delivered) return false;
+    if (estadoFilter.value === 'no_asignado' && row.delivery_status !== 'no_asignado') return false;
     if (estadoFilter.value === 'pendiente' && row.estado !== 'pendiente') return false;
     if (estadoFilter.value === 'pagado' && row.estado !== 'pagado') return false;
     if (!q) return true;
@@ -247,11 +260,34 @@ function dueLabel(row) {
   return `Venció hace ${Math.abs(dias)} días`;
 }
 
-/** Qué entregables de esta cuota ya salieron, para el tooltip de la pastilla. */
+/*
+ * Cómo se ve cada estado de entrega. El estado lo deriva el servidor
+ * (`deliveryState()` en collectionService.js); acá solo se le pone nombre y
+ * color, y el nombre dice qué significa para quien cobra, no cómo se llama el
+ * dato.
+ */
+const DELIVERY_META = {
+  entregado: { label: 'Entregado', icon: '📦', pill: 'pill-delivered' },
+  parcial: { label: 'Entregado en parte', icon: '📦', pill: 'pill-delivered' },
+  pendiente: { label: 'Sin entregar', icon: '🕒', pill: 'pill-warning' },
+  no_asignado: { label: 'No asignado', icon: '—', pill: 'pill-muted' }
+};
+
+/** Una cuota sin el dato (respuesta vieja en caché) se lee como "no asignado". */
+function deliveryMeta(row) {
+  return DELIVERY_META[row.delivery_status] || DELIVERY_META.no_asignado;
+}
+
+/** El detalle de la entrega, para el tooltip de la pastilla. */
 function deliveredTitle(row) {
-  const entregados = (row.deliverables || []).filter((d) => d.status === 'entregado');
-  if (entregados.length === 0) return '';
-  return `Ya entregado: ${entregados.map((d) => d.title).join(', ')}`;
+  const atados = row.deliverables || [];
+  if (atados.length === 0) return 'Esta cuota no condiciona ningún entregable.';
+  const entregados = atados.filter((d) => d.status === 'entregado');
+  const faltan = atados.filter((d) => d.status !== 'entregado');
+  return [
+    entregados.length ? `Ya entregado: ${entregados.map((d) => d.title).join(', ')}` : '',
+    faltan.length ? `Falta entregar: ${faltan.map((d) => d.title).join(', ')}` : ''
+  ].filter(Boolean).join(' · ');
 }
 
 function waLink(phone) {
@@ -420,6 +456,12 @@ onMounted(load);
 .collections-btn { padding: 0.3rem 0.65rem; font-size: 0.78rem; }
 
 .pill-danger { background: rgba(200, 85, 50, 0.18); color: var(--accent-rose); }
+
+/* "No asignado" no es una alarma: es la ausencia de un dato. Gris. */
+.pill-muted {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
 
 .pill-delivered {
   display: inline-block;

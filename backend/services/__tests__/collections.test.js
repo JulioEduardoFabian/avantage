@@ -79,3 +79,39 @@ test('una cuota ya verificada no cuenta como "entregado sin cobrar": esa plata e
   assert.equal(estado.work_delivered, false);
   assert.equal(estado.delivered_count, 1);
 });
+
+/*
+ * El estado de entrega es una COLUMNA de la pantalla, así que se deriva en el
+ * servidor: calcularlo en el navegador sería una segunda regla que se separa de
+ * esta. "No asignado" es un estado con nombre y no una celda vacía — hay cuotas
+ * que son solo plata (un pago adelantado, la cuota final) y eso no es un error
+ * de carga.
+ */
+
+test('una cuota sin entregables atados queda como "no asignado"', () => {
+  assert.equal(deliveryState({ estado: 'pendiente' }, []).delivery_status, 'no_asignado');
+});
+
+test('con entregables atados y ninguno entregado, está sin entregar', () => {
+  const estado = deliveryState({ estado: 'pendiente' }, [{ status: 'pendiente' }, { status: 'pendiente' }]);
+  assert.equal(estado.delivery_status, 'pendiente');
+  assert.equal(estado.deliverables_count, 2);
+});
+
+test('si salió una parte del paquete, el estado es parcial', () => {
+  const estado = deliveryState({ estado: 'pendiente' }, [
+    { status: 'entregado', delivered_at: '2026-10-01' },
+    { status: 'pendiente' }
+  ]);
+  assert.equal(estado.delivery_status, 'parcial');
+  assert.equal(estado.delivered_count, 1);
+  assert.equal(estado.deliverables_count, 2);
+});
+
+test('si salió todo lo que colgaba de la cuota, está entregado', () => {
+  const estado = deliveryState({ estado: 'pendiente' }, [
+    { status: 'entregado', delivered_at: '2026-10-01' },
+    { status: 'entregado', delivered_at: '2026-10-03' }
+  ]);
+  assert.equal(estado.delivery_status, 'entregado');
+});

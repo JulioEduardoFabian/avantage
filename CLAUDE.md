@@ -360,8 +360,12 @@ antes de tocar el arranque de producción.
   los pagos sin darle acceso al dinero. El cambio de estado pasa por
   `financeLedgerService.updateIncomeEstado()`, el camino que ya existía (es el que impide tocar una
   cuota verificada); Cobranzas no escribe `estado` por su cuenta.
-  Cada fila cruza además los **entregables atados a esa cuota** (`deliverables.income_id`): la que
-  tiene trabajo ya entregado se marca con "📦 Entregado" y tiene su propio total y su filtro. Es el
+  Cada fila cruza además los **entregables atados a esa cuota** (`deliverables.income_id`) en una
+  **columna propia**, con el estado derivado en el servidor (`delivery_status`: `no_asignado` |
+  `pendiente` | `parcial` | `entregado`). "No asignado" se dice con todas las letras y no se deja la
+  celda vacía: hay cuotas que son solo plata —un adelanto, la cuota final— y una celda en blanco se
+  lee como "falta cargar algo". La que tiene trabajo ya entregado tiene además su propio total y su
+  filtro. Es el
   mismo cruce que el módulo de Entregables llama `sin_cobrar` —el cliente tiene su capítulo y
   nosotros no tenemos su plata— pero ahí solo se ve desde la otra pantalla, que casi siempre maneja
   otra persona; acá es lo que ordena a quién llamar primero. Alcanza con que **uno** de los

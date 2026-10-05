@@ -70,8 +70,32 @@ export function daysUntil(dueDate, today = hoy()) {
  */
 export function deliveryState(income, deliverables = []) {
   const entregados = deliverables.filter((entregable) => entregable.status === 'entregado');
+
+  /*
+   * `delivery_status` se deriva acá y no en la pantalla, como el resto de los
+   * estados operativos del sistema: es un cruce entre dos módulos (el plan de
+   * entregas y el cobro) y calcularlo en el navegador sería una segunda regla
+   * que se va a separar de esta.
+   *
+   *   no_asignado → la cuota no condiciona ninguna entrega. No es un error:
+   *                 hay cuotas que son solo plata (una cuota final, un pago
+   *                 adelantado), y decirlo es mejor que dejar la celda vacía,
+   *                 que se lee como "falta cargar algo".
+   *   pendiente   → hay entregables atados y ninguno salió todavía.
+   *   parcial     → salió parte del paquete.
+   *   entregado   → salió todo lo que colgaba de esta cuota.
+   */
+  let delivery_status = 'no_asignado';
+  if (deliverables.length > 0) {
+    if (entregados.length === 0) delivery_status = 'pendiente';
+    else if (entregados.length === deliverables.length) delivery_status = 'entregado';
+    else delivery_status = 'parcial';
+  }
+
   return {
+    delivery_status,
     delivered_count: entregados.length,
+    deliverables_count: deliverables.length,
     work_delivered: entregados.length > 0 && income?.estado !== 'verificado',
     last_delivered_at: entregados.map((e) => e.delivered_at).filter(Boolean).sort().pop() || null
   };
