@@ -353,6 +353,14 @@ antes de tocar el arranque de producción.
   Ver la agenda de todos **no** es poder borrarla: quitar una reunión del panel lo pueden su asesor,
   quien la cargó (`created_by` — el que se equivocó de hora tiene que poder deshacerlo) y
   `leads.manage_all`.
+  El botón "Ver disponibilidad" (`AvailabilityPeekModal.vue`, `GET /api/availability/:userId` bajo
+  `calendar.view`) muestra el horario semanal de otro asesor de **solo lectura**: agendarle a alguien
+  obligaba a preguntarle por WhatsApp a qué hora puede, y el dato ya estaba en el panel pero solo lo
+  veía su dueño en "Mi Disponibilidad". La ruta va **después** de `/api/availability/me` (Express
+  resuelve por orden y `:userId` la taparía) y se limita al área comercial: que la agenda sea del
+  equipo no vuelve pública la semana de cualquiera. Se ven los bloques **unidos en rangos**
+  ("09:00 a 13:00") y no la grilla de media hora — quien mira está por elegir una hora, y veintiocho
+  casillas pintadas se leen peor que una frase. Pintarlo sigue siendo de cada uno en su pantalla.
 - El módulo de **Cobranzas** (`/admin/cobranzas`, `CollectionsView.vue`, permiso `collections.view`,
   `collectionService.js`) **no tiene tabla propia**: es `finance_income` mirada desde el trabajo de
   cobrar — las cuotas en `pendiente` y en `pagado`, o sea todo lo que Finanzas todavía no verificó,

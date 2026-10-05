@@ -565,6 +565,34 @@ app.put('/api/availability/me', requireAuth, async (req, res) => {
 });
 
 /**
+ * El horario de OTRA persona, de solo lectura, para poder agendarle sin
+ * preguntárselo por WhatsApp (lo consulta el Calendario).
+ *
+ * Va después de `/me` a propósito: Express resuelve por orden y `:userId`
+ * taparía esa ruta. Se limita al área comercial —los mismos a los que se les
+ * puede agendar— porque el horario de alguien es un dato suyo, no del panel:
+ * que la agenda sea del equipo no vuelve pública la semana de cualquiera.
+ */
+app.get('/api/availability/:userId', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const userId = Number(req.params.userId);
+    if (!Number.isInteger(userId)) return res.status(400).json({ error: 'Usuario inválido.' });
+
+    const equipo = await userService.listCommercialTeam();
+    const asesor = equipo.find((usuario) => usuario.id === userId);
+    if (!asesor && userId !== req.user.id) {
+      return res.status(404).json({ error: 'Esa persona no es del área comercial.' });
+    }
+
+    const slots = await advisorAvailabilityService.getByUser(userId);
+    res.json({ slots, advisor: asesor ? { id: asesor.id, name: asesor.name } : null });
+  } catch (error) {
+    console.error('❌ Error al obtener la disponibilidad del asesor:', error);
+    res.status(500).json({ error: 'Error al obtener la disponibilidad.', details: error.message });
+  }
+});
+
+/**
  * Estado de la conexión del usuario autenticado con su Google Calendar
  * (conectado/no conectado, y con qué correo si está conectado).
  */

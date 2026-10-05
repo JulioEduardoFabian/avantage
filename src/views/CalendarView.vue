@@ -13,6 +13,7 @@
           <option :value="''">Todo el equipo</option>
           <option v-for="advisor in advisors" :key="advisor.id" :value="advisor.id">{{ advisor.name }}</option>
         </select>
+        <button class="btn-action-secondary" @click="showAvailability = true">🕘 Ver disponibilidad</button>
         <button class="btn-action-primary" @click="openCreate(selectedDay)">+ Nueva reunión</button>
       </div>
     </header>
@@ -107,12 +108,19 @@
     </div>
 
     <MeetingModal v-model="showModal" :date="modalDate" @created="onCreated" />
+    <AvailabilityPeekModal
+      v-model="showAvailability"
+      :advisors="advisors"
+      :advisor-user-id="advisorFilter || authState.user?.id"
+    />
   </main>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import { authState } from '../auth.js';
+import AvailabilityPeekModal from '../components/AvailabilityPeekModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 
 const WEEKDAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
@@ -126,6 +134,9 @@ const errorMessage = ref('');
 const notice = ref('');
 const showModal = ref(false);
 const modalDate = ref('');
+// El horario del asesor que se está mirando: se abre con el del filtro, y si
+// está en "Todo el equipo", con el propio.
+const showAvailability = ref(false);
 
 function isoOf(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -276,7 +287,7 @@ onMounted(() => {
   margin-bottom: 0.6rem;
 }
 
-.calendar-header-actions { display: flex; gap: 0.5rem; align-items: center; }
+.calendar-header-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: flex-end; }
 .calendar-advisor { max-width: 210px; }
 
 .calendar-nav {
