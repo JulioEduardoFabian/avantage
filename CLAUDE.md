@@ -378,6 +378,22 @@ antes de tocar el arranque de producción.
   setter por **venta**, así que dos cuotas del mismo lead comisionan las dos, y el mismo cobro
   marcado dos veces no paga dos veces. `lead_id` admite nulos porque hay ingresos que no cuelgan de
   ningún lead y también se cobran.
+- Los botones de barra y de fila del panel (`.btn-action-primary` / `-secondary` / `-ghost`), el
+  encabezado de los modales (`.modal-title`, `.modal-close-btn`) y `.heading-icon` viven en
+  `src/style.css`. Estaban copiados dentro del `<style scoped>` de cada vista, así que una pantalla
+  nueva que los usara los pintaba con el estilo por defecto del navegador — un botón gris y plano
+  que en tema oscuro se lee como un error. Van **sin** el prefijo `.admin-layout`: con 0,1,0 de
+  especificidad, la copia scoped de cualquier vista (clase + atributo, 0,2,0) sigue ganando, así que
+  las pantallas viejas no cambian y las nuevas heredan lo correcto. Una pantalla nueva no necesita
+  volver a definirlos.
+- **En el celular, la tabla no se achica: se vuelve tarjetas.** En Cobranzas cada `<td>` lleva su
+  `data-label` y por debajo de 760 px el encabezado se oculta y cada fila pasa a ser una tarjeta con
+  los rótulos adentro — una tabla de seis columnas en 380 px solo se puede leer arrastrándola de
+  lado, y cobrar es justo lo que se hace con el teléfono en la mano. Los dos tableros, por su parte,
+  pasan a **una columna por pantalla** (86vw) con `scroll-snap`, así cada gesto deja una columna
+  entera a la vista; arrastrar tarjetas entre columnas no funciona en táctil (es HTML5 drag and
+  drop), y por eso en el celular el tablero es para mirar y entrar a la ficha, donde el desplegable
+  de etapa sí mueve el lead.
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`), más
   `user_permissions`, que son las **excepciones de una persona** sobre lo que le da su rol. Los
   permisos efectivos (rol + otorgados − revocados) se resuelven en UN solo sitio

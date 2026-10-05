@@ -88,7 +88,7 @@
             :key="row.id"
             :class="{ 'is-overdue-row': row.is_overdue, 'is-delivered-row': row.work_delivered && !row.is_overdue }"
           >
-            <td>
+            <td data-label="Cliente">
               <span class="collections-client">{{ row.cliente || 'Sin nombre' }}</span>
               <span class="collections-contact">
                 <a v-if="row.cliente_phone" :href="waLink(row.cliente_phone)" target="_blank" rel="noopener">
@@ -98,16 +98,16 @@
               </span>
               <span v-if="row.responsable" class="collections-advisor">Responsable: {{ row.responsable }}</span>
             </td>
-            <td>
+            <td data-label="Cuota">
               <span class="collections-code">{{ row.code || '—' }}</span>
               <span class="collections-sub">{{ row.cuota || 'Cuota' }}</span>
             </td>
-            <td>
+            <td data-label="Vence">
               <span class="collections-date">{{ formatDate(row.due_date) }}</span>
               <span class="collections-sub" :class="{ 'is-late': row.is_overdue }">{{ dueLabel(row) }}</span>
             </td>
-            <td class="collections-num">S/ {{ money(row.monto) }}</td>
-            <td>
+            <td class="collections-num" data-label="Monto">S/ {{ money(row.monto) }}</td>
+            <td data-label="Estado">
               <span v-if="row.estado === 'pagado'" class="pill pill-success">
                 Cobrada{{ row.cobrado_por ? ` por ${row.cobrado_por}` : '' }}
               </span>
@@ -460,7 +460,78 @@ onMounted(load);
   margin-top: 1rem;
 }
 
-@media (max-width: 720px) {
+/*
+ * En el celular la tabla no se achica: se convierte en tarjetas. Una tabla de
+ * seis columnas en 380 px solo se puede leer arrastrándola de lado, y cobrar es
+ * justo lo que se hace con el teléfono en la mano. Cada celda lleva su rótulo
+ * (`data-label`), que es lo que reemplaza al encabezado que se oculta.
+ */
+@media (max-width: 760px) {
   .collections-header { flex-direction: column; }
+  .collections-stat { flex-basis: 100%; }
+  .collections-filter { max-width: none; flex: 1 1 100%; }
+
+  .collections-table-wrapper { overflow-x: visible; }
+
+  .collections-table,
+  .collections-table tbody,
+  .collections-table tr,
+  .collections-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .collections-table thead { display: none; }
+
+  .collections-table tr {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 0.6rem 0.7rem;
+    margin-bottom: 0.6rem;
+    background: var(--bg-card-solid);
+  }
+
+  /* El tinte de la fila vencida o entregada tiene que sobrevivir al fondo de
+     la tarjeta: es lo que distingue de un vistazo a quién hay que llamar. */
+  .collections-table tr.is-overdue-row {
+    background: rgba(200, 85, 50, 0.08);
+    border-color: rgba(200, 85, 50, 0.35);
+  }
+
+  .collections-table tr.is-delivered-row {
+    background: rgba(201, 146, 46, 0.08);
+    border-color: rgba(201, 146, 46, 0.35);
+  }
+
+  .collections-table td {
+    border: none;
+    padding: 0.22rem 0;
+  }
+
+  .collections-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+
+  /* El cliente es el título de la tarjeta: no necesita rótulo. */
+  .collections-table td[data-label="Cliente"]::before { content: none; }
+  .collections-table td[data-label="Cliente"] .collections-client { font-size: 0.95rem; }
+
+  .collections-num,
+  .collections-actions-col { text-align: left; }
+
+  .collections-btn {
+    width: 100%;
+    margin-top: 0.35rem;
+    padding: 0.55rem;
+    font-size: 0.86rem;
+  }
+
+  .collections-modal-actions { flex-direction: column-reverse; }
+  .collections-modal-actions button { width: 100%; }
 }
 </style>

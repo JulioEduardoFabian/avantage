@@ -966,3 +966,128 @@ p.section-subheading {
   padding: 0.55rem 0.85rem;
   font-size: 0.83rem;
 }
+
+/* ---------------------------------------------------------------------------
+   BOTONES DE ACCIÓN DEL PANEL (.btn-action-*)
+
+   Son los botones de las barras de herramientas y de las filas de tabla del
+   panel. Estaban copiados dentro del `<style scoped>` de cada vista, así que
+   una pantalla nueva que los usara —Cobranzas, Calendario— los pintaba con el
+   estilo por defecto del navegador: un botón gris y plano que en tema oscuro se
+   lee como un error.
+
+   Van SIN el prefijo `.admin-layout` a propósito: con 0,1,0 de especificidad,
+   cualquier definición scoped de una vista (clase + atributo, 0,2,0) sigue
+   ganando, así que ninguna pantalla existente cambia de aspecto y las nuevas
+   heredan el estilo correcto.
+   --------------------------------------------------------------------------- */
+
+.btn-action-primary,
+.btn-action-secondary,
+.btn-action-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: var(--radius-md);
+  font-family: var(--font-heading);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.5rem 0.95rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease,
+    box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.btn-action-primary {
+  background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+  color: #ffffff;
+  border: 1px solid transparent;
+  box-shadow: 0 4px 12px rgba(111, 129, 37, 0.28);
+}
+
+.btn-action-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(111, 129, 37, 0.38);
+}
+
+.btn-action-secondary {
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+}
+
+.btn-action-secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-card-hover);
+}
+
+.btn-action-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-color);
+  font-weight: 500;
+}
+
+.btn-action-ghost:hover:not(:disabled) {
+  color: var(--text-main);
+  border-color: var(--border-strong);
+  border-style: solid;
+}
+
+.btn-action-primary:disabled,
+.btn-action-secondary:disabled,
+.btn-action-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-action-primary .btn-icon,
+.btn-action-secondary .btn-icon,
+.btn-action-ghost .btn-icon {
+  font-size: 0.95em;
+  line-height: 1;
+}
+
+/* Mismo caso que los botones: el encabezado de un modal y el icono del título
+   estaban solo dentro del scoped de cada vista. */
+.modal-title {
+  font-family: var(--font-heading);
+  font-size: 1.1rem;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+.modal-close-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-main);
+}
+
+.heading-icon {
+  display: inline-block;
+  transform: translateY(-2px);
+}
+
+/* El icono de "Actualizar" gira mientras carga. */
+.spin-animation {
+  display: inline-block;
+  animation: panel-spin 0.9s linear infinite;
+}
+
+@keyframes panel-spin {
+  to { transform: rotate(360deg); }
+}

@@ -3434,4 +3434,39 @@ button.setter-btn {
     grid-column: span 1;
   }
 }
+
+/*
+ * El tablero en el celular: una columna por pantalla.
+ *
+ * Con columnas de 320 px fijos, en un teléfono se veía media columna y media
+ * de la siguiente, y arrastrar una tarjeta entre columnas era imposible. Ahora
+ * la columna ocupa el ancho de la pantalla menos un asomo de la siguiente —que
+ * es lo que avisa de que hay más— y el desplazamiento engancha de columna en
+ * columna (`scroll-snap`), así cada gesto deja una columna entera a la vista.
+ *
+ * El arrastre entre columnas no funciona en pantallas táctiles (es HTML5 drag
+ * and drop), pero el desplegable de etapa de la ficha del lead sí: por eso el
+ * tablero del celular es para mirar y entrar a la ficha, y mover se hace desde
+ * ahí.
+ */
+@media (max-width: 760px) {
+  .kanban-header { flex-direction: column; gap: 0.75rem; }
+  .kanban-header .header-actions { width: 100%; flex-wrap: wrap; }
+  .kanban-toolbar { flex-direction: column; align-items: stretch; gap: 0.6rem; }
+  .funnel-stats-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; }
+
+  .kanban-viewport {
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .kanban-columns-container { gap: 0.6rem; }
+
+  .kanban-column {
+    flex: 0 0 86vw;
+    width: 86vw;
+    max-width: 86vw;
+    scroll-snap-align: start;
+  }
+}
 </style>
