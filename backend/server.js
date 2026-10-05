@@ -689,26 +689,28 @@ app.get('/api/meetings/upcoming', requireAuth, async (req, res) => {
 
 /* -------------------------------- Calendario ------------------------------- */
 /*
- * La agenda del closer: las reuniones que ya tiene y las que carga a mano.
- * Mismo criterio de visibilidad que el funnel — cada uno ve las suyas, y quien
- * administra el área comercial (`leads.manage_all`) ve las de todos y puede
- * agendarle a cualquiera.
+ * La agenda del área comercial: las reuniones que agendó el bot y las cargadas
+ * a mano.
+ *
+ * A diferencia del funnel —donde cada uno ve SUS leads—, acá la agenda es del
+ * equipo: quien tenga `calendar.view` ve las reuniones de todos, las filtra por
+ * asesor y puede agendarle a cualquiera del área comercial
+ * (`userService.listCommercialTeam()`, el mismo criterio por permiso que usa la
+ * asignación de leads). Una reunión no es un lead en disputa: la coordina quien
+ * está libre en ese momento, y esconderle al setter la agenda del closer al que
+ * le pasa el lead era justamente lo que obligaba a preguntarla por WhatsApp.
  */
 
 app.get('/api/meetings', requireAuth, requirePermission('calendar.view'), async (req, res) => {
   try {
-    const manageAll = req.user.permissions?.includes('leads.manage_all');
-    const pedido = req.query.advisorUserId ? Number(req.query.advisorUserId) : null;
-    // Sin el permiso de administrador, el parámetro no manda: la agenda es la
-    // propia, se pida lo que se pida.
-    const advisorUserId = manageAll ? pedido : req.user.id;
+    const advisorUserId = req.query.advisorUserId ? Number(req.query.advisorUserId) : null;
 
     const meetings = await scheduledMeetingService.listRange({
       from: req.query.from || null,
       to: req.query.to || null,
       advisorUserId
     });
-    res.json({ meetings, scope: manageAll ? 'all' : 'mine' });
+    res.json({ meetings, scope: 'all' });
   } catch (error) {
     console.error('❌ Error al obtener el calendario:', error);
     res.status(500).json({ error: 'Error al obtener las reuniones.', details: error.message });
@@ -716,19 +718,16 @@ app.get('/api/meetings', requireAuth, requirePermission('calendar.view'), async 
 });
 
 /**
- * Los asesores a los que se les puede agendar: el área comercial, con el aviso
- * de quién tiene su Google conectado (sin conexión la reunión se guarda igual,
- * pero sin evento ni enlace de Meet).
+ * Los asesores a los que se les puede agendar: todo el área comercial, con el
+ * aviso de quién tiene su Google conectado (sin conexión la reunión se guarda
+ * igual, pero sin evento ni enlace de Meet).
  */
 app.get('/api/meetings/advisors', requireAuth, requirePermission('calendar.view'), async (req, res) => {
   try {
-    const manageAll = req.user.permissions?.includes('leads.manage_all');
     const equipo = await userService.listCommercialTeam();
-    const visibles = manageAll ? equipo : equipo.filter((usuario) => usuario.id === req.user.id);
-
     const conectados = new Set(await db('google_calendar_connections').pluck('user_id'));
     res.json({
-      advisors: visibles.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) }))
+      advisors: equipo.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) }))
     });
   } catch (error) {
     console.error('❌ Error al obtener los asesores del calendario:', error);
@@ -743,9 +742,17 @@ app.get('/api/meetings/advisors', requireAuth, requirePermission('calendar.view'
  */
 app.post('/api/meetings', requireAuth, requirePermission('calendar.view'), async (req, res) => {
   try {
-    const manageAll = req.user.permissions?.includes('leads.manage_all');
+    // El asesor es el que se eligió; sin elección, uno mismo. Se verifica que
+    // sea del área comercial acá y no solo en el desplegable: un id suelto en
+    // el cuerpo no puede dejarle la reunión a alguien de otra área.
     const pedido = req.body?.advisorUserId ? Number(req.body.advisorUserId) : null;
-    const advisorUserId = manageAll ? (pedido || req.user.id) : req.user.id;
+    const advisorUserId = pedido || req.user.id;
+    if (advisorUserId !== req.user.id) {
+      const equipo = await userService.listCommercialTeam();
+      if (!equipo.some((usuario) => usuario.id === advisorUserId)) {
+        return res.status(422).json({ error: 'Esa persona no es del área comercial.' });
+      }
+    }
 
     if (req.body?.leadId) {
       const lead = await leadService.getLeadById(req.body.leadId);
@@ -782,8 +789,15 @@ app.delete('/api/meetings/:id', requireAuth, requirePermission('calendar.view'),
     const meeting = await scheduledMeetingService.getById(req.params.id);
     if (!meeting) return res.status(404).json({ error: 'Reunión no encontrada.' });
 
+    /*
+     * Quitarla puede el dueño de la reunión, quien la cargó —si se agendó para
+     * otro con la hora equivocada, el que se equivocó tiene que poder
+     * deshacerlo— y quien administra el área comercial. Ver la agenda de todos
+     * no es poder borrarla.
+     */
     const manageAll = req.user.permissions?.includes('leads.manage_all');
-    if (!manageAll && meeting.advisor_user_id !== req.user.id) {
+    const propia = meeting.advisor_user_id === req.user.id || meeting.created_by === req.user.id;
+    if (!manageAll && !propia) {
       return res.status(403).json({ error: 'Esa reunión es de otra persona.' });
     }
 

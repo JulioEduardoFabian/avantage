@@ -344,8 +344,15 @@ antes de tocar el arranque de producción.
   misma reunión y el mismo endpoint, y copiado en cada pantalla el tercero se queda con el
   formulario viejo. La hora se manda con el huso de Lima escrito a mano (`-05:00`) y no con el del
   navegador: una laptop configurada en otra zona agendaría a una hora distinta de la que se escribió.
-  Mismo criterio de visibilidad que el funnel: cada uno ve su agenda, y `leads.manage_all` ve la de
-  todos y puede agendarle a cualquiera.
+  **La agenda es del equipo, no de cada uno**: a diferencia del funnel —donde cada quien ve SUS
+  leads—, quien tenga `calendar.view` ve las reuniones de toda el área comercial, las filtra por
+  asesor y puede agendarle a cualquiera de ella (`userService.listCommercialTeam()`, el mismo
+  criterio por permiso que la asignación de leads; el servidor lo verifica con 422 y no solo el
+  desplegable). Una reunión no es un lead en disputa: la coordina quien está libre, y esconderle al
+  setter la agenda del closer al que le pasa el lead es lo que obligaba a preguntarla por WhatsApp.
+  Ver la agenda de todos **no** es poder borrarla: quitar una reunión del panel lo pueden su asesor,
+  quien la cargó (`created_by` — el que se equivocó de hora tiene que poder deshacerlo) y
+  `leads.manage_all`.
 - El módulo de **Cobranzas** (`/admin/cobranzas`, `CollectionsView.vue`, permiso `collections.view`,
   `collectionService.js`) **no tiene tabla propia**: es `finance_income` mirada desde el trabajo de
   cobrar — las cuotas en `pendiente` y en `pagado`, o sea todo lo que Finanzas todavía no verificó,

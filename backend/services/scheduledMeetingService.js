@@ -194,8 +194,8 @@ export class ScheduledMeetingService {
   /**
    * Las reuniones de un rango de fechas, para la pantalla de Calendario.
    *
-   * `advisorUserId` acota a las de un asesor: cada closer ve su agenda, y quien
-   * administra el área comercial puede mirar la de cualquiera (o la de todos).
+   * `advisorUserId` acota a las de un asesor; sin él salen las de todo el
+   * equipo, que es como se mira la agenda comercial desde el Calendario.
    * Las fechas llegan como día de calendario y se expanden al día completo en
    * hora de Perú (UTC-5 todo el año, sin horario de verano), el mismo corte que
    * usa `getForDay()`.

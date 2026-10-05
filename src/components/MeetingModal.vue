@@ -11,6 +11,10 @@
     Google Calendar y, si no lo tiene conectado, en el de quien agenda con él
     invitado por correo. Eso se dice en el formulario y no después, porque
     cambia lo que la persona espera que pase.
+
+    El desplegable trae a TODA el área comercial (`/api/meetings/advisors`), no
+    solo a uno mismo: quien coordina la reunión no siempre es quien la atiende,
+    y la setter que agenda para el closer es el caso más común de todos.
   -->
   <div v-if="modelValue" class="modal-overlay" @click.self="close">
     <div class="modal-content meeting-modal">
@@ -28,7 +32,7 @@
         <div class="meeting-grid">
           <div class="form-group">
             <label class="form-label">Asesor (dueño de la reunión)</label>
-            <select v-model="form.advisorUserId" class="form-select" :disabled="advisors.length <= 1">
+            <select v-model="form.advisorUserId" class="form-select">
               <option v-for="advisor in advisors" :key="advisor.id" :value="advisor.id">
                 {{ advisor.name }}{{ advisor.google_connected ? '' : ' — sin Google conectado' }}
               </option>

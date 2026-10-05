@@ -4,17 +4,12 @@
       <div>
         <h2 class="section-heading"><span class="heading-icon">📅</span> Calendario</h2>
         <p class="section-subheading">
-          Las reuniones del asesor: las que agendó el bot por WhatsApp y las cargadas a mano.
-          <template v-if="scope === 'mine'">Ves tu propia agenda.</template>
+          Las reuniones del área comercial: las que agendó el bot por WhatsApp y las cargadas a mano.
+          Ves la agenda de todo el equipo y puedes agendarle a cualquiera.
         </p>
       </div>
       <div class="calendar-header-actions">
-        <select
-          v-if="scope === 'all'"
-          v-model="advisorFilter"
-          class="form-select calendar-advisor"
-          @change="load"
-        >
+        <select v-model="advisorFilter" class="form-select calendar-advisor" @change="load">
           <option :value="''">Todo el equipo</option>
           <option v-for="advisor in advisors" :key="advisor.id" :value="advisor.id">{{ advisor.name }}</option>
         </select>
@@ -126,7 +121,6 @@ const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', '
 const meetings = ref([]);
 const advisors = ref([]);
 const advisorFilter = ref('');
-const scope = ref('mine');
 const isLoading = ref(false);
 const errorMessage = ref('');
 const notice = ref('');
@@ -220,7 +214,6 @@ async function load() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudo cargar el calendario.');
     meetings.value = data.meetings || [];
-    scope.value = data.scope || 'mine';
   } catch (error) {
     errorMessage.value = error.message;
   } finally {
