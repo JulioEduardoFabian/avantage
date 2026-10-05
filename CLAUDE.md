@@ -360,6 +360,13 @@ antes de tocar el arranque de producción.
   los pagos sin darle acceso al dinero. El cambio de estado pasa por
   `financeLedgerService.updateIncomeEstado()`, el camino que ya existía (es el que impide tocar una
   cuota verificada); Cobranzas no escribe `estado` por su cuenta.
+  Cada fila cruza además los **entregables atados a esa cuota** (`deliverables.income_id`): la que
+  tiene trabajo ya entregado se marca con "📦 Entregado" y tiene su propio total y su filtro. Es el
+  mismo cruce que el módulo de Entregables llama `sin_cobrar` —el cliente tiene su capítulo y
+  nosotros no tenemos su plata— pero ahí solo se ve desde la otra pantalla, que casi siempre maneja
+  otra persona; acá es lo que ordena a quién llamar primero. Alcanza con que **uno** de los
+  entregables haya salido, y una cuota verificada nunca cuenta (esa plata ya entró): la regla es
+  `deliveryState()`.
   Al cobrar se puede registrar el **2% para quien cobra** (`role: 'cobranza'` en
   `sales_commissions`, sobre el monto de ESA cuota). Es opcional en cada cobro y no automático: hay
   cuotas que entran solas y ahí no hay cobranza que comisionar. El beneficiario es **la sesión**, no

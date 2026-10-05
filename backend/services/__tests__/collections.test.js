@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { daysUntil, ESTADOS_COBRANZA } from '../collectionService.js';
+import { daysUntil, deliveryState, ESTADOS_COBRANZA } from '../collectionService.js';
 import { collectionEligibility, commissionAmount, COLLECTION_COMMISSION_PERCENT } from '../commissionService.js';
 
 /*
@@ -43,4 +43,39 @@ test('una cuota sin monto no comisiona: no se cobró nada', () => {
     const { ok } = collectionEligibility({ monto });
     assert.equal(ok, false, `un monto ${JSON.stringify(monto)} no puede comisionar`);
   }
+});
+
+/*
+ * La cuota cuyo trabajo YA salió es la deuda más urgente del tablero: el cliente
+ * tiene su capítulo y nosotros no tenemos su plata. Es el mismo cruce que
+ * Entregables llama `sin_cobrar`, visto desde el lado de quien cobra.
+ */
+
+test('un entregable ya entregado marca la cuota como trabajo entregado', () => {
+  const estado = deliveryState({ estado: 'pendiente' }, [
+    { title: 'Capítulo I', status: 'entregado', delivered_at: '2026-10-01' },
+    { title: 'Anexos', status: 'pendiente', delivered_at: null }
+  ]);
+  assert.equal(estado.work_delivered, true);
+  assert.equal(estado.delivered_count, 1);
+  assert.equal(estado.last_delivered_at, '2026-10-01');
+});
+
+test('con varios entregados, la fecha que se muestra es la última', () => {
+  const estado = deliveryState({ estado: 'pagado' }, [
+    { status: 'entregado', delivered_at: '2026-09-20' },
+    { status: 'entregado', delivered_at: '2026-10-02' }
+  ]);
+  assert.equal(estado.last_delivered_at, '2026-10-02');
+});
+
+test('sin entregables, o con todos pendientes, no hay trabajo entregado', () => {
+  assert.equal(deliveryState({ estado: 'pendiente' }, []).work_delivered, false);
+  assert.equal(deliveryState({ estado: 'pendiente' }, [{ status: 'pendiente' }]).work_delivered, false);
+});
+
+test('una cuota ya verificada no cuenta como "entregado sin cobrar": esa plata entró', () => {
+  const estado = deliveryState({ estado: 'verificado' }, [{ status: 'entregado', delivered_at: '2026-10-01' }]);
+  assert.equal(estado.work_delivered, false);
+  assert.equal(estado.delivered_count, 1);
 });

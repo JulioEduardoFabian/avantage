@@ -7,7 +7,9 @@
         </h2>
         <p class="section-subheading">
           Las cuotas que faltan cobrar y las que ya cobraste y Finanzas todavía no verificó.
-          Marcar una como cobrada no la verifica: ese visto bueno lo sigue dando Finanzas.
+          Las marcadas <strong>📦 Entregado</strong> son las que más urgen: el trabajo ya está en
+          manos del cliente. Marcar una como cobrada no la verifica: ese visto bueno lo sigue dando
+          Finanzas.
         </p>
       </div>
       <button class="btn-action-secondary" :disabled="isLoading" @click="load">
@@ -26,6 +28,11 @@
         <span class="collections-stat-label">Vencidas</span>
         <span class="collections-stat-value">S/ {{ money(summary.vencido.total) }}</span>
         <span class="collections-stat-note">{{ summary.vencido.n }} cuota(s) pasadas de fecha</span>
+      </div>
+      <div class="collections-stat is-delivered">
+        <span class="collections-stat-label">Ya entregado, sin cobrar</span>
+        <span class="collections-stat-value">S/ {{ money(summary.entregado.total) }}</span>
+        <span class="collections-stat-note">{{ summary.entregado.n }} cuota(s) con el trabajo ya en manos del cliente</span>
       </div>
       <div class="collections-stat is-collected">
         <span class="collections-stat-label">Cobrado, sin verificar</span>
@@ -48,6 +55,7 @@
         <option value="">Todas</option>
         <option value="pendiente">Por cobrar</option>
         <option value="vencido">Solo vencidas</option>
+        <option value="entregado">Con el trabajo ya entregado</option>
         <option value="pagado">Cobradas sin verificar</option>
       </select>
     </div>
@@ -75,7 +83,11 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in visible" :key="row.id" :class="{ 'is-overdue-row': row.is_overdue }">
+          <tr
+            v-for="row in visible"
+            :key="row.id"
+            :class="{ 'is-overdue-row': row.is_overdue, 'is-delivered-row': row.work_delivered && !row.is_overdue }"
+          >
             <td>
               <span class="collections-client">{{ row.cliente || 'Sin nombre' }}</span>
               <span class="collections-contact">
@@ -103,6 +115,17 @@
                 {{ row.is_overdue ? 'Vencida' : 'Por cobrar' }}
               </span>
               <span v-if="row.has_commission" class="collections-sub">💰 comisión registrada</span>
+              <!--
+                El trabajo atado a esta cuota ya salió: el cliente lo tiene y el
+                dinero no entró. Es la fila que hay que llamar primero, así que
+                se dice acá y no obliga a abrir el módulo de Entregables.
+              -->
+              <span v-if="row.work_delivered" class="pill pill-delivered" :title="deliveredTitle(row)">
+                📦 Entregado{{ row.last_delivered_at ? ` el ${formatDate(row.last_delivered_at)}` : '' }}
+              </span>
+              <span v-else-if="(row.deliverables || []).length > 0" class="collections-sub">
+                {{ row.deliverables.length }} entregable(s) atado(s), sin entregar
+              </span>
             </td>
             <td class="collections-actions-col">
               <button
@@ -173,7 +196,8 @@ const rows = ref([]);
 const summary = reactive({
   pendiente: { total: 0, n: 0 },
   vencido: { total: 0, n: 0 },
-  cobrado: { total: 0, n: 0 }
+  cobrado: { total: 0, n: 0 },
+  entregado: { total: 0, n: 0 }
 });
 const isLoading = ref(false);
 const errorMessage = ref('');
@@ -189,6 +213,7 @@ const visible = computed(() => {
   const q = search.value.trim().toLowerCase();
   return rows.value.filter((row) => {
     if (estadoFilter.value === 'vencido' && !row.is_overdue) return false;
+    if (estadoFilter.value === 'entregado' && !row.work_delivered) return false;
     if (estadoFilter.value === 'pendiente' && row.estado !== 'pendiente') return false;
     if (estadoFilter.value === 'pagado' && row.estado !== 'pagado') return false;
     if (!q) return true;
@@ -220,6 +245,13 @@ function dueLabel(row) {
   if (dias > 1) return `Faltan ${dias} días`;
   if (dias === -1) return 'Venció ayer';
   return `Venció hace ${Math.abs(dias)} días`;
+}
+
+/** Qué entregables de esta cuota ya salieron, para el tooltip de la pastilla. */
+function deliveredTitle(row) {
+  const entregados = (row.deliverables || []).filter((d) => d.status === 'entregado');
+  if (entregados.length === 0) return '';
+  return `Ya entregado: ${entregados.map((d) => d.title).join(', ')}`;
 }
 
 function waLink(phone) {
@@ -388,6 +420,19 @@ onMounted(load);
 .collections-btn { padding: 0.3rem 0.65rem; font-size: 0.78rem; }
 
 .pill-danger { background: rgba(200, 85, 50, 0.18); color: var(--accent-rose); }
+
+.pill-delivered {
+  display: inline-block;
+  margin-top: 0.15rem;
+  background: rgba(201, 146, 46, 0.18);
+  color: var(--accent-amber);
+  font-size: 0.68rem;
+}
+
+.collections-stat.is-delivered { border-left-color: var(--accent-amber); }
+
+/* La cuota cuyo trabajo ya salió se marca en la fila: es la que más urge. */
+.is-delivered-row { background: rgba(201, 146, 46, 0.06); }
 
 .collections-modal { max-width: 460px; }
 .collections-modal-line { margin: 0 0 0.25rem; font-size: 0.9rem; }
