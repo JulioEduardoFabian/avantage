@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <main class="container-fluid database-page-wrapper">
     <!-- Header de la Vista -->
     <header class="database-header">
@@ -41,8 +41,8 @@
       <div class="stat-card">
         <div class="stat-icon-wrapper amber">👤</div>
         <div class="stat-info">
-          <span class="stat-label">Asignados a Kevin</span>
-          <span class="stat-value">{{ assignedToKevinCount }}</span>
+          <span class="stat-label">Sin asignar</span>
+          <span class="stat-value">{{ unassignedCount }}</span>
         </div>
       </div>
       <div class="stat-card">
@@ -111,7 +111,7 @@
             <!-- ASIGNADO A -->
             <td class="td-assigned">
               <span class="assigned-pill">
-                {{ lead.assigned_to || 'Kevin' }}
+                {{ lead.assigned_user_name || lead.assigned_to || 'Sin asignar' }}
               </span>
             </td>
 
@@ -390,11 +390,25 @@
                 <label class="field-label">ASIGNADO A</label>
                 <div class="input-with-icon">
                   <span class="field-icon">💼</span>
+                  <!--
+                    La lista es el área comercial real (los usuarios con
+                    acceso al funnel), no cuatro nombres escritos a mano: así
+                    asignar desde acá deja la ficha igual que asignar desde la
+                    tarjeta del tablero. Un nombre que ya estaba guardado y no
+                    corresponde a ninguna cuenta se reagrega como opción para
+                    no perderlo al guardar.
+                  -->
                   <select v-model="formData.assignedTo" class="field-select">
-                    <option value="Kevin">Kevin</option>
-                    <option value="Administrador">Administrador</option>
-                    <option value="Asesor Comercial 1">Asesor Comercial 1</option>
-                    <option value="Asesor Comercial 2">Asesor Comercial 2</option>
+                    <option value="">Sin asignar</option>
+                    <option v-for="user in commercialTeam" :key="user.id" :value="user.name">
+                      {{ user.name }}
+                    </option>
+                    <option
+                      v-if="formData.assignedTo && !commercialTeam.some(u => u.name === formData.assignedTo)"
+                      :value="formData.assignedTo"
+                    >
+                      {{ formData.assignedTo }} (registrado anteriormente)
+                    </option>
                   </select>
                 </div>
               </div>
@@ -511,7 +525,7 @@
             </div>
             <div>
               <h3 class="drawer-name">{{ formatDisplayName(detailLead) }}</h3>
-              <p class="drawer-assigned">Asignado a: <strong>{{ detailLead.assigned_to || 'Kevin' }}</strong></p>
+              <p class="drawer-assigned">Asignado a: <strong>{{ detailLead.assigned_user_name || detailLead.assigned_to || 'Sin asignar' }}</strong></p>
             </div>
           </div>
 
@@ -597,6 +611,7 @@
 import { ref, reactive, computed, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { careerNames } from '../data/careers.js';
+import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 
 // Universidades representativas de Perú
 const PERU_UNIVERSITIES = [
@@ -656,7 +671,7 @@ const formData = reactive({
   career: '',
   thesisSituation: 'Tesis sin avance',
   topic: '',
-  assignedTo: 'Kevin',
+  assignedTo: '',
   department: '',
   province: '',
   address: '',
@@ -670,8 +685,15 @@ const registeredTodayCount = computed(() => {
   return leads.value.filter(l => (l.created_at || '').slice(0, 10) === today).length;
 });
 
-const assignedToKevinCount = computed(() => {
-  return leads.value.filter(l => (l.assigned_to || 'Kevin').toLowerCase() === 'kevin').length;
+/*
+ * Leads que nadie tiene a su cargo. Antes este recuadro decía "Asignados a
+ * Kevin" y contaba como suyos los que no tenían nada escrito, de cuando el
+ * campo era texto libre con "Kevin" por defecto. Ahora que el responsable se
+ * elige de verdad, el dato que importa es el contrario: a cuántos leads no los
+ * está trabajando nadie.
+ */
+const unassignedCount = computed(() => {
+  return leads.value.filter(l => !l.assigned_user_name && !l.assigned_to).length;
 });
 
 const withTopicCount = computed(() => {
@@ -740,7 +762,7 @@ function openEditModal(lead) {
   formData.career = lead.field_of_study || '';
   formData.thesisSituation = lead.thesis_situation || 'Tesis sin avance';
   formData.topic = lead.topic || '';
-  formData.assignedTo = lead.assigned_to || 'Kevin';
+  formData.assignedTo = lead.assigned_user_name || lead.assigned_to || '';
   formData.department = lead.department || '';
   formData.province = lead.province || '';
   formData.address = lead.address || '';
@@ -770,7 +792,7 @@ function resetForm() {
   formData.career = '';
   formData.thesisSituation = 'Tesis sin avance';
   formData.topic = '';
-  formData.assignedTo = 'Kevin';
+  formData.assignedTo = '';
   formData.department = 'Junín';
   formData.province = 'Huancayo';
   formData.address = '';
@@ -887,6 +909,8 @@ function normalizePhone(phone) {
 
 onMounted(() => {
   fetchLeads();
+  // El desplegable de "Asignado a" se llena con el área comercial real.
+  loadCommercialTeam().catch((error) => console.warn('No se pudo cargar el área comercial:', error));
 });
 </script>
 

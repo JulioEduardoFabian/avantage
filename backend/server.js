@@ -1721,6 +1721,25 @@ app.post('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('lead
 
 
 /**
+ * A quiénes se les puede asignar un lead: los usuarios del área comercial
+ * (los que tienen `leads.view`, ver `userService.listCommercialTeam()`).
+ *
+ * Va bajo `leads.view` y no bajo `roles.manage` porque la usa el propio
+ * tablero para repartir el trabajo — mismo criterio que `/api/team-directory`
+ * en proyectos. Declarada ANTES de `/api/leads/:id` o Express leería
+ * "assignable-users" como un id de lead.
+ */
+app.get('/api/leads/assignable-users', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    const users = await userService.listCommercialTeam();
+    res.json({ users });
+  } catch (error) {
+    console.error('❌ Error al obtener el área comercial:', error);
+    res.status(500).json({ error: 'Error al obtener los usuarios del área comercial.', details: error.message });
+  }
+});
+
+/**
  * Detalle de un lead específico
  */
 app.get('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
@@ -1830,6 +1849,29 @@ app.patch('/api/leads/:id/status', requireAuth, requirePermission('leads.view'),
   } catch (error) {
     console.error('❌ Error al actualizar el lead:', error);
     res.status(500).json({ error: 'Error al actualizar el lead.', details: error.message });
+  }
+});
+
+/**
+ * Asignar el lead a un usuario del área comercial (o dejarlo sin asignar con
+ * `userId: null`). Es la acción del botón de la tarjeta en los dos tableros.
+ *
+ * Ruta propia y no un `PUT /api/leads/:id` con el campo adentro: repartir
+ * leads es un gesto de un clic sobre la tarjeta, y mandar la ficha entera
+ * desde el tablero arriesga pisar datos que el tablero no cargó.
+ */
+app.patch('/api/leads/:id/assignee', requireAuth, requirePermission('leads.view'), async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    const lead = await leadService.assignLead(req.params.id, userId ?? null);
+    if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
+    res.json({ lead });
+  } catch (error) {
+    if (error.code === 'NOT_COMMERCIAL') {
+      return res.status(422).json({ error: error.message, code: error.code });
+    }
+    console.error('❌ Error al asignar el lead:', error);
+    res.status(500).json({ error: 'Error al asignar el lead.', details: error.message });
   }
 });
 

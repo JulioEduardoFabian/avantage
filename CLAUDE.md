@@ -271,6 +271,28 @@ antes de tocar el arranque de producción.
   (`phoneMatchKey`): el `wa_id` del bot (`51987654321`) y lo que escribe la persona en el formulario
   de Meta (`+51 987 654 321`) son el mismo contacto, y compararlos tal cual hacía que el bot le
   creara un gemelo en "conversación abierta" y lo trabajara de cero.
+- El **responsable comercial** de un lead se asigna desde la propia tarjeta de los dos tableros
+  (`LeadAssignee.vue`, el círculo con las iniciales a la derecha; `PATCH /api/leads/:id/assignee`).
+  Son dos columnas y no una: `leads.assigned_user_id` es el enlace con la cuenta —la verdad, la que
+  sobrevive a que la persona se renombre— y `leads.assigned_to` es la **copia legible** del nombre,
+  que ya leían la Base de Datos, el buscador de los dos tableros y el bot. Se escriben siempre
+  juntas (`assignmentPatch()` en `leadService.js`, el único sitio que las toca) porque una ficha que
+  dice "Kevin" en una pantalla y "Lucía" en la otra es peor que no tener la función; el nombre que
+  se **muestra** sale del join (`assigned_user_name`), no de la copia. La asignación también llega
+  como **texto** desde la ficha de la Base de Datos: si nombra a alguien del área comercial se
+  enlaza su cuenta, y si nombra a otro (un asesor sin cuenta en el panel, que es para lo que el
+  campo libre sigue sirviendo) queda solo el texto. Reenviar el mismo nombre no suelta el enlace —
+  ese formulario manda el campo en cada guardado, y corregir un DNI no puede dejar el lead sin
+  asignar.
+  El **área comercial** no es una columna ni una lista de nombres: son los usuarios cuyo rol tiene
+  `leads.view` (`userService.listCommercialTeam()`, `GET /api/leads/assignable-users`), o sea los
+  que pueden abrir el funnel. Definirlo por el permiso es lo que hace que los roles que el equipo
+  cree después ("Closer", "Setter") entren solos. La regla se verifica en el servidor
+  (`assignLead()` rechaza con 422 a quien no es del área) y no solo en el desplegable.
+  Asignar **no mueve el funnel**: no pasa por `updateLeadStatus()` ni deja nada en
+  `lead_stage_changes`. La tarjeta tiene alto fijo (`--lead-card-h`, calibrado para que entren
+  cinco/diez por columna sin scroll), así que el círculo va en una franja reservada a la derecha y
+  el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado.
 - Los leads de **Meta Lead Ads** entran por el webhook (`metaWebhookService.importLead()`), que es
   un punto único de falla **silencioso**: `/api/webhooks/meta` responde 200 ANTES de procesar (Meta
   espera una respuesta rápida), así que un fallo posterior no se reintenta y solo deja una línea en

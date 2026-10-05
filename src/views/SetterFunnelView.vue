@@ -314,6 +314,11 @@
                 {{ getLeadFullName(lead) }}
               </h4>
               <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+
+              <!-- Responsable comercial: el círculo va en la franja reservada
+                   a la derecha, sin sumar una línea, para no romper el alto
+                   fijo con el que entran diez tarjetas por columna. -->
+              <LeadAssignee class="card-assignee" :lead="lead" @assigned="onLeadAssigned" />
             </div>
 
             <!-- Silueta de Destino al Arrastrar -->
@@ -773,6 +778,10 @@
           <!-- Grid de Datos del Lead -->
           <div class="lead-details-grid">
             <div class="detail-item">
+              <span class="detail-label">🙋 Responsable comercial:</span>
+              <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
+            </div>
+            <div class="detail-item">
               <span class="detail-label">🎓 Grado Académico:</span>
               <span class="detail-value">{{ selectedLead.academic_level || 'No especificado' }}</span>
             </div>
@@ -873,6 +882,7 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } 
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
+import LeadAssignee from '../components/LeadAssignee.vue';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
 
 /** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
@@ -1365,6 +1375,18 @@ function scrollBoard(direction) {
 }
 
 // Drag and Drop
+/**
+ * El lead que vuelve del botón de asignar trae ya el responsable resuelto por
+ * el servidor. Se actualiza el objeto en su lugar —sin recargar el tablero—
+ * para no perder la paginación ni el scroll de las columnas; la ficha abierta
+ * suele ser el MISMO objeto, pero no siempre, así que se refresca aparte.
+ */
+function onLeadAssigned(updated) {
+  const lead = leads.value.find((l) => l.id === updated.id);
+  if (lead) Object.assign(lead, updated);
+  if (selectedLead.value?.id === updated.id) Object.assign(selectedLead.value, updated);
+}
+
 function onDragStart(lead) {
   draggedLead.value = lead;
 }
@@ -2534,7 +2556,9 @@ onMounted(() => {
   background: var(--bg-card-solid);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  padding: 0.5rem 0.7rem;
+  /* El margen derecho es la franja del círculo del responsable: reservada acá
+     para que un nombre largo se recorte antes de pasarle por debajo. */
+  padding: 0.5rem 2.4rem 0.5rem 0.7rem;
   cursor: grab;
   box-shadow: var(--shadow-sm);
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.2s ease;
@@ -2573,6 +2597,14 @@ onMounted(() => {
 .kanban-lead-card.is-being-dragged {
   opacity: 0.4;
   transform: scale(0.96);
+}
+
+/* Responsable comercial: fuera del flujo, así la tarjeta conserva su alto. */
+.card-assignee {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .viability-pill {
@@ -3234,6 +3266,12 @@ button.setter-btn {
 
 .detail-item.full-width {
   grid-column: span 2;
+}
+
+/* El botón de asignar en la ficha no se estira a lo ancho de la celda: el
+   área de clic es el círculo con el nombre. */
+.detail-item > .lead-assignee-btn {
+  align-self: flex-start;
 }
 
 .detail-label {

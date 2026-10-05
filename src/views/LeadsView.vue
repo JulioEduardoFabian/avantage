@@ -19,7 +19,7 @@
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
         </button>
-        <button class="btn-action-ghost" @click="openMetaReconciliation" title="Comparar los leads de los formularios de Meta contra los que llegaron al CRM">
+        <button class="btn-action-ghost" @click="showMetaRecModal = true" title="Comparar los leads de los formularios de Meta contra los que llegaron al CRM">
           🧮 Conciliar Meta
         </button>
         <button class="btn-action-ghost" @click="confirmResetColumns" title="Restablecer columnas originales">
@@ -239,6 +239,11 @@
                 {{ getLeadFullName(lead) }}
               </h4>
               <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+
+              <!-- Responsable comercial: el círculo va en la franja reservada
+                   a la derecha, sin sumar una línea, para no romper el alto
+                   fijo con el que entran cinco tarjetas por columna. -->
+              <LeadAssignee class="card-assignee" :lead="lead" @assigned="onLeadAssigned" />
             </div>
 
             <!-- Silueta de Destino al Arrastrar (Drop Silhouette Preview) -->
@@ -540,124 +545,7 @@
       </div>
     </div>
 
-    <!-- ================================================================= -->
-    <!-- MODAL: Conciliación con Meta Lead Ads                             -->
-    <!-- ================================================================= -->
-    <!--
-      Compara, formulario por formulario, los leads que Meta registró contra
-      los que llegaron acá. El desglose por plataforma es el que contesta de
-      un vistazo si lo que se pierde viene de Facebook o de Instagram, que es
-      la pregunta que hoy obliga a exportar el CSV del Administrador de
-      anuncios y cruzarlo a mano.
-    -->
-    <div v-if="showMetaRecModal" class="modal-overlay" @click.self="showMetaRecModal = false">
-      <div class="modal-content column-modal-card" style="max-width: 760px;">
-        <div class="modal-header">
-          <h3 class="modal-title">🧮 Conciliación con Meta Lead Ads</h3>
-          <button class="modal-close-btn" @click="showMetaRecModal = false">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="meta-rec-range">
-            <label class="form-label" style="font-size: 0.8rem;">Desde</label>
-            <input v-model="metaRecForm.since" type="date" class="form-control" />
-            <label class="form-label" style="font-size: 0.8rem;">Hasta</label>
-            <input v-model="metaRecForm.until" type="date" class="form-control" />
-            <button class="btn-action-secondary" @click="runMetaReconciliation(false)" :disabled="metaRecLoading">
-              {{ metaRecLoading ? 'Consultando…' : 'Comparar' }}
-            </button>
-          </div>
-          <p class="section-subheading" style="margin: 0.5rem 0 1rem 0;">
-            Las fechas son las del envío del formulario en Meta, no las de alta en el CRM. Vacías, compara todo lo que Meta conserva (90 días).
-          </p>
-
-          <div v-if="metaRecError" class="info-box" style="border-color: rgba(220, 90, 90, 0.4); background: rgba(220, 90, 90, 0.08);">
-            <p style="color: var(--accent-rose); font-size: 0.85rem; margin: 0;">{{ metaRecError }}</p>
-          </div>
-
-          <div v-if="metaRecReport && metaRecReport.aviso" class="info-box" style="border-color: rgba(201, 146, 46, 0.4); background: rgba(201, 146, 46, 0.08); margin-bottom: 0.75rem;">
-            <p style="color: var(--accent-amber); font-size: 0.82rem; margin: 0;">⚠️ {{ metaRecReport.aviso }}</p>
-          </div>
-
-          <template v-if="metaRecReport">
-            <div class="meta-rec-totals">
-              <div class="stat-card">
-                <div class="stat-info">
-                  <span class="stat-label">En Meta</span>
-                  <span class="stat-value">{{ metaRecReport.totals.en_meta }}</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-info">
-                  <span class="stat-label">En el CRM</span>
-                  <span class="stat-value">{{ metaRecReport.totals.en_crm }}</span>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-info">
-                  <span class="stat-label">Faltantes</span>
-                  <span class="stat-value" :style="{ color: metaRecReport.totals.faltantes ? 'var(--accent-rose)' : 'var(--accent-green)' }">
-                    {{ metaRecReport.totals.faltantes }}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <h4 class="form-label" style="margin-top: 1rem;">Por plataforma</h4>
-            <table class="meta-rec-table">
-              <thead>
-                <tr><th>Plataforma</th><th>En Meta</th><th>En el CRM</th><th>Faltantes</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="(row, platform) in metaRecReport.by_platform" :key="platform">
-                  <td>{{ platformLabel(platform) }}</td>
-                  <td>{{ row.en_meta }}</td>
-                  <td>{{ row.en_crm }}</td>
-                  <td :style="{ color: row.faltantes ? 'var(--accent-rose)' : 'inherit' }">{{ row.faltantes }}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <h4 class="form-label" style="margin-top: 1rem;">Por formulario</h4>
-            <table class="meta-rec-table">
-              <thead>
-                <tr><th>Formulario</th><th>En Meta</th><th>En el CRM</th><th>Faltantes</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="form in metaRecReport.forms" :key="form.form_id">
-                  <td>
-                    {{ form.nombre || form.form_id }}
-                    <span v-if="form.error" style="color: var(--accent-rose);" :title="form.error">⚠️</span>
-                  </td>
-                  <td>{{ form.en_meta }}</td>
-                  <td>{{ form.en_crm }}</td>
-                  <td :style="{ color: form.faltantes ? 'var(--accent-rose)' : 'inherit' }">{{ form.faltantes }}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <div v-if="metaRecReport.applied" class="info-box" style="margin-top: 1rem; border-color: rgba(70, 180, 120, 0.4); background: rgba(70, 180, 120, 0.08);">
-              <p style="color: var(--accent-green); font-size: 0.85rem; margin: 0;">
-                Se recuperaron {{ metaRecReport.totals.importados }} lead(s).
-                <template v-if="metaRecReport.totals.fallidos">{{ metaRecReport.totals.fallidos }} fallaron.</template>
-                Entran al Setter Funnel como "conversación abierta".
-              </p>
-            </div>
-
-            <div class="modal-footer-actions">
-              <button type="button" class="btn-action-ghost" @click="showMetaRecModal = false">Cerrar</button>
-              <button
-                type="button"
-                class="btn-action-primary"
-                :disabled="metaRecLoading || !metaRecReport.totals.faltantes"
-                @click="runMetaReconciliation(true)"
-              >
-                Recuperar {{ metaRecReport.totals.faltantes }} lead(s) faltante(s)
-              </button>
-            </div>
-          </template>
-        </div>
-      </div>
-    </div>
+    <MetaReconciliationModal v-model="showMetaRecModal" @imported="fetchAll" />
 
     <!-- ================================================================= -->
     <!-- MODAL 3: Eliminar Columna con Reasignación de Leads               -->
@@ -801,9 +689,9 @@
                 <span class="info-label">DNI:</span>
                 <span class="info-value selectable">{{ selectedLead.dni }}</span>
               </div>
-              <div v-if="selectedLead.assigned_to" class="info-item">
+              <div class="info-item">
                 <span class="info-label">Asignado a:</span>
-                <span class="info-value selectable">{{ selectedLead.assigned_to }}</span>
+                <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
               </div>
             </div>
 
@@ -1219,6 +1107,8 @@ import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
 import WinDealModal from '../components/WinDealModal.vue';
 import LeadNotes from '../components/LeadNotes.vue';
+import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
+import LeadAssignee from '../components/LeadAssignee.vue';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
@@ -1353,57 +1243,8 @@ const editColumnForm = reactive({
 
 const showDeleteColModal = ref(false);
 
-/* ------------------- Conciliación con Meta Lead Ads -------------------- */
-/*
- * Dos pasos a propósito: "Comparar" solo lee y "Recuperar" escribe. Traer
- * leads perdidos agrega gente al funnel que el equipo va a trabajar, así que
- * no puede ser un efecto de abrir una pantalla.
- */
 const showMetaRecModal = ref(false);
-const metaRecLoading = ref(false);
-const metaRecError = ref('');
-const metaRecReport = ref(null);
-const metaRecForm = reactive({ since: '', until: '' });
 
-const PLATFORM_LABELS = { fb: 'Facebook', ig: 'Instagram', desconocida: 'Sin dato' };
-function platformLabel(platform) {
-  return PLATFORM_LABELS[platform] || platform;
-}
-
-function openMetaReconciliation() {
-  metaRecError.value = '';
-  showMetaRecModal.value = true;
-  if (!metaRecReport.value) runMetaReconciliation(false);
-}
-
-async function runMetaReconciliation(apply) {
-  if (apply && !window.confirm('Se van a importar los leads faltantes al Setter Funnel. ¿Continuar?')) return;
-
-  metaRecLoading.value = true;
-  metaRecError.value = '';
-  try {
-    const query = new URLSearchParams();
-    if (metaRecForm.since) query.set('since', metaRecForm.since);
-    if (metaRecForm.until) query.set('until', metaRecForm.until);
-
-    const response = apply
-      ? await apiFetch('/api/leads/meta-reconciliation', {
-          method: 'POST',
-          body: JSON.stringify({ since: metaRecForm.since || null, until: metaRecForm.until || null })
-        })
-      : await apiFetch(`/api/leads/meta-reconciliation?${query.toString()}`);
-
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.details || data.error || 'Error al consultar a Meta.');
-
-    metaRecReport.value = data;
-    if (apply && data.totals.importados) await fetchAll();
-  } catch (error) {
-    metaRecError.value = error.message;
-  } finally {
-    metaRecLoading.value = false;
-  }
-}
 const deletingColumn = ref(null);
 const targetReassignColKey = ref('nuevo');
 
@@ -1991,6 +1832,18 @@ async function fetchAll() {
 }
 
 /**
+ * El lead que vuelve del botón de asignar trae ya el responsable resuelto por
+ * el servidor. Se actualiza el objeto en su lugar —sin recargar el tablero—
+ * para no perder la paginación ni el scroll de las columnas; la ficha abierta
+ * suele ser el MISMO objeto, pero no siempre, así que se refresca aparte.
+ */
+function onLeadAssigned(updated) {
+  const lead = leads.value.find((l) => l.id === updated.id);
+  if (lead) Object.assign(lead, updated);
+  if (selectedLead.value?.id === updated.id) Object.assign(selectedLead.value, updated);
+}
+
+/**
  * Mover un lead a la etapa ganadora no es un cambio de estado más: abre el
  * modal de cierre para registrar el primer pago, y solo si el vendedor lo
  * completa se mueve el lead, se crea el proyecto y nace el ingreso. Los leads
@@ -2409,38 +2262,6 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.meta-rec-range {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.meta-rec-range .form-control { width: auto; }
-.meta-rec-range .form-label { margin: 0; }
-
-.meta-rec-totals {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 0.6rem;
-}
-
-/* La tabla se desplaza dentro de su caja: un formulario con nombre largo no
-   puede hacer que el modal entero se mueva en horizontal. */
-.meta-rec-table {
-  display: block;
-  overflow-x: auto;
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.82rem;
-}
-.meta-rec-table th,
-.meta-rec-table td {
-  padding: 0.35rem 0.6rem;
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
-  white-space: nowrap;
-}
-.meta-rec-table th { color: var(--text-muted); font-weight: 600; }
 
 /* ── Edición de los datos del lead (dentro del modal de detalle) ── */
 .lead-edit-btn {
@@ -3212,10 +3033,13 @@ onMounted(() => {
   background: var(--bg-card-solid);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  padding: 0.5rem 0.7rem;
+  /* El margen derecho es la franja del círculo del responsable: reservada acá
+     para que un nombre largo se recorte antes de pasarle por debajo. */
+  padding: 0.5rem 2.4rem 0.5rem 0.7rem;
   cursor: grab;
   box-shadow: var(--shadow-sm);
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.2s ease;
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -3223,6 +3047,14 @@ onMounted(() => {
   height: var(--lead-card-h);
   flex-shrink: 0;
   overflow: hidden;
+}
+
+/* Responsable comercial: fuera del flujo, así la tarjeta conserva su alto. */
+.card-assignee {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .kanban-lead-card:hover {
@@ -3977,6 +3809,13 @@ onMounted(() => {
 
 .info-value.selectable {
   user-select: all;
+}
+
+/* El botón de asignar en la ficha no se estira a lo ancho del renglón: el
+   área de clic es el círculo con el nombre, no toda la fila. */
+.info-item > .lead-assignee-btn {
+  align-self: flex-start;
+  margin-top: 0.1rem;
 }
 
 .lead-notes-panel { margin-top: 1.25rem; }

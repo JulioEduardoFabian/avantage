@@ -1,5 +1,6 @@
 import { db } from '../db/connection.js';
 import { LeadStageChangeService } from './leadStageChangeService.js';
+import { UserService } from './userService.js';
 import {
   SETTER_ONLY_STATUSES,
   isSalesFunnelStatus,
@@ -28,6 +29,39 @@ export function phoneMatchKey(phone) {
   return digits.slice(-9);
 }
 
+/**
+ * Lo que se escribe en la ficha al asignarla a alguien (o al soltarla).
+ *
+ * Escribe las DOS columnas a propósito: `assigned_user_id` es el enlace con la
+ * cuenta —la verdad, la que sobrevive a que la persona cambie de nombre— y
+ * `assigned_to` es la copia legible que ya leían la Base de Datos, el buscador
+ * de los dos tableros y el bot. Dejar el texto viejo en pie haría que la misma
+ * ficha dijera "Kevin" en una pantalla y "Lucía" en la otra.
+ *
+ * Es una función aparte y exportada porque es la regla del módulo: cualquier
+ * camino nuevo de asignación tiene que pasar por acá para que las dos columnas
+ * no se separen nunca.
+ */
+export function assignmentPatch(user) {
+  if (!user) return { assigned_user_id: null, assigned_to: null };
+  return { assigned_user_id: user.id, assigned_to: user.name };
+}
+
+/**
+ * ¿Este texto libre que llega por `updateLead()` rompe el enlace con el usuario?
+ *
+ * La ficha de la Base de Datos manda `assignedTo` como texto en cada guardado,
+ * casi siempre con el mismo nombre que ya tiene. Si eso soltara el enlace,
+ * editar el DNI de un lead lo dejaría "sin asignar" en los tableros. Solo se
+ * suelta cuando el texto nombra a otra persona (alguien de fuera del panel,
+ * que es para lo que el campo libre sigue sirviendo).
+ */
+export function freeTextBreaksLink(lead, text) {
+  if (!lead?.assigned_user_id) return false;
+  const current = String(lead.assigned_to || '').trim().toLowerCase();
+  return String(text || '').trim().toLowerCase() !== current;
+}
+
 /** Los mismos dígitos, calculados en SQL sobre la columna `phone`. */
 export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
@@ -36,8 +70,9 @@ export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLAC
  * del chatbot y prospectos capturados en la Base de Datos).
  */
 export class LeadService {
-  constructor({ stageChangeService } = {}) {
+  constructor({ stageChangeService, userService } = {}) {
     this.stageChanges = stageChangeService || new LeadStageChangeService();
+    this.users = userService || new UserService();
   }
 
   async createLead({
@@ -71,6 +106,16 @@ export class LeadService {
     metaPlatform,
     metaCreatedTime
   }) {
+    /*
+     * Si el responsable llega como texto y nombra a alguien del área comercial
+     * (el alta manual lo elige de la lista del equipo), el lead nace ya
+     * enlazado a esa cuenta. El valor por defecto —"Kevin", de cuando el campo
+     * era texto libre— no corresponde a ninguna cuenta mientras nadie se llame
+     * así en el panel: queda como nombre y el tablero lo muestra igual.
+     */
+    const assignedText = assignedTo || 'Kevin';
+    const assignedUser = await this.users.findCommercialByName(assignedText);
+
     const [id] = await db('leads').insert({
       topic: topic || 'Asesoría de Tesis',
       academic_level: academicLevel || 'Pregrado (Bachiller/Título)',
@@ -91,7 +136,8 @@ export class LeadService {
       department: department || null,
       province: province || null,
       address: address || null,
-      assigned_to: assignedTo || 'Kevin',
+      assigned_to: assignedUser ? assignedUser.name : assignedText,
+      assigned_user_id: assignedUser ? assignedUser.id : null,
       source: source || 'Chatbot Web',
       status: status || 'nuevo',
       meta_leadgen_id: metaLeadgenId || null,
@@ -144,9 +190,15 @@ export class LeadService {
         'pago.id as initial_payment_id',
         'pago.code as initial_payment_code',
         'pago.monto as initial_payment_monto',
-        'pago.estado as initial_payment_estado'
+        'pago.estado as initial_payment_estado',
+        // El nombre se lee de `users` y no de la copia en `assigned_to`: así
+        // renombrar a alguien en Roles y Permisos se ve al instante en los dos
+        // tableros, sin reescribir leads.
+        'asesor.name as assigned_user_name',
+        'asesor.email as assigned_user_email'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
+      .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
@@ -307,14 +359,49 @@ ${note}` : note;
         'pago.id as initial_payment_id',
         'pago.code as initial_payment_code',
         'pago.monto as initial_payment_monto',
-        'pago.estado as initial_payment_estado'
+        'pago.estado as initial_payment_estado',
+        'asesor.name as assigned_user_name',
+        'asesor.email as assigned_user_email'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
+      .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
       .where('leads.id', id)
       .first();
+  }
+
+  /**
+   * Pone (o saca) al responsable comercial de un lead. `userId` null = sin
+   * asignar.
+   *
+   * Verifica acá —y no solo en el desplegable del tablero— que el usuario sea
+   * del área comercial: la regla que se ve y la que se aplica no pueden decir
+   * cosas distintas, y esta ruta la puede llamar cualquier cliente con el
+   * permiso `leads.view`.
+   *
+   * No toca el status ni el funnel: asignar es decir quién trabaja el lead, no
+   * moverlo de etapa. Por eso tampoco pasa por `updateLeadStatus()` ni deja
+   * nada en `lead_stage_changes`.
+   */
+  async assignLead(id, userId) {
+    const lead = await this.getLeadById(id);
+    if (!lead) return null;
+
+    const empty = userId === null || userId === undefined || userId === '';
+    let user = null;
+    if (!empty) {
+      user = await this.users.findCommercialMember(userId);
+      if (!user) {
+        const error = new Error('Ese usuario no existe o no pertenece al área comercial.');
+        error.code = 'NOT_COMMERCIAL';
+        throw error;
+      }
+    }
+
+    await db('leads').where({ id }).update(assignmentPatch(user));
+    return this.getLeadById(id);
   }
 
   /**
@@ -422,7 +509,27 @@ ${note}` : note;
     if (data.province !== undefined) updatePayload.province = data.province;
     if (data.address !== undefined) updatePayload.address = data.address;
     if (data.assignedTo !== undefined || data.assigned_to !== undefined) {
-      updatePayload.assigned_to = data.assignedTo || data.assigned_to;
+      const texto = (data.assignedTo ?? data.assigned_to) || null;
+      updatePayload.assigned_to = texto;
+      /*
+       * La asignación también llega como texto desde la ficha de la Base de
+       * Datos. Mientras nombre a la misma persona no se toca nada (ese
+       * formulario reenvía el campo en cada guardado, y soltar el enlace al
+       * corregir un DNI dejaría el lead "sin asignar" en los tableros).
+       *
+       * Si nombra a otra: cuando es alguien del área comercial se enlaza su
+       * cuenta —la misma asignación hecha desde dos pantallas tiene que dejar
+       * la ficha en el mismo estado— y cuando no (un asesor sin cuenta en el
+       * panel, que es para lo que el campo libre sigue sirviendo) queda solo
+       * el texto, sin enlace.
+       */
+      const actual = await this.getLeadById(id);
+      const sigueSiendoElMismo = Boolean(actual?.assigned_user_id) && !freeTextBreaksLink(actual, texto);
+      if (!sigueSiendoElMismo) {
+        const user = texto ? await this.users.findCommercialByName(texto) : null;
+        updatePayload.assigned_user_id = user ? user.id : null;
+        if (user) updatePayload.assigned_to = user.name;
+      }
     }
     if (data.source !== undefined) updatePayload.source = data.source;
     if (data.overallViabilityScore !== undefined) updatePayload.overall_viability_score = data.overallViabilityScore;
