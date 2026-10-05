@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <main class="container-fluid database-page-wrapper">
     <!-- Header de la Vista -->
     <header class="database-header">

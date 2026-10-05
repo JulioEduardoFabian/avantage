@@ -75,13 +75,16 @@ import IncomeTab from './finance/IncomeTab.vue';
 import JournalTab from './finance/JournalTab.vue';
 import FixedExpensesTab from './finance/FixedExpensesTab.vue';
 import SalariesTab from './finance/SalariesTab.vue';
+import CommissionsTab from './finance/CommissionsTab.vue';
 
 const TABS = [
   { key: 'overview', label: 'Resumen Financiero', icon: '📊', component: OverviewTab },
   { key: 'income', label: 'Ingresos y Cierres', icon: '📥', component: IncomeTab },
   { key: 'journal', label: 'Libro Diario', icon: '📖', component: JournalTab },
   { key: 'fixed', label: 'Gastos Fijos', icon: '🏢', component: FixedExpensesTab },
-  { key: 'salaries', label: 'Salarios', icon: '🧾', component: SalariesTab }
+  { key: 'salaries', label: 'Salarios', icon: '🧾', component: SalariesTab },
+  // Al lado de Salarios a propósito: la comisión se devenga acá y se paga allá.
+  { key: 'commissions', label: 'Comisiones', icon: '💰', component: CommissionsTab }
 ];
 
 const activeTab = ref('overview');

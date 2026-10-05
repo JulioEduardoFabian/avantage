@@ -284,11 +284,12 @@ antes de tocar el arranque de producción.
   campo libre sigue sirviendo) queda solo el texto. Reenviar el mismo nombre no suelta el enlace —
   ese formulario manda el campo en cada guardado, y corregir un DNI no puede dejar el lead sin
   asignar.
-  El **área comercial** no es una columna ni una lista de nombres: son los usuarios cuyo rol tiene
-  `leads.view` (`userService.listCommercialTeam()`, `GET /api/leads/assignable-users`), o sea los
-  que pueden abrir el funnel. Definirlo por el permiso es lo que hace que los roles que el equipo
-  cree después ("Closer", "Setter") entren solos. La regla se verifica en el servidor
-  (`assignLead()` rechaza con 422 a quien no es del área) y no solo en el desplegable.
+  El **área comercial** no es una columna ni una lista de nombres: son los usuarios con `leads.view`
+  o `setter.view` **efectivos** (`userService.listCommercialTeam()`, `GET
+  /api/leads/assignable-users`), o sea los que pueden trabajar un lead en alguno de los dos
+  tableros. Definirlo por el permiso es lo que hace que los roles que el equipo cree después entren
+  solos. La regla se verifica en el servidor (`assignLead()` rechaza con 422 a quien no es del área)
+  y no solo en el desplegable.
   Asignar **no mueve el funnel**: no pasa por `updateLeadStatus()` ni deja nada en
   `lead_stage_changes`. La tarjeta tiene alto fijo (`--lead-card-h`, calibrado para que entren
   cinco/diez por columna sin scroll), así que el círculo va en una franja reservada a la derecha y
@@ -315,9 +316,50 @@ antes de tocar el arranque de producción.
   dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
   El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
   y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
-- **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`). Los
-  permisos son "herramientas" habilitables (`leads.view`, `projects.view`, `roles.manage`,
-  `finance.view`, ...); se resuelven una vez en el login y se embeben en el JWT.
+- **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`), más
+  `user_permissions`, que son las **excepciones de una persona** sobre lo que le da su rol. Los
+  permisos efectivos (rol + otorgados − revocados) se resuelven en UN solo sitio
+  (`userService.getUserWithPermissions()`), una vez en el login, y viajan embebidos en el JWT: un
+  cambio de permisos se ve cuando el navegador refresca la sesión (`/api/auth/me`), no al instante.
+  Cada permiso es **un botón del menú lateral** y no un paquete de pantallas: `leads.view` abría
+  once, y con el equipo partido en setter y closer dar el tablero del setter obligaba a dar también
+  el bot y los documentos. Las claves nuevas (`setter.view`, `campaigns.view`, `webhooks.view`,
+  `social.view`, `instagram.view`, `whatsapp.view`, `bot.manage`, `availability.view`,
+  `documents.view`, `database.view`) se reparten igual en las rutas de `server.js`; las de datos
+  compartidos —`/api/leads*`, `/api/funnel-columns*`, las notas— van con
+  `requireAnyPermission('leads.view', 'setter.view')`, porque son el mismo lead visto desde los dos
+  tableros. Cotizar y cerrar (`/win`, `/quote`) siguen siendo solo del closer.
+  Una excepción que repite lo que el rol ya dice **se borra en vez de guardarse**
+  (`setUserPermissionOverrides()`): guardada, cambiar de rol a esa persona no cambiaría nada: sus
+  permisos viejos quedarían congelados como excepciones.
+  La lista de permisos del seed `001_init_rbac.js` tiene que ser la misma que arman las migraciones:
+  ese seed **borra** `permissions` y la reescribe, así que una lista corta deja una base recién
+  sembrada sin Finanzas ni Contratos aunque sus migraciones ya hayan corrido.
+- **Setter y Closer** son dos roles y un área. La setter trabaja el Setter Funnel y agenda; el
+  closer recibe el lead agendado, cotiza y cierra. A los dos se les asignan leads porque el **área
+  comercial** se define por permiso y no por nombre de rol: `listCommercialTeam()` toma a quien
+  tenga `leads.view` o `setter.view` —efectivos, con las excepciones aplicadas— o sea a quien pueda
+  trabajar un lead en alguno de los dos tableros.
+- La **comisión de la setter** es el 2% de la venta que el closer cerró con el lead que ella le
+  pasó (`sales_commissions`, `commissionService.js`, pestaña "Comisiones" en Finanzas bajo
+  `finance.view`). Dos sellos en `leads` la sostienen: `setter_user_id` se escribe UNA vez, en el
+  instante de la graduación (el mismo que `sales_funnel_at`), con quien tenía el lead asignado
+  entonces — calculada al cerrar mirando el responsable actual, la comisión sería siempre del
+  closer, porque para entonces la ficha ya está a su nombre; `closer_user_id` se escribe al ganar,
+  con quien registró el cierre. No comisiona si no hay setter sellado, si lo cerró la misma persona
+  que lo trabajó, o si la venta no tiene `total_amount`, y el motivo queda en el log
+  (`commissionEligibility()`).
+  Nace desde `leadService.updateLeadStatus()` y no desde la ruta de cierre: hay más de un camino a
+  la etapa final —el modal de cierre con el primer pago y el arrastre en el Kanban de un lead que ya
+  lo tenía— y puesta en cada ruta, a la tercera se le olvida (misma razón que el aviso de proyecto
+  nuevo en `projectService`). **No puede tumbar la venta**: si falla, el lead queda ganado igual y
+  el error va al log. Un lead comisiona una sola vez por persona (índice único), así que reabrir y
+  volver a cerrar no paga dos veces. La etapa ganadora se pregunta con `loadWinningStatuses()`
+  (`ganado` + la columna marcada `final`), no comparando contra una constante: el que renombra la
+  columna no sabe que de eso cuelga la comisión. El porcentaje y la base se guardan en cada fila:
+  cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago — cuando se le abone,
+  ese egreso se registra en Salarios, y por eso las comisiones no entran en `finance_journal` ni en
+  los totales de Finanzas.
 - **Bot de WhatsApp** (`whatsappBotService.js`, el servicio más grande del backend): conversa con
   leads, agenda reuniones vía `googleCalendarService`/`scheduledMeetingService`, y hace seguimiento
   de conversaciones inactivas (recordatorio a la 1h, estado "Congelado" a las 2h — barrido cada

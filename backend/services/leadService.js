@@ -5,8 +5,10 @@ import {
   SETTER_ONLY_STATUSES,
   isSalesFunnelStatus,
   leadHasGraduated,
-  loadSalesFunnelStatuses
+  loadSalesFunnelStatuses,
+  loadWinningStatuses
 } from './salesFunnelStage.js';
+import { CommissionService } from './commissionService.js';
 
 /**
  * Dígitos con los que se compara un teléfono.
@@ -62,6 +64,25 @@ export function freeTextBreaksLink(lead, text) {
   return String(text || '').trim().toLowerCase() !== current;
 }
 
+/**
+ * Quién le pasó este lead al closer, sellado en el momento de la graduación.
+ *
+ * Se guarda al entrar al Funnel de Ventas y nunca después: ahí el responsable
+ * del lead todavía es la setter que lo trabajó, y apenas lo toma el closer la
+ * ficha pasa a nombre de él. Calculada al cerrar la venta, la comisión sería
+ * siempre del closer.
+ *
+ * Primero el responsable asignado (es el dato del trabajo real) y, si el lead
+ * no tenía a nadie, la persona que hizo el pase. El bot no cuenta: cuando
+ * gradúa un lead sin responsable no hay a quién comisionar, y eso es más
+ * honesto que atribuírselo a cualquiera.
+ */
+export function setterSeal(lead, actor, actorType) {
+  if (lead?.setter_user_id) return {};
+  const setterId = lead?.assigned_user_id || (actorType === 'user' ? actor?.id : null);
+  return setterId ? { setter_user_id: setterId } : {};
+}
+
 /** Los mismos dígitos, calculados en SQL sobre la columna `phone`. */
 export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
@@ -70,9 +91,10 @@ export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLAC
  * del chatbot y prospectos capturados en la Base de Datos).
  */
 export class LeadService {
-  constructor({ stageChangeService, userService } = {}) {
+  constructor({ stageChangeService, userService, commissionService } = {}) {
     this.stageChanges = stageChangeService || new LeadStageChangeService();
     this.users = userService || new UserService();
+    this.commissions = commissionService || new CommissionService();
   }
 
   async createLead({
@@ -195,10 +217,16 @@ export class LeadService {
         // renombrar a alguien en Roles y Permisos se ve al instante en los dos
         // tableros, sin reescribir leads.
         'asesor.name as assigned_user_name',
-        'asesor.email as assigned_user_email'
+        'asesor.email as assigned_user_email',
+        // Quién lo pasó al funnel de ventas y quién lo cerró: los dos sellos se
+        // leen por nombre desde la ficha y desde Comisiones.
+        'setter.name as setter_name',
+        'closer.name as closer_name'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
+      .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
+      .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
@@ -361,10 +389,14 @@ ${note}` : note;
         'pago.monto as initial_payment_monto',
         'pago.estado as initial_payment_estado',
         'asesor.name as assigned_user_name',
-        'asesor.email as assigned_user_email'
+        'asesor.email as assigned_user_email',
+        'setter.name as setter_name',
+        'closer.name as closer_name'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
+      .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
+      .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
@@ -433,7 +465,10 @@ ${note}` : note;
       // los leads que nacieron ya con una etapa comercial nunca pasan por el
       // camino de abajo.
       if (!current.sales_funnel_at && isSalesFunnelStatus(status, salesStatuses)) {
-        await db('leads').where({ id }).update({ sales_funnel_at: db.fn.now() });
+        await db('leads').where({ id }).update({
+          sales_funnel_at: db.fn.now(),
+          ...setterSeal(current, actor, actorType)
+        });
       }
       return this.getLeadById(id);
     }
@@ -455,6 +490,7 @@ ${note}` : note;
     const patch = { status };
     if (staysCommercial && !current.sales_funnel_at) {
       patch.sales_funnel_at = db.fn.now();
+      Object.assign(patch, setterSeal(current, actor, actorType));
     } else if (current.sales_funnel_at && actorType === 'user' && SETTER_ONLY_STATUSES.includes(status)) {
       // Una persona lo devolvió a propósito a una etapa del setter. Las etapas
       // de bandeja ("nuevo") no cuentan: están en la primera columna de los dos
@@ -470,6 +506,38 @@ ${note}` : note;
       actor,
       reason
     });
+
+    /*
+     * Venta ganada: se sella quién cerró y nace la comisión de la setter.
+     *
+     * Va acá y no en la ruta de cierre porque hay más de un camino a la etapa
+     * final (el modal de cierre con el primer pago, y el arrastre en el Kanban
+     * de un lead que ya lo tenía), y todos pasan por este método.
+     *
+     * No puede tumbar la venta: si el registro de la comisión falla, el lead
+     * queda ganado igual y el error se ve en el log. Una comisión que falta se
+     * detecta en la pantalla de Comisiones; un cierre perdido, no.
+     */
+    const winning = await loadWinningStatuses();
+    if (winning.has(status)) {
+      try {
+        const ganado = await this.getLeadById(id);
+        const closerId = actorType === 'user' ? actor.id : (ganado.assigned_user_id || null);
+        if (closerId && !ganado.closer_user_id) {
+          await db('leads').where({ id }).update({ closer_user_id: closerId });
+          ganado.closer_user_id = closerId;
+        }
+        const { commission, reason } = await this.commissions.registerForWonLead(ganado);
+        if (commission) {
+          console.log(`💰 [Comisiones] ${commission.beneficiary_name} suma S/ ${commission.monto} por el lead #${id}.`);
+        } else if (reason) {
+          console.log(`ℹ️ [Comisiones] El lead #${id} se ganó sin comisión: ${reason}`);
+        }
+      } catch (error) {
+        console.error(`❌ [Comisiones] No se pudo registrar la comisión del lead #${id}:`, error.message);
+      }
+    }
+
     return this.getLeadById(id);
   }
 

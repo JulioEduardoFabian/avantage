@@ -56,6 +56,7 @@ import { DeliverableSettingsService } from './services/deliverableSettingsServic
 import { FinanceService } from './services/financeService.js';
 import { FinanceLedgerService } from './services/financeLedgerService.js';
 import { FinanceSalaryService } from './services/financeSalaryService.js';
+import { CommissionService } from './services/commissionService.js';
 import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
 import { signToken, requireAuth, requirePermission, requireAnyPermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
@@ -118,7 +119,11 @@ app.use(express.json({
 // Instanciar servicios
 const ollamaService = new OllamaService();
 const emailService = new EmailService();
-const leadService = new LeadService();
+// La comisión de la setter nace sola al ganarse un lead, así que el servicio
+// viaja dentro de leadService y no colgado de la ruta de cierre: hay más de un
+// camino a "Ganado".
+const commissionService = new CommissionService();
+const leadService = new LeadService({ commissionService });
 const funnelColumnService = new FunnelColumnService();
 const careerCatalogService = new CareerCatalogService();
 const clientAccountService = new ClientAccountService();
@@ -1607,7 +1612,7 @@ app.get('/api/history', (req, res) => {
 /**
  * Listado de leads registrados (vista de administración / funnel de ventas / base de datos)
  */
-app.get('/api/leads', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const leads = await leadService.getAllLeads();
     res.json({ total: leads.length, leads });
@@ -1620,7 +1625,7 @@ app.get('/api/leads', requireAuth, requirePermission('leads.view'), async (req, 
 /**
  * Registro manual de nuevo lead / prospecto desde el formulario de Base de Datos
  */
-app.post('/api/leads', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const { fullName, full_name, phone } = req.body;
     const name = fullName || full_name;
@@ -1646,7 +1651,7 @@ app.post('/api/leads', requireAuth, requirePermission('leads.view'), async (req,
  * ya tiene DB_* y META_PAGE_ACCESS_TOKEN configurados correctamente — un
  * script lanzado por SSH en hosting compartido no hereda esas variables.
  */
-app.post('/api/leads/backfill-meta-fields', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/leads/backfill-meta-fields', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const result = await runMetaLeadgenBackfill();
     res.json(result);
@@ -1666,7 +1671,7 @@ app.post('/api/leads/backfill-meta-fields', requireAuth, requirePermission('lead
  * Separadas a propósito: traer leads perdidos es una escritura sobre el
  * funnel del equipo y no algo que deba pasar por mirar una pantalla.
  */
-app.get('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/meta-reconciliation', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const report = await metaLeadReconciliationService.reconcile({
       since: req.query.since || null,
@@ -1680,7 +1685,7 @@ app.get('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads.
   }
 });
 
-app.post('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/leads/meta-reconciliation', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const report = await metaLeadReconciliationService.reconcile({
       since: req.body?.since || null,
@@ -1701,7 +1706,7 @@ app.post('/api/leads/meta-reconciliation', requireAuth, requirePermission('leads
  * El GET muestra qué fundiría; el POST lo hace. Borra filas, así que la
  * separación entre mirar y ejecutar acá importa más que en ningún otro lado.
  */
-app.get('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/merge-duplicate-meta', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     res.json(await mergeDuplicateMetaLeads({ apply: false }));
   } catch (error) {
@@ -1710,7 +1715,7 @@ app.get('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('leads
   }
 });
 
-app.post('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/leads/merge-duplicate-meta', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     res.json(await mergeDuplicateMetaLeads({ apply: true }));
   } catch (error) {
@@ -1729,7 +1734,7 @@ app.post('/api/leads/merge-duplicate-meta', requireAuth, requirePermission('lead
  * en proyectos. Declarada ANTES de `/api/leads/:id` o Express leería
  * "assignable-users" como un id de lead.
  */
-app.get('/api/leads/assignable-users', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/assignable-users', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const users = await userService.listCommercialTeam();
     res.json({ users });
@@ -1742,7 +1747,7 @@ app.get('/api/leads/assignable-users', requireAuth, requirePermission('leads.vie
 /**
  * Detalle de un lead específico
  */
-app.get('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const lead = await leadService.getLeadById(req.params.id);
     if (!lead) {
@@ -1763,7 +1768,7 @@ app.get('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (r
  * de /api/leads/... para no competir con `/api/leads/:id`.
  */
 
-app.get('/api/leads/:id/notes', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const notes = await leadNoteService.listForLead(req.params.id);
     res.json({ notes });
@@ -1773,7 +1778,7 @@ app.get('/api/leads/:id/notes', requireAuth, requirePermission('leads.view'), as
   }
 });
 
-app.post('/api/leads/:id/notes', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/leads/:id/notes', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const note = await leadNoteService.create(req.params.id, { body: req.body?.body, author: req.user });
     res.status(201).json({ note });
@@ -1794,7 +1799,7 @@ app.post('/api/leads/:id/notes', requireAuth, requirePermission('leads.view'), a
  * Setter": sin esta lista, la única forma de investigarlos era deducir qué
  * pudo haberlo movido. Ahora se lee desde la ficha del lead.
  */
-app.get('/api/leads/:id/stage-history', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/leads/:id/stage-history', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const history = await leadStageChangeService.listForLead(req.params.id);
     res.json({ history });
@@ -1804,7 +1809,7 @@ app.get('/api/leads/:id/stage-history', requireAuth, requirePermission('leads.vi
   }
 });
 
-app.delete('/api/lead-notes/:noteId', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.delete('/api/lead-notes/:noteId', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     await leadNoteService.remove(req.params.noteId, {
       userId: req.user.id,
@@ -1824,7 +1829,7 @@ app.delete('/api/lead-notes/:noteId', requireAuth, requirePermission('leads.view
  * Al llegar al estado final del funnel ("ganado") se crea automáticamente el
  * proyecto asociado, con estado "Creado".
  */
-app.patch('/api/leads/:id/status', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.patch('/api/leads/:id/status', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const { status } = req.body;
     if (!status || typeof status !== 'string') {
@@ -1860,7 +1865,7 @@ app.patch('/api/leads/:id/status', requireAuth, requirePermission('leads.view'),
  * leads es un gesto de un clic sobre la tarjeta, y mandar la ficha entera
  * desde el tablero arriesga pisar datos que el tablero no cargó.
  */
-app.patch('/api/leads/:id/assignee', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.patch('/api/leads/:id/assignee', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const { userId } = req.body || {};
     const lead = await leadService.assignLead(req.params.id, userId ?? null);
@@ -1986,7 +1991,7 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), upl
 /**
  * Actualizar datos completos de un lead / prospecto (desde el modal de Base de Datos)
  */
-app.put('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.put('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const updated = await leadService.updateLead(req.params.id, req.body, { actor: req.user });
     if (!updated) {
@@ -2003,7 +2008,7 @@ app.put('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (r
 /**
  * Eliminar un lead / prospecto
  */
-app.delete('/api/leads/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.delete('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const deleted = await leadService.deleteLead(req.params.id);
     if (!deleted) {
@@ -2073,14 +2078,14 @@ app.post('/api/webhooks/meta', (req, res) => {
  * para verificar en la UI que la suscripción está realmente conectada mientras
  * la app sigue en modo desarrollo.
  */
-app.get('/api/webhooks/meta/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   res.json({ events: metaWebhookService.getRecentEvents() });
 });
 
 /**
  * Limpia el historial de eventos de prueba mostrado en la UI.
  */
-app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   metaWebhookService.clearRecentEvents();
   res.json({ success: true });
 });
@@ -2089,7 +2094,7 @@ app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('leads.vi
  * Interacciones (comentarios, reacciones, publicaciones, compartidos) de las
  * páginas de Facebook conectadas, recibidas vía el campo "feed" del webhook.
  */
-app.get('/api/social-interactions', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/social-interactions', requireAuth, requirePermission('social.view'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const itemType = req.query.itemType || null;
@@ -2109,7 +2114,7 @@ app.get('/api/social-interactions', requireAuth, requirePermission('leads.view')
  * (las URLs firmadas de Meta caducan). Responde 404 si no hay imagen — el
  * frontend muestra un marcador en su lugar.
  */
-app.get('/api/social-interactions/post-image/:postId', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/social-interactions/post-image/:postId', requireAuth, requirePermission('social.view'), async (req, res) => {
   try {
     const image = await pageInteractionService.getCachedPostImage(req.params.postId);
     if (!image) return res.status(404).end();
@@ -2125,7 +2130,7 @@ app.get('/api/social-interactions/post-image/:postId', requireAuth, requirePermi
 /**
  * Mensajes directos (Messenger) recibidos en la bandeja de entrada de la Página.
  */
-app.get('/api/page-messages', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/page-messages', requireAuth, requirePermission('social.view'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const [messages, stats] = await Promise.all([
@@ -2143,7 +2148,7 @@ app.get('/api/page-messages', requireAuth, requirePermission('leads.view'), asyn
  * Conteo de seguidores de la página: último valor sondeado + historial, para
  * ver la tendencia (no es un contador en tiempo real, ver pageFollowerService).
  */
-app.get('/api/social-followers', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/social-followers', requireAuth, requirePermission('social.view'), async (req, res) => {
   try {
     const [latest, history] = await Promise.all([
       pageFollowerService.getLatest(),
@@ -2160,7 +2165,7 @@ app.get('/api/social-followers', requireAuth, requirePermission('leads.view'), a
  * Fuerza un sondeo inmediato del conteo de seguidores (en vez de esperar al
  * siguiente ciclo automático).
  */
-app.post('/api/social-followers/poll', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/social-followers/poll', requireAuth, requirePermission('social.view'), async (req, res) => {
   try {
     const snapshot = await pageFollowerService.pollAndStore();
     res.json({ snapshot });
@@ -2173,7 +2178,7 @@ app.post('/api/social-followers/poll', requireAuth, requirePermission('leads.vie
 /**
  * Perfil y métricas de la cuenta de Instagram Business conectada
  */
-app.get('/api/instagram/profile', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/instagram/profile', requireAuth, requirePermission('instagram.view'), async (req, res) => {
   try {
     const profile = await instagramService.getProfile();
     res.json({ profile });
@@ -2186,7 +2191,7 @@ app.get('/api/instagram/profile', requireAuth, requirePermission('leads.view'), 
 /**
  * Publicaciones y Reels de la cuenta de Instagram
  */
-app.get('/api/instagram/media', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/instagram/media', requireAuth, requirePermission('instagram.view'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 12, 50);
     const media = await instagramService.getMedia(limit);
@@ -2200,7 +2205,7 @@ app.get('/api/instagram/media', requireAuth, requirePermission('leads.view'), as
 /**
  * Interacciones de Instagram: comentarios, menciones, DMs, respuestas a historias
  */
-app.get('/api/instagram/interactions', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/instagram/interactions', requireAuth, requirePermission('instagram.view'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const itemType = req.query.itemType || null;
@@ -2218,7 +2223,7 @@ app.get('/api/instagram/interactions', requireAuth, requirePermission('leads.vie
 /**
  * Estadísticas resumidas de Instagram
  */
-app.get('/api/instagram/stats', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/instagram/stats', requireAuth, requirePermission('instagram.view'), async (req, res) => {
   try {
     const stats = await instagramService.getStats();
     res.json({ stats });
@@ -2232,7 +2237,7 @@ app.get('/api/instagram/stats', requireAuth, requirePermission('leads.view'), as
  * Estado (sin exponer valores secretos) de las credenciales necesarias para
  * que el panel de Instagram muestre datos reales de la Graph API.
  */
-app.get('/api/instagram/config-status', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/instagram/config-status', requireAuth, requirePermission('instagram.view'), (req, res) => {
   res.json({
     hasPageAccessToken: !!process.env.META_PAGE_ACCESS_TOKEN,
     hasInstagramAccountId: !!process.env.META_INSTAGRAM_ACCOUNT_ID,
@@ -2291,14 +2296,14 @@ app.post('/api/webhooks/instagram', (req, res) => {
 /**
  * Últimos eventos crudos recibidos en el webhook de Instagram (JSON).
  */
-app.get('/api/webhooks/instagram/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/webhooks/instagram/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   res.json({ events: instagramWebhookService.getRecentEvents() });
 });
 
 /**
  * Limpia el historial de eventos de prueba de Instagram en la UI.
  */
-app.delete('/api/webhooks/instagram/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.delete('/api/webhooks/instagram/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   instagramWebhookService.clearRecentEvents();
   res.json({ success: true });
 });
@@ -2356,14 +2361,14 @@ app.post('/api/webhooks/whatsapp', (req, res) => {
  * Últimos eventos crudos recibidos en el webhook de WhatsApp, para verificar
  * en la UI que la suscripción está realmente conectada.
  */
-app.get('/api/webhooks/whatsapp/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/webhooks/whatsapp/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   res.json({ events: whatsappWebhookService.getRecentEvents() });
 });
 
 /**
  * Limpia el historial de eventos de prueba del webhook de WhatsApp.
  */
-app.delete('/api/webhooks/whatsapp/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.delete('/api/webhooks/whatsapp/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   whatsappWebhookService.clearRecentEvents();
   res.json({ success: true });
 });
@@ -2402,14 +2407,14 @@ app.post('/api/webhooks/ycloud', (req, res) => {
  * Últimos eventos crudos recibidos en el webhook de YCloud, para verificar en
  * la UI que la suscripción está realmente conectada.
  */
-app.get('/api/webhooks/ycloud/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/webhooks/ycloud/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   res.json({ events: ycloudWebhookService.getRecentEvents() });
 });
 
 /**
  * Limpia el historial de eventos de prueba del webhook de YCloud.
  */
-app.delete('/api/webhooks/ycloud/events', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.delete('/api/webhooks/ycloud/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   ycloudWebhookService.clearRecentEvents();
   res.json({ success: true });
 });
@@ -2417,7 +2422,7 @@ app.delete('/api/webhooks/ycloud/events', requireAuth, requirePermission('leads.
 /**
  * Listado de mensajes de WhatsApp recibidos y persistidos en la base de datos.
  */
-app.get('/api/whatsapp/messages', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/messages', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const [messages, stats] = await Promise.all([
@@ -2435,7 +2440,7 @@ app.get('/api/whatsapp/messages', requireAuth, requirePermission('leads.view'), 
  * Bandeja de conversaciones de WhatsApp: un registro por contacto con su
  * último mensaje.
  */
-app.get('/api/whatsapp/conversations', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/conversations', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const conversations = await whatsappMessageService.getConversations({ limit: 100 });
     res.json({ conversations });
@@ -2449,7 +2454,7 @@ app.get('/api/whatsapp/conversations', requireAuth, requirePermission('leads.vie
  * Exporta todas las conversaciones de WhatsApp de un día (hoy por defecto, o
  * ?date=YYYY-MM-DD) como un archivo de texto plano descargable.
  */
-app.get('/api/whatsapp/conversations/export', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/conversations/export', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const raw = (req.query.date || '').trim();
     if (raw && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
@@ -2473,7 +2478,7 @@ app.get('/api/whatsapp/conversations/export', requireAuth, requirePermission('le
  * sesión del bot). Queda registrado en `whatsapp_conversation_deletions` qué
  * usuario la eliminó, ya que los mensajes en sí no dejan rastro.
  */
-app.delete('/api/whatsapp/conversations/:waId', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.delete('/api/whatsapp/conversations/:waId', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const log = await whatsappMessageService.deleteConversation(req.params.waId, {
       deletedByUserId: req.user.id,
@@ -2494,7 +2499,7 @@ app.delete('/api/whatsapp/conversations/:waId', requireAuth, requirePermission('
  * Registro de auditoría de conversaciones de WhatsApp eliminadas: qué
  * contacto, cuántos mensajes y qué usuario la eliminó.
  */
-app.get('/api/whatsapp/conversations/deletions', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/conversations/deletions', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const deletions = await whatsappMessageService.getRecentDeletions({ limit: 50 });
     res.json({ deletions });
@@ -2507,7 +2512,7 @@ app.get('/api/whatsapp/conversations/deletions', requireAuth, requirePermission(
 /**
  * Hilo completo (entrantes + salientes) de un contacto de WhatsApp.
  */
-app.get('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const thread = await whatsappMessageService.getThread(req.params.waId, { limit: 200 });
     res.json({ messages: thread });
@@ -2522,7 +2527,7 @@ app.get('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermis
  * dentro de la ventana de 24h desde su último mensaje; fuera de ella, WhatsApp
  * exige una plantilla aprobada.
  */
-app.post('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const body = (req.body?.body || '').trim();
     if (!body) {
@@ -2549,7 +2554,7 @@ app.post('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermi
  * mensaje de WhatsApp — el link que dan Meta/YCloud en el webhook caduca, así
  * que el panel siempre pide esta copia cacheada en vez de esa URL original.
  */
-app.get('/api/whatsapp/messages/:id/media', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/messages/:id/media', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const message = await whatsappMessageService.getById(req.params.id);
     if (!message || !message.media_filename) return res.status(404).end();
@@ -2566,7 +2571,7 @@ app.get('/api/whatsapp/messages/:id/media', requireAuth, requirePermission('lead
  * Estado del flujo automático de Avan para una conversación (paso actual,
  * si terminó, si está activo).
  */
-app.get('/api/whatsapp/conversations/:waId/bot', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/conversations/:waId/bot', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const session = await whatsappBotService.getSession(req.params.waId);
     res.json({ session: session || null });
@@ -2579,7 +2584,7 @@ app.get('/api/whatsapp/conversations/:waId/bot', requireAuth, requirePermission(
 /**
  * Activa o pausa manualmente el bot Avan para una conversación.
  */
-app.patch('/api/whatsapp/conversations/:waId/bot', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.patch('/api/whatsapp/conversations/:waId/bot', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const enabled = !!req.body?.enabled;
     await whatsappBotService.setBotEnabled(req.params.waId, enabled);
@@ -2596,7 +2601,7 @@ app.patch('/api/whatsapp/conversations/:waId/bot', requireAuth, requirePermissio
  * borrar el historial de mensajes. Útil cuando una conversación de prueba ya
  * quedó "completed" o pausada y no vuelve a responder automáticamente.
  */
-app.post('/api/whatsapp/conversations/:waId/bot/reset', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/whatsapp/conversations/:waId/bot/reset', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     await whatsappBotService.resetSession(req.params.waId);
     res.json({ success: true });
@@ -2611,7 +2616,7 @@ app.post('/api/whatsapp/conversations/:waId/bot/reset', requireAuth, requirePerm
  * más el correo de invitación — para conversaciones atascadas en ese paso
  * (ver whatsappBotService.forceBookPendingSlot).
  */
-app.post('/api/whatsapp/conversations/:waId/bot/force-book', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/whatsapp/conversations/:waId/bot/force-book', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     await whatsappBotService.forceBookPendingSlot(req.params.waId);
     res.json({ success: true });
@@ -2626,7 +2631,7 @@ app.post('/api/whatsapp/conversations/:waId/bot/force-book', requireAuth, requir
  * de tono/objetivo para el LLM y los valores por defecto que se usan cuando
  * el lead no menciona su nivel, carrera o ámbito.
  */
-app.get('/api/whatsapp/bot-settings', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/bot-settings', requireAuth, requirePermission('bot.manage'), async (req, res) => {
   try {
     const settings = await whatsappBotSettingsService.get();
     res.json({ settings, promptDefaults: whatsappBotSettingsService.getPromptDefaults() });
@@ -2636,7 +2641,7 @@ app.get('/api/whatsapp/bot-settings', requireAuth, requirePermission('leads.view
   }
 });
 
-app.put('/api/whatsapp/bot-settings', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.put('/api/whatsapp/bot-settings', requireAuth, requirePermission('bot.manage'), async (req, res) => {
   try {
     const {
       toneInstructions, botIdentity, botObjective, promptRules,
@@ -2668,7 +2673,7 @@ app.put('/api/whatsapp/bot-settings', requireAuth, requirePermission('leads.view
  * ni marcar el día como enviado. Sirve para probar el aviso —y para reenviarlo
  * si el vendedor lo perdió— desde el panel del bot.
  */
-app.post('/api/whatsapp/bot/daily-agenda', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/whatsapp/bot/daily-agenda', requireAuth, requirePermission('bot.manage'), async (req, res) => {
   try {
     const result = await whatsappBotService.sendDailyAgendaToSalesperson({ force: true });
     res.json({ result });
@@ -2684,11 +2689,11 @@ app.post('/api/whatsapp/bot/daily-agenda', requireAuth, requirePermission('leads
  * respondió, y si el envío por WhatsApp tuvo éxito. Permite verificar
  * visualmente desde el panel de WhatsApp que el flujo está funcionando.
  */
-app.get('/api/whatsapp/bot-activity', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/whatsapp/bot-activity', requireAuth, requirePermission('bot.manage'), (req, res) => {
   res.json({ activity: whatsappBotService.getActivity() });
 });
 
-app.delete('/api/whatsapp/bot-activity', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.delete('/api/whatsapp/bot-activity', requireAuth, requirePermission('bot.manage'), (req, res) => {
   whatsappBotService.clearActivity();
   res.json({ success: true });
 });
@@ -2699,7 +2704,7 @@ app.delete('/api/whatsapp/bot-activity', requireAuth, requirePermission('leads.v
  * Ollama Cloud responda. Se usa para mostrar avisos claros en el panel si
  * falta alguna, en vez de que los mensajes fallen en silencio.
  */
-app.get('/api/whatsapp/config-status', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/whatsapp/config-status', requireAuth, requirePermission('whatsapp.view'), (req, res) => {
   res.json({
     whatsapp: {
       hasPhoneNumberId: !!process.env.META_WHATSAPP_PHONE_NUMBER_ID,
@@ -2720,7 +2725,7 @@ app.get('/api/whatsapp/config-status', requireAuth, requirePermission('leads.vie
  * frontend necesita para inicializar el SDK de Facebook y abrir el pop-up de
  * Embedded Signup.
  */
-app.get('/api/whatsapp/embedded-signup/config', requireAuth, requirePermission('leads.view'), (req, res) => {
+app.get('/api/whatsapp/embedded-signup/config', requireAuth, requirePermission('whatsapp.view'), (req, res) => {
   res.json(metaEmbeddedSignupService.getPublicConfig());
 });
 
@@ -2733,7 +2738,7 @@ app.get('/api/whatsapp/embedded-signup/config', requireAuth, requirePermission('
  * capturado en el frontend — el backend igual las valida contra lo que el
  * propio token de Meta autorizó antes de confiar en ellas.
  */
-app.post('/api/whatsapp/embedded-callback', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/whatsapp/embedded-callback', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const { code, wabaId, phoneNumberId, businessId, mode } = req.body || {};
     if (!code) {
@@ -2757,7 +2762,7 @@ app.post('/api/whatsapp/embedded-callback', requireAuth, requirePermission('lead
  * Cuentas de WhatsApp vinculadas por Embedded Signup (sin exponer el
  * access_token), para mostrarlas en el panel.
  */
-app.get('/api/whatsapp/embedded-accounts', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/whatsapp/embedded-accounts', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const accounts = await metaEmbeddedSignupService.listAccounts();
     res.json({ accounts });
@@ -2777,7 +2782,7 @@ app.get('/api/whatsapp/embedded-accounts', requireAuth, requirePermission('leads
  * motor conversacional necesita el hilo completo para tener contexto entre
  * turnos — usa un wa_id de prueba, no uno real.
  */
-app.post('/api/whatsapp/bot-test/simulate', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/whatsapp/bot-test/simulate', requireAuth, requirePermission('bot.manage'), async (req, res) => {
   try {
     const waId = (req.body?.waId || '').trim();
     const text = (req.body?.text || '').trim();
@@ -2796,7 +2801,7 @@ app.post('/api/whatsapp/bot-test/simulate', requireAuth, requirePermission('lead
 /**
  * Listado de columnas (etapas) del Kanban de Leads, ordenadas por posición.
  */
-app.get('/api/funnel-columns', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/funnel-columns', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const columns = await funnelColumnService.getAllColumns();
     res.json({ columns });
@@ -2809,7 +2814,7 @@ app.get('/api/funnel-columns', requireAuth, requirePermission('leads.view'), asy
 /**
  * Crear una nueva columna (etapa) del funnel de ventas
  */
-app.post('/api/funnel-columns', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/funnel-columns', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const { key, label, icon, color, final: isFinal, quoted: isQuoted } = req.body;
     if (!label || !label.trim()) {
@@ -2833,7 +2838,7 @@ app.post('/api/funnel-columns', requireAuth, requirePermission('leads.view'), as
 /**
  * Reordenar columnas del funnel (recibe el arreglo completo de keys en el nuevo orden)
  */
-app.patch('/api/funnel-columns/reorder', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.patch('/api/funnel-columns/reorder', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const { keys } = req.body;
     if (!Array.isArray(keys) || keys.length === 0) {
@@ -2850,7 +2855,7 @@ app.patch('/api/funnel-columns/reorder', requireAuth, requirePermission('leads.v
 /**
  * Editar nombre, icono, color o marca de "etapa ganadora" de una columna
  */
-app.put('/api/funnel-columns/:key', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.put('/api/funnel-columns/:key', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const existing = await funnelColumnService.getColumnByKey(req.params.key);
     if (!existing) {
@@ -2869,7 +2874,7 @@ app.put('/api/funnel-columns/:key', requireAuth, requirePermission('leads.view')
  * Eliminar una columna del funnel. Los leads que estén en ella deben
  * reasignarse desde el cliente antes de invocar este endpoint.
  */
-app.delete('/api/funnel-columns/:key', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.delete('/api/funnel-columns/:key', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const existing = await funnelColumnService.getColumnByKey(req.params.key);
     if (!existing) {
@@ -3203,7 +3208,7 @@ app.get('/api/contracts/client-leads', requireAuth, requirePermission('contracts
  * respuesta dice en `kinds` qué se incluyó, para que la pantalla lo explique
  * en vez de mostrar una lista incompleta sin avisar.
  */
-app.get('/api/documents', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/documents', requireAuth, requirePermission('documents.view'), async (req, res) => {
   try {
     const result = await documentService.list({
       search: req.query.search || null,
@@ -3294,7 +3299,7 @@ app.get('/api/contracts/:id/document', requireAuth, requirePermission('contracts
 /* ===================================================================== */
 
 /** Rendimiento en vivo de todas las campañas (embudo real + costos manuales). */
-app.get('/api/campaigns/performance', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/performance', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const { from = null, to = null } = req.query;
     const report = await campaignService.getPerformance({ from, to });
@@ -3316,7 +3321,7 @@ app.get('/api/campaigns/performance', requireAuth, requirePermission('leads.view
  * `campaignIds` (opcional, separados por coma) limita la exportación a las
  * campañas que el usuario tenga filtradas en pantalla.
  */
-app.get('/api/campaigns/performance/export', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/performance/export', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const { from = null, to = null, campaignIds = null } = req.query;
     const ids = campaignIds
@@ -3342,7 +3347,7 @@ app.get('/api/campaigns/performance/export', requireAuth, requirePermission('lea
  * Responde 404 si la campaña no tiene imagen — el frontend muestra un
  * ícono de respaldo en su lugar.
  */
-app.get('/api/campaigns/:id/ads/:adId/image', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/:id/ads/:adId/image', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const image = await campaignService.getAdCreativeImage(req.params.id, req.params.adId);
     if (!image) return res.status(404).end();
@@ -3355,7 +3360,7 @@ app.get('/api/campaigns/:id/ads/:adId/image', requireAuth, requirePermission('le
   }
 });
 
-app.get('/api/campaigns/:id/image', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/:id/image', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const campaign = await campaignService.getCampaign(req.params.id);
     if (!campaign || !campaign.ad_image_filename) return res.status(404).end();
@@ -3369,7 +3374,7 @@ app.get('/api/campaigns/:id/image', requireAuth, requirePermission('leads.view')
 });
 
 /** Lista de campañas con su mapeo de anuncios. */
-app.get('/api/campaigns', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     res.json({ campaigns: await campaignService.listCampaigns() });
   } catch (error) {
@@ -3378,7 +3383,7 @@ app.get('/api/campaigns', requireAuth, requirePermission('leads.view'), async (r
   }
 });
 
-app.post('/api/campaigns', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/campaigns', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     if (!req.body?.name || !String(req.body.name).trim()) {
       return res.status(400).json({ error: 'La campaña necesita un nombre.' });
@@ -3391,7 +3396,7 @@ app.post('/api/campaigns', requireAuth, requirePermission('leads.view'), async (
   }
 });
 
-app.put('/api/campaigns/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.put('/api/campaigns/:id', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const campaign = await campaignService.updateCampaign(req.params.id, req.body);
     if (!campaign) return res.status(404).json({ error: 'Campaña no encontrada.' });
@@ -3402,7 +3407,7 @@ app.put('/api/campaigns/:id', requireAuth, requirePermission('leads.view'), asyn
   }
 });
 
-app.delete('/api/campaigns/:id', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.delete('/api/campaigns/:id', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     await campaignService.deleteCampaign(req.params.id);
     res.json({ success: true });
@@ -3413,7 +3418,7 @@ app.delete('/api/campaigns/:id', requireAuth, requirePermission('leads.view'), a
 });
 
 /** Asocia un ID de anuncio (source_id del referral) a una campaña. */
-app.post('/api/campaigns/:id/ads', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/campaigns/:id/ads', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const campaign = await campaignService.addAdMapping(req.params.id, {
       adSourceId: req.body?.adSourceId,
@@ -3427,7 +3432,7 @@ app.post('/api/campaigns/:id/ads', requireAuth, requirePermission('leads.view'),
   }
 });
 
-app.delete('/api/campaigns/ads/:mappingId', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.delete('/api/campaigns/ads/:mappingId', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     await campaignService.removeAdMapping(req.params.mappingId);
     res.json({ success: true });
@@ -3438,7 +3443,7 @@ app.delete('/api/campaigns/ads/:mappingId', requireAuth, requirePermission('lead
 });
 
 /** Estado de la integración con la Meta Marketing API (Ads). */
-app.get('/api/campaigns/meta/status', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/meta/status', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     res.json(await metaAdsService.status());
   } catch (error) {
@@ -3451,7 +3456,7 @@ app.get('/api/campaigns/meta/status', requireAuth, requirePermission('leads.view
  * (para atribuir el tráfico Click-to-WhatsApp) y trae las métricas de
  * rendimiento (gasto, impresiones, alcance, clics, CPM, CTR).
  */
-app.post('/api/campaigns/meta/sync', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/campaigns/meta/sync', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const datePreset = ['today', 'last_7d', 'last_14d', 'last_30d', 'last_90d', 'maximum'].includes(req.body?.datePreset)
       ? req.body.datePreset
@@ -3474,7 +3479,7 @@ app.post('/api/campaigns/meta/sync', requireAuth, requirePermission('leads.view'
  * anunciante la abre, elige qué cuentas publicitarias autoriza y TikTok
  * redirige al `redirect_uri` con un `auth_code` de un solo uso.
  */
-app.get('/api/campaigns/tiktok/auth-url', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/tiktok/auth-url', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const url = tiktokAdsService.authorizationUrl({
       redirectUri: req.query.redirectUri || process.env.TIKTOK_REDIRECT_URI || null
@@ -3491,7 +3496,7 @@ app.get('/api/campaigns/tiktok/auth-url', requireAuth, requirePermission('leads.
  * se persiste en la base ni se escribe en el log— porque el token no caduca y
  * el resto de credenciales del proyecto viven ahí mismo.
  */
-app.post('/api/campaigns/tiktok/exchange-code', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/campaigns/tiktok/exchange-code', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const result = await tiktokAdsService.exchangeAuthCode(req.body?.authCode);
     console.log(`🔑 [Campañas] TikTok autorizó ${result.advertiserIds.length} cuenta(s) publicitaria(s).`);
@@ -3505,7 +3510,7 @@ app.post('/api/campaigns/tiktok/exchange-code', requireAuth, requirePermission('
 });
 
 /** Estado de la integración con la TikTok Business API. */
-app.get('/api/campaigns/tiktok/status', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.get('/api/campaigns/tiktok/status', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     res.json(await tiktokAdsService.status());
   } catch (error) {
@@ -3518,7 +3523,7 @@ app.get('/api/campaigns/tiktok/status', requireAuth, requirePermission('leads.vi
  * (campaña → grupo de anuncios → anuncio) y trae las métricas del informe
  * (gasto, resultados, alcance, impresiones, CPM, clics, CTR y CPC).
  */
-app.post('/api/campaigns/tiktok/sync', requireAuth, requirePermission('leads.view'), async (req, res) => {
+app.post('/api/campaigns/tiktok/sync', requireAuth, requirePermission('campaigns.view'), async (req, res) => {
   try {
     const datePreset = ['today', 'last_7d', 'last_14d', 'last_30d', 'last_90d', 'maximum'].includes(req.body?.datePreset)
       ? req.body.datePreset
@@ -4518,6 +4523,73 @@ app.patch('/api/users/:id/role', requireAuth, requirePermission('roles.manage'),
   } catch (error) {
     console.error('❌ Error al actualizar el rol del usuario:', error);
     res.status(500).json({ error: 'Error al actualizar el rol del usuario.', details: error.message });
+  }
+});
+
+/**
+ * Permisos de UNA persona: qué le da su rol, qué excepción tiene encima y con
+ * qué se queda. Es lo que pinta el panel de "Permisos de esta persona" en
+ * Perfiles.
+ */
+app.get('/api/users/:id/permissions', requireAuth, requirePermission('roles.manage'), async (req, res) => {
+  try {
+    const detail = await userService.getUserPermissionDetail(req.params.id);
+    if (!detail) return res.status(404).json({ error: 'Usuario no encontrado.' });
+    res.json(detail);
+  } catch (error) {
+    console.error('❌ Error al obtener los permisos del usuario:', error);
+    res.status(500).json({ error: 'Error al obtener los permisos del usuario.', details: error.message });
+  }
+});
+
+/**
+ * Guarda las excepciones de esa persona. El cuerpo es `{ overrides: { clave:
+ * true | false | null } }`: dar, quitar o volver a lo que diga el rol.
+ *
+ * El usuario afectado ve el cambio cuando su navegador refresca la sesión
+ * (`/api/auth/me`), porque los permisos viajan embebidos en el token.
+ */
+app.put('/api/users/:id/permissions', requireAuth, requirePermission('roles.manage'), async (req, res) => {
+  try {
+    const detail = await userService.setUserPermissionOverrides(req.params.id, req.body?.overrides || {});
+    if (!detail) return res.status(404).json({ error: 'Usuario no encontrado.' });
+    res.json(detail);
+  } catch (error) {
+    console.error('❌ Error al guardar los permisos del usuario:', error);
+    res.status(500).json({ error: 'Error al guardar los permisos del usuario.', details: error.message });
+  }
+});
+
+/* ---------------------------- Comisiones por venta --------------------------- */
+/*
+ * Lo que se le debe a la setter por las ventas que pasó al closer. Viven bajo
+ * `finance.view` porque son dinero: la pantalla es una pestaña de Finanzas, al
+ * lado de la planilla donde después se registra el pago.
+ */
+
+app.get('/api/commissions', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const [commissions, summary] = await Promise.all([
+      commissionService.list({ estado: req.query.estado || null }),
+      commissionService.summary()
+    ]);
+    res.json({ commissions, summary });
+  } catch (error) {
+    console.error('❌ Error al obtener las comisiones:', error);
+    res.status(500).json({ error: 'Error al obtener las comisiones.', details: error.message });
+  }
+});
+
+app.patch('/api/commissions/:id/estado', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const commission = await commissionService.setEstado(req.params.id, req.body?.estado, {
+      paidAt: req.body?.paidAt || null
+    });
+    if (!commission) return res.status(404).json({ error: 'Comisión no encontrada.' });
+    res.json({ commission });
+  } catch (error) {
+    console.error('❌ Error al cambiar el estado de la comisión:', error);
+    res.status(400).json({ error: error.message });
   }
 });
 

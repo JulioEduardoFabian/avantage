@@ -25,6 +25,13 @@ export function isAuthenticated() {
   return !!authState.token;
 }
 
+/**
+ * ¿La sesión tiene este permiso? Acepta también una lista, y entonces alcanza
+ * con tener UNO: hay pantallas que son la misma herramienta vista desde dos
+ * puestos (la ficha del lead la abren el setter y el closer).
+ */
 export function hasPermission(key) {
-  return !!authState.user?.permissions?.includes(key);
+  const granted = authState.user?.permissions || [];
+  if (Array.isArray(key)) return key.some((k) => granted.includes(k));
+  return granted.includes(key);
 }

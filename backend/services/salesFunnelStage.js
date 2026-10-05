@@ -56,6 +56,20 @@ const GRADUATED_STATUSES = ['cita_agendada', 'en_negociacion', 'ganado', 'perdid
  * el código: se leen de `funnel_columns`. Se consulta una vez y el resultado se
  * reparte entre todas las filas de un barrido, en vez de una consulta por lead.
  */
+/**
+ * Los status que significan "venta ganada".
+ *
+ * Son dos cosas a la vez: `ganado`, el desenlace fijo que usan las rutas y el
+ * bot, y la clave de la columna que el equipo haya marcado como `final` en su
+ * tablero (que puede llamarse "Cerrado" o "Matriculado"). Hay que preguntarlo
+ * acá y no comparar contra la constante de `server.js`: el que renombra la
+ * columna no sabe que de eso cuelga la comisión de la setter.
+ */
+export async function loadWinningStatuses() {
+  const columns = await db('funnel_columns').where({ final: true }).select('key');
+  return new Set(['ganado', ...columns.map((column) => column.key)]);
+}
+
 export async function loadSalesFunnelStatuses() {
   const columns = await db('funnel_columns').select('key');
   const statuses = new Set(GRADUATED_STATUSES);

@@ -146,6 +146,11 @@
                     <div class="pf-access-fill" :style="{ width: pct(accessCount(user)) }"></div>
                   </div>
                   <span class="pf-access-label">{{ accessCount(user) }}/{{ permissions.length }}</span>
+                  <span
+                    v-if="user.has_overrides"
+                    class="pf-tool-chip"
+                    title="Esta persona tiene permisos puestos o quitados aparte de su rol"
+                  >🧩</span>
                 </div>
               </td>
               <td class="data-mono pf-cell-date">{{ formatDate(user.created_at) }}</td>
@@ -157,6 +162,9 @@
                   @click.stop="toggleMenu(user.id)"
                 >⋮</button>
                 <div v-if="openMenuId === user.id" class="pf-menu" @click.stop>
+                  <button type="button" class="pf-menu-item" @click="openUserPermissions(user)">
+                    🧩 Permisos de esta persona
+                  </button>
                   <span class="pf-menu-label">Cambiar rol</span>
                   <button
                     v-for="role in roles"
@@ -336,6 +344,66 @@
       </div>
     </div>
 
+    <!-- ============ Modal: Permisos de UNA persona (excepciones) ============ -->
+    <!--
+      El rol sigue mandando: acá solo se anota en qué se aparta esta persona.
+      Por eso cada fila tiene tres estados y no una casilla — "hereda" no es lo
+      mismo que "se lo quité": si mañana cambia el rol, lo heredado cambia con
+      él y la excepción no.
+    -->
+    <div v-if="permUser" class="modal-overlay" @click.self="closeUserPermissions">
+      <div class="modal-content pf-modal">
+        <div class="modal-header">
+          <div class="pf-modal-title-group">
+            <span class="pf-avatar" :style="{ background: hueOf(permUser.name) }">{{ initials(permUser.name) }}</span>
+            <div>
+              <h3 class="pf-modal-title">{{ permUser.name }}</h3>
+              <p class="pf-modal-sub">Rol: {{ permUser.role }} · las excepciones pesan más que el rol</p>
+            </div>
+          </div>
+          <button type="button" class="btn-secondary pf-close-btn" @click="closeUserPermissions">✕ Cerrar</button>
+        </div>
+        <div class="modal-body">
+          <p class="pf-modal-note">
+            "Hereda" deja la herramienta como la defina su rol. Los cambios se guardan al instante y
+            la persona los ve al recargar su panel.
+            <span v-if="permSaved" class="pf-saved">✓ Guardado</span>
+          </p>
+          <p v-if="permError" class="pf-form-error">{{ permError }}</p>
+          <p v-if="permLoading" class="pf-modal-note">Cargando…</p>
+
+          <div v-else class="pf-tool-list">
+            <div v-for="p in permRows" :key="p.id" class="pf-tool-row pf-tool-row-static">
+              <span class="pf-tool-row-texts">
+                <span class="pf-tool-row-label">{{ p.label }}</span>
+                <span class="pf-tool-row-key data-mono">{{ p.key }}</span>
+              </span>
+              <span class="pf-perm-choice">
+                <button
+                  type="button"
+                  class="pf-perm-btn"
+                  :class="{ 'is-on': p.override === null }"
+                  @click="setUserPermission(p, null)"
+                >Hereda{{ p.from_role ? ' (sí)' : ' (no)' }}</button>
+                <button
+                  type="button"
+                  class="pf-perm-btn is-yes"
+                  :class="{ 'is-on': p.override === true }"
+                  @click="setUserPermission(p, true)"
+                >Sí</button>
+                <button
+                  type="button"
+                  class="pf-perm-btn is-no"
+                  :class="{ 'is-on': p.override === false }"
+                  @click="setUserPermission(p, false)"
+                >No</button>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===================== Modal: Herramientas del sistema ===================== -->
     <div v-if="showToolsModal" class="modal-overlay" @click.self="showToolsModal = false">
       <div class="modal-content pf-modal">
@@ -508,8 +576,13 @@ function roleById(id) {
   return roles.value.find((r) => r.id === id);
 }
 
+/**
+ * Las herramientas que esta persona tiene de verdad: el backend ya suma el rol
+ * y sus excepciones (`permission_count`). El número del rol queda de respaldo
+ * para una sesión que todavía no refrescó la lista.
+ */
 function accessCount(user) {
-  return roleById(user.role_id)?.permissions.length ?? 0;
+  return user.permission_count ?? roleById(user.role_id)?.permissions.length ?? 0;
 }
 
 function rolesUsing(permissionId) {
@@ -710,6 +783,69 @@ async function togglePermission(role, permission, checked) {
     setTimeout(() => { roleSaved.value = false; }, 1800);
   } catch (err) {
     alert('No se pudo actualizar el acceso: ' + err.message);
+  }
+}
+
+/* ---------- permisos de una persona (excepciones sobre el rol) ---------- */
+const permUser = ref(null);
+const permRows = ref([]);
+const permLoading = ref(false);
+const permSaved = ref(false);
+const permError = ref('');
+
+async function openUserPermissions(user) {
+  openMenuId.value = null;
+  permUser.value = { id: user.id, name: user.name, role: user.role_name };
+  permRows.value = [];
+  permError.value = '';
+  permLoading.value = true;
+  try {
+    const res = await apiFetch(`/api/users/${user.id}/permissions`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'No se pudieron cargar los permisos.');
+    permRows.value = data.permissions || [];
+    permUser.value = { ...permUser.value, role: data.user.role };
+  } catch (err) {
+    permError.value = err.message;
+  } finally {
+    permLoading.value = false;
+  }
+}
+
+function closeUserPermissions() {
+  permUser.value = null;
+  permRows.value = [];
+}
+
+/**
+ * `null` devuelve el permiso a lo que diga el rol; `true`/`false` lo dan o lo
+ * quitan solo a esta persona. Se manda una clave por vez —no el mapa entero—
+ * para que dos pestañas abiertas no se pisen las excepciones de la otra.
+ */
+async function setUserPermission(permission, value) {
+  if (!permUser.value) return;
+  const previo = permission.override;
+  permission.override = value;
+  permission.effective = value === null ? permission.from_role : value;
+  permError.value = '';
+  try {
+    const res = await apiFetch(`/api/users/${permUser.value.id}/permissions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overrides: { [permission.key]: value } })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'No se pudo guardar el permiso.');
+    permRows.value = data.permissions || permRows.value;
+    permSaved.value = true;
+    setTimeout(() => { permSaved.value = false; }, 1800);
+    // La columna "Acceso" de la tabla cuenta permisos efectivos: si no se
+    // relee, queda diciendo el número de antes.
+    fetchUsers();
+  } catch (err) {
+    permission.override = previo;
+    permission.effective = previo === null ? permission.from_role : previo;
+    permError.value = err.message;
   }
 }
 
@@ -1473,6 +1609,29 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
   white-space: nowrap;
 }
+
+/* Tres estados por herramienta: hereda del rol, se la doy, se la quito. */
+.pf-perm-choice {
+  display: inline-flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.pf-perm-btn {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card-solid);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  padding: 0.22rem 0.5rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pf-perm-btn:hover { border-color: var(--border-strong); }
+.pf-perm-btn.is-on { color: #fff; border-color: transparent; background: var(--text-sub); }
+.pf-perm-btn.is-yes.is-on { background: var(--accent-emerald); }
+.pf-perm-btn.is-no.is-on { background: var(--accent-rose); }
 
 .pf-inline-form {
   display: grid;

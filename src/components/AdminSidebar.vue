@@ -48,7 +48,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('setter.view')"
           to="/admin/setter-funnel"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/setter-funnel' }"
@@ -61,7 +61,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('campaigns.view')"
           to="/admin/campaigns"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/campaigns' }"
@@ -76,7 +76,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('webhooks.view')"
           to="/admin/webhooks"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/webhooks' }"
@@ -90,7 +90,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('social.view')"
           to="/admin/social"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/social' }"
@@ -101,7 +101,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('instagram.view')"
           to="/admin/instagram"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/instagram' }"
@@ -112,7 +112,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('whatsapp.view')"
           to="/admin/whatsapp"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/whatsapp' }"
@@ -123,7 +123,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('bot.manage')"
           to="/admin/bot-script"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/bot-script' }"
@@ -138,6 +138,7 @@
         </router-link>
 
         <router-link
+          v-if="hasPermission('availability.view')"
           to="/admin/availability"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/availability' }"
@@ -196,7 +197,7 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.view')"
+          v-if="hasPermission('documents.view')"
           to="/admin/documents"
           class="nav-item"
           :class="{ 'is-active': $route.path === '/admin/documents' }"
