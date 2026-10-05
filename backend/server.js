@@ -565,6 +565,36 @@ app.put('/api/availability/me', requireAuth, async (req, res) => {
 });
 
 /**
+ * El horario de VARIOS asesores a la vez, para que el Calendario pueda pintar
+ * en qué bloques coinciden. Devuelve los bloques crudos con su `user_id`: el
+ * cruce se arma en la pantalla, que es la que sabe a cuántos se eligió y la
+ * que tiene que poder re-pintarlo al instante cuando se marca uno más.
+ *
+ * Va antes de `/:userId` porque Express resuelve por orden y "team" entraría
+ * por esa ruta como si fuera un id.
+ */
+app.get('/api/availability/team', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const pedidos = String(req.query.userIds || '')
+      .split(',')
+      .map((valor) => Number(valor.trim()))
+      .filter(Number.isInteger);
+
+    const equipo = await userService.listCommercialTeam();
+    const permitidos = new Set(equipo.map((usuario) => usuario.id));
+    // Mismo recorte que el resto del módulo: solo el área comercial. Un id
+    // ajeno se ignora en vez de romper la pantalla entera.
+    const ids = pedidos.filter((id) => permitidos.has(id));
+
+    const slots = await advisorAvailabilityService.getByUsers(ids);
+    res.json({ slots, userIds: ids });
+  } catch (error) {
+    console.error('❌ Error al obtener la disponibilidad del equipo:', error);
+    res.status(500).json({ error: 'Error al obtener la disponibilidad.', details: error.message });
+  }
+});
+
+/**
  * El horario de OTRA persona, de solo lectura, para poder agendarle sin
  * preguntárselo por WhatsApp (lo consulta el Calendario).
  *

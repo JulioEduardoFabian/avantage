@@ -108,7 +108,13 @@ const props = defineProps({
   /** Si viene, la reunión queda atada a ese lead y precarga su correo. */
   lead: { type: Object, default: null },
   /** Día preseleccionado ("AAAA-MM-DD"), que es como lo abre el calendario. */
-  date: { type: String, default: '' }
+  date: { type: String, default: '' },
+  /**
+   * Hora preseleccionada ("HH:MM"). La manda la vista de día del Calendario
+   * cuando se hace clic sobre una franja: ya se eligió la hora mirando el
+   * cruce de horarios, y volver a escribirla es pedir dos veces lo mismo.
+   */
+  time: { type: String, default: '' }
 });
 const emit = defineEmits(['update:modelValue', 'created']);
 
@@ -152,6 +158,7 @@ watch(() => props.modelValue, (abierto) => {
   if (!abierto) return;
   errorMessage.value = '';
   form.date = props.date || today();
+  form.time = props.time || '10:00';
   form.topic = props.lead ? `Reunión con ${props.lead.full_name || props.lead.topic || 'el cliente'}` : '';
   form.attendeeEmail = props.lead?.email || '';
   loadAdvisors();

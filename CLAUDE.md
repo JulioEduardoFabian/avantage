@@ -353,14 +353,31 @@ antes de tocar el arranque de producción.
   Ver la agenda de todos **no** es poder borrarla: quitar una reunión del panel lo pueden su asesor,
   quien la cargó (`created_by` — el que se equivocó de hora tiene que poder deshacerlo) y
   `leads.manage_all`.
-  El botón "Ver disponibilidad" (`AvailabilityPeekModal.vue`, `GET /api/availability/:userId` bajo
-  `calendar.view`) muestra el horario semanal de otro asesor de **solo lectura**: agendarle a alguien
-  obligaba a preguntarle por WhatsApp a qué hora puede, y el dato ya estaba en el panel pero solo lo
-  veía su dueño en "Mi Disponibilidad". La ruta va **después** de `/api/availability/me` (Express
-  resuelve por orden y `:userId` la taparía) y se limita al área comercial: que la agenda sea del
-  equipo no vuelve pública la semana de cualquiera. Se ven los bloques **unidos en rangos**
-  ("09:00 a 13:00") y no la grilla de media hora — quien mira está por elegir una hora, y veintiocho
-  casillas pintadas se leen peor que una frase. Pintarlo sigue siendo de cada uno en su pantalla.
+  **La disponibilidad se pinta sobre el calendario.** El selector de asesores es múltiple
+  (`AdvisorPicker.vue`) y lo que se dibuja es el **cruce** de los horarios de los elegidos: en la
+  vista de día cada franja de media hora se tiñe, y en la de mes cada celda lleva una franja de 5 px
+  con la forma del día. No es sí/no sino un conteo de cuántos de los elegidos pueden — `full`
+  (pueden todos, el cruce de verdad), `mid`, `low` —, porque con tres asesores el cruce completo
+  suele ser chico y pintar solo eso haría desaparecer la franja en la que faltaba uno, que es
+  justamente la que se negocia. El cruce se arma en la pantalla a partir de los bloques crudos que
+  devuelve `GET /api/availability/team?userIds=` (una consulta para todos, `getByUsers()`): marcar a
+  alguien más tiene que repintar al instante. Por la misma razón las reuniones se traen del mes
+  entero sin filtrar por asesor y el recorte se hace en el cliente. La aritmética del horario
+  (0 = **lunes**, bloques de 30 min nombrados por su inicio, unión en rangos corridos) vive en
+  `src/availabilityGrid.js` y la usan las tres pantallas que la necesitan.
+  **Dos vistas, Mes y Día.** La de día es una línea de tiempo de 07:00 a 21:00 con las reuniones
+  ubicadas por su hora y repartidas en carriles cuando se pisan —dos reuniones superpuestas, una
+  encima de la otra, esconden justo el choque que hay que ver—, la línea de "ahora", y el clic sobre
+  una franja abre el alta **con esa hora puesta** (`time` en `MeetingModal.vue`): ya se eligió la
+  hora mirando el cruce, y volver a escribirla es pedir dos veces lo mismo. Lo que cae fuera de esa
+  franja no se tira: se lista al pie. En el celular el mes queda como mapa (número, franja de
+  disponibilidad y una raya por reunión con el color de su asesor) y el detalle se mira en la vista
+  de día, que es la que entra en una columna.
+  El botón "Ver horario" (`AvailabilityPeekModal.vue`, `GET /api/availability/:userId` bajo
+  `calendar.view`) muestra el horario semanal de UN asesor de **solo lectura**, en rangos y no en
+  casillas. La ruta va **después** de `/api/availability/me` (Express resuelve por orden y `:userId`
+  la taparía) y, como `/team`, se limita al área comercial: que la agenda sea del equipo no vuelve
+  pública la semana de cualquiera. Pintarlo sigue siendo de cada uno en "Mi Disponibilidad".
 - El módulo de **Cobranzas** (`/admin/cobranzas`, `CollectionsView.vue`, permiso `collections.view`,
   `collectionService.js`) **no tiene tabla propia**: es `finance_income` mirada desde el trabajo de
   cobrar — las cuotas en `pendiente` y en `pagado`, o sea todo lo que Finanzas todavía no verificó,

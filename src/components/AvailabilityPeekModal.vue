@@ -59,22 +59,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
-
-/*
- * El día se guarda con 0 = lunes (el mismo criterio que "Mi Disponibilidad" y
- * que la grilla del calendario), que NO es el getDay() del navegador.
- */
-const DAYS = [
-  { value: 0, label: 'Lunes' },
-  { value: 1, label: 'Martes' },
-  { value: 2, label: 'Miércoles' },
-  { value: 3, label: 'Jueves' },
-  { value: 4, label: 'Viernes' },
-  { value: 5, label: 'Sábado' },
-  { value: 6, label: 'Domingo' }
-];
-
-const SLOT_MINUTES = 30;
+import { DAYS, formatRange, mergeRanges, minutesOf } from '../availabilityGrid.js';
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -94,19 +79,10 @@ const advisorName = computed(
   () => props.advisors.find((a) => a.id === advisorId.value)?.name || 'Esta persona'
 );
 
-function minutesOf(hhmm) {
-  const [h, m] = String(hhmm).slice(0, 5).split(':').map(Number);
-  return h * 60 + m;
-}
-
-function hhmm(minutes) {
-  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-}
-
 /**
- * Los bloques de media hora unidos en rangos corridos, por día. Dos bloques
- * seguidos (09:00 y 09:30) son un solo rango "09:00 a 10:00"; un hueco en el
- * medio los parte, que es justo lo que hay que ver antes de proponer una hora.
+ * Los bloques de media hora unidos en rangos corridos, por día. La cuenta vive
+ * en `availabilityGrid.js` porque el Calendario hace exactamente la misma para
+ * pintar el cruce de varios asesores.
  */
 const ranges = computed(() => {
   const porDia = {};
@@ -116,20 +92,7 @@ const ranges = computed(() => {
 
   const resultado = {};
   for (const [dia, minutos] of Object.entries(porDia)) {
-    const ordenados = [...minutos].sort((a, b) => a - b);
-    const tramos = [];
-    let inicio = ordenados[0];
-    let previo = ordenados[0];
-
-    for (const actual of ordenados.slice(1)) {
-      if (actual - previo > SLOT_MINUTES) {
-        tramos.push(`${hhmm(inicio)} a ${hhmm(previo + SLOT_MINUTES)}`);
-        inicio = actual;
-      }
-      previo = actual;
-    }
-    tramos.push(`${hhmm(inicio)} a ${hhmm(previo + SLOT_MINUTES)}`);
-    resultado[Number(dia)] = tramos;
+    resultado[Number(dia)] = mergeRanges(minutos).map(formatRange);
   }
   return resultado;
 });
