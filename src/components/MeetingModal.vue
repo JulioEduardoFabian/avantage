@@ -15,6 +15,12 @@
     El desplegable trae a TODA el área comercial (`/api/meetings/advisors`), no
     solo a uno mismo: quien coordina la reunión no siempre es quien la atiende,
     y la setter que agenda para el closer es el caso más común de todos.
+
+    La hora no se escribe: se elige entre las que de verdad se pueden. Un campo
+    libre aceptaba las 03:00, una hora fuera del horario del asesor o uno de
+    esta misma mañana ya pasada, y el error se descubría recién cuando el
+    cliente no aparecía. Las horas salen del horario del asesor cruzado con sus
+    reuniones de ese día y con el reloj.
   -->
   <div v-if="modelValue" class="modal-overlay" @click.self="close">
     <div class="modal-content meeting-modal">
@@ -30,7 +36,7 @@
         </p>
 
         <div class="meeting-grid">
-          <div class="form-group">
+          <div class="form-group meeting-wide">
             <label class="form-label">Asesor (dueño de la reunión)</label>
             <select v-model="form.advisorUserId" class="form-select">
               <option v-for="advisor in advisors" :key="advisor.id" :value="advisor.id">
@@ -45,12 +51,7 @@
 
           <div class="form-group">
             <label class="form-label">Día</label>
-            <input v-model="form.date" type="date" class="form-input" required />
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">Hora de inicio</label>
-            <input v-model="form.time" type="time" class="form-input" step="900" required />
+            <input v-model="form.date" type="date" class="form-input" :min="today()" required />
           </div>
 
           <div class="form-group">
@@ -61,6 +62,63 @@
               <option :value="60">1 hora</option>
               <option :value="90">1 hora y media</option>
             </select>
+          </div>
+
+          <!-- --------------------------- La hora --------------------------- -->
+          <div class="form-group meeting-wide">
+            <div class="slots-head">
+              <label class="form-label">Hora de inicio</label>
+              <button type="button" class="slots-toggle" @click="freeTime = !freeTime">
+                {{ freeTime ? 'Elegir de la lista' : 'Escribir otra hora' }}
+              </button>
+            </div>
+
+            <template v-if="freeTime">
+              <input v-model="form.time" type="time" class="form-input" step="900" required />
+              <small v-if="manualWarning" class="meeting-hint meeting-hint-warn">⚠️ {{ manualWarning }}</small>
+              <small v-else class="meeting-hint">Hora libre: se agenda igual aunque no esté en el horario del asesor.</small>
+            </template>
+
+            <template v-else>
+              <p v-if="isLoadingSlots" class="slots-state">Buscando horas libres…</p>
+
+              <p v-else-if="slotOptions.length === 0" class="slots-state">
+                <template v-if="!hasAvailability">
+                  {{ advisorFirstName }} todavía no cargó su horario en <strong>Disponibilidad</strong>.
+                </template>
+                <template v-else-if="isToday">
+                  No quedan horas libres hoy para {{ advisorFirstName }}.
+                </template>
+                <template v-else>
+                  {{ advisorFirstName }} no atiende los {{ weekdayLabel }}.
+                </template>
+                Puedes <button type="button" class="slots-inline" @click="freeTime = true">escribir otra hora</button>.
+              </p>
+
+              <template v-else>
+                <div class="slots-grid">
+                  <button
+                    v-for="slot in slotOptions"
+                    :key="slot.time"
+                    type="button"
+                    class="slot"
+                    :class="[`is-${slot.state}`, { 'is-chosen': slot.time === form.time }]"
+                    :disabled="slot.state !== 'libre'"
+                    :title="slot.reason"
+                    @click="form.time = slot.time"
+                  >{{ slot.time }}</button>
+                </div>
+                <small v-if="freeCount === 0" class="meeting-hint meeting-hint-warn">
+                  No queda ninguna hora libre {{ isToday ? 'hoy' : `ese ${weekdayLabel}` }}.
+                  Puedes <button type="button" class="slots-inline" @click="freeTime = true">escribir otra hora</button>.
+                </small>
+                <small v-else class="meeting-hint">
+                  {{ freeCount }} {{ freeCount === 1 ? 'hora libre' : 'horas libres' }} en el horario de
+                  {{ advisorFirstName }} para {{ isToday ? 'hoy' : `el ${weekdayLabel}` }}, ya descontando
+                  sus reuniones{{ isToday ? ' y lo que va del día' : '' }}.
+                </small>
+              </template>
+            </template>
           </div>
 
           <div class="form-group meeting-wide">
@@ -89,7 +147,7 @@
 
         <div class="meeting-actions">
           <button type="button" class="btn-action-ghost" @click="close">Cancelar</button>
-          <button type="button" class="btn-action-primary" :disabled="isSaving" @click="submit">
+          <button type="button" class="btn-action-primary" :disabled="isSaving || !form.time" @click="submit">
             {{ isSaving ? 'Agendando…' : 'Agendar reunión' }}
           </button>
         </div>
@@ -102,6 +160,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { authState } from '../auth.js';
+import { DAYS, SLOT_MINUTES, TIME_SLOTS, hhmm, minutesOf, weekdayOf } from '../availabilityGrid.js';
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -119,24 +178,135 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'created']);
 
 const advisors = ref([]);
+const availability = ref([]);
+const busyMeetings = ref([]);
+const isLoadingSlots = ref(false);
 const isSaving = ref(false);
 const errorMessage = ref('');
+/** Escape: escribir la hora a mano cuando hay que salirse del horario. */
+const freeTime = ref(false);
 
 const form = reactive({
   advisorUserId: null,
   date: '',
-  time: '10:00',
+  time: '',
   duration: 30,
   topic: '',
   attendeeEmail: ''
 });
 
 const selectedAdvisor = computed(() => advisors.value.find((a) => a.id === form.advisorUserId) || null);
+const advisorFirstName = computed(() => String(selectedAdvisor.value?.name || 'El asesor').split(' ')[0]);
 
 function today() {
   const ahora = new Date();
   return `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}-${String(ahora.getDate()).padStart(2, '0')}`;
 }
+
+function dateOf(iso) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+const isToday = computed(() => form.date === today());
+const isPastDate = computed(() => Boolean(form.date) && form.date < today());
+const weekday = computed(() => (form.date ? weekdayOf(dateOf(form.date)) : null));
+const weekdayLabel = computed(() => (weekday.value === null ? '' : DAYS[weekday.value].label.toLowerCase()));
+const hasAvailability = computed(() => availability.value.length > 0);
+
+/** Los minutos del día que ya pasaron, solo si el día elegido es hoy. */
+const nowMinutes = computed(() => {
+  if (!isToday.value) return -1;
+  const ahora = new Date();
+  return ahora.getHours() * 60 + ahora.getMinutes();
+});
+
+/** Los bloques de media hora que el asesor marcó libres para ese día. */
+const freeBlocks = computed(() => {
+  const dia = weekday.value;
+  if (dia === null) return new Set();
+  return new Set(
+    availability.value
+      .filter((slot) => slot.day_of_week === dia)
+      .map((slot) => minutesOf(slot.start_time))
+  );
+});
+
+/** Sus reuniones de ese día, como tramos de minutos. */
+const busyRanges = computed(() => busyMeetings.value.map((meeting) => {
+  const inicio = new Date(meeting.start_time);
+  const fin = new Date(meeting.end_time);
+  return {
+    start: inicio.getHours() * 60 + inicio.getMinutes(),
+    end: fin.getHours() * 60 + fin.getMinutes()
+  };
+}));
+
+/**
+ * Las horas en las que de verdad se puede empezar la reunión.
+ *
+ * Una hora entra si **toda** la duración elegida cae dentro del horario del
+ * asesor: una reunión de una hora que arranca a las 12:30 cuando él atiende
+ * hasta las 13:00 no es media hora libre, es media hora de ausencia. Por eso
+ * la lista se rearma al cambiar la duración y no solo al cambiar el día.
+ *
+ * Las ocupadas y las que ya pasaron **se muestran deshabilitadas** en vez de
+ * desaparecer: una lista que salta de las 09:00 a las 11:00 no dice si el
+ * asesor no atiende o si ya tiene algo, y esa diferencia es la que decide si
+ * conviene insistir con esa franja.
+ */
+const slotOptions = computed(() => {
+  if (weekday.value === null || !hasAvailability.value) return [];
+  const duracion = form.duration || SLOT_MINUTES;
+
+  return TIME_SLOTS.map((hora) => {
+    const inicio = minutesOf(hora);
+    const fin = inicio + duracion;
+
+    // Todo el tramo tiene que estar marcado como disponible.
+    let dentro = true;
+    for (let minuto = inicio; minuto < fin; minuto += SLOT_MINUTES) {
+      if (!freeBlocks.value.has(minuto)) { dentro = false; break; }
+    }
+    if (!dentro) return null;
+
+    if (isPastDate.value) return { time: hora, state: 'pasado', reason: 'Ese día ya pasó' };
+    if (nowMinutes.value >= 0 && inicio <= nowMinutes.value) {
+      return { time: hora, state: 'pasado', reason: 'Ya pasó' };
+    }
+
+    const choque = busyRanges.value.find((rango) => inicio < rango.end && fin > rango.start);
+    if (choque) {
+      return { time: hora, state: 'ocupado', reason: `Ocupado: ${hhmm(choque.start)}–${hhmm(choque.end)}` };
+    }
+
+    return { time: hora, state: 'libre', reason: `Libre a las ${hora}` };
+  }).filter(Boolean);
+});
+
+const freeCount = computed(() => slotOptions.value.filter((slot) => slot.state === 'libre').length);
+
+/** Por qué la hora escrita a mano es dudosa. No bloquea: avisa. */
+const manualWarning = computed(() => {
+  if (!freeTime.value || !form.time) return '';
+  const inicio = minutesOf(form.time);
+  const fin = inicio + (form.duration || SLOT_MINUTES);
+
+  if (isPastDate.value) return 'Ese día ya pasó.';
+  if (nowMinutes.value >= 0 && inicio <= nowMinutes.value) return 'Esa hora ya pasó.';
+
+  const choque = busyRanges.value.find((rango) => inicio < rango.end && fin > rango.start);
+  if (choque) return `${advisorFirstName.value} ya tiene una reunión de ${hhmm(choque.start)} a ${hhmm(choque.end)}.`;
+
+  if (hasAvailability.value) {
+    for (let minuto = inicio; minuto < fin; minuto += SLOT_MINUTES) {
+      if (!freeBlocks.value.has(minuto)) return `Está fuera del horario de ${advisorFirstName.value}.`;
+    }
+  }
+  return '';
+});
+
+/* -------------------------------- Los datos ------------------------------- */
 
 async function loadAdvisors() {
   try {
@@ -154,15 +324,69 @@ async function loadAdvisors() {
   }
 }
 
+/**
+ * El horario del asesor y sus reuniones de ese día, que son las dos mitades de
+ * "qué horas quedan". Se piden juntas porque una sin la otra ofrecería una
+ * hora que ya está tomada.
+ */
+async function loadSlots() {
+  if (!form.advisorUserId || !form.date) return;
+  isLoadingSlots.value = true;
+  try {
+    const [horario, reuniones] = await Promise.all([
+      apiFetch(`/api/availability/${form.advisorUserId}`).then((r) => r.json()).catch(() => ({})),
+      apiFetch(`/api/meetings?from=${form.date}&to=${form.date}&advisorUserId=${form.advisorUserId}`)
+        .then((r) => r.json())
+        .catch(() => ({}))
+    ]);
+    availability.value = horario.slots || [];
+    busyMeetings.value = (reuniones.meetings || []).filter((m) => m.advisor_user_id === form.advisorUserId);
+  } finally {
+    isLoadingSlots.value = false;
+    ensureValidTime();
+  }
+}
+
+/**
+ * Deja elegida una hora que se pueda: la que vino pedida si sigue siendo
+ * válida, si no la primera libre. Sin esto el formulario queda con una hora
+ * que la propia lista muestra deshabilitada.
+ */
+function ensureValidTime() {
+  if (freeTime.value) return;
+  const libres = slotOptions.value.filter((slot) => slot.state === 'libre');
+  if (libres.some((slot) => slot.time === form.time)) return;
+
+  // Si la hora vino pedida (un clic sobre la franja del calendario) y no está
+  // entre las libres, se pasa a hora libre con el aviso del motivo en vez de
+  // reemplazarla: el que la eligió sabe por qué, y cambiársela sin decir nada
+  // agenda a una hora que nadie pidió.
+  if (form.time && form.time === props.time) {
+    freeTime.value = true;
+    return;
+  }
+  form.time = libres[0]?.time || '';
+}
+
 watch(() => props.modelValue, (abierto) => {
   if (!abierto) return;
   errorMessage.value = '';
+  freeTime.value = false;
+  availability.value = [];
+  busyMeetings.value = [];
   form.date = props.date || today();
-  form.time = props.time || '10:00';
+  form.time = props.time || '';
   form.topic = props.lead ? `Reunión con ${props.lead.full_name || props.lead.topic || 'el cliente'}` : '';
   form.attendeeEmail = props.lead?.email || '';
-  loadAdvisors();
+  loadAdvisors().then(loadSlots);
 });
+
+// Cambiar de asesor o de día cambia las dos listas; cambiar la duración solo
+// recalcula (la hora elegida puede dejar de entrar en el horario).
+watch([() => form.advisorUserId, () => form.date], () => {
+  if (props.modelValue) loadSlots();
+});
+watch(() => form.duration, ensureValidTime);
 
 function close() {
   emit('update:modelValue', false);
@@ -234,6 +458,81 @@ async function submit() {
   color: var(--text-muted);
 }
 
+.meeting-hint-warn { color: #C85532; }
+
+/* --------------------------------- Horas --------------------------------- */
+
+.slots-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.slots-toggle,
+.slots-inline {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--primary);
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.slots-state {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+  gap: 0.25rem;
+  max-height: 148px;
+  overflow-y: auto;
+  padding: 0.1rem;
+}
+
+.slot {
+  padding: 0.3rem 0.1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-solid);
+  color: var(--text-sub);
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+
+.slot.is-libre:hover { border-color: var(--primary); color: var(--primary); }
+
+.slot.is-chosen {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+/*
+ * Ocupada y pasada se ven distinto entre sí: tachada es "hay algo ahí" y
+ * apagada es "ya fue". Pintadas iguales, la pregunta "¿puedo pedirle que la
+ * mueva?" no se puede contestar mirando.
+ */
+.slot.is-ocupado {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+
+.slot.is-pasado {
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .meeting-alert {
   margin-top: 0.75rem;
   border-color: rgba(200, 85, 50, 0.4);
@@ -249,5 +548,6 @@ async function submit() {
 
 @media (max-width: 560px) {
   .meeting-grid { grid-template-columns: 1fr; }
+  .slots-grid { max-height: 190px; }
 }
 </style>

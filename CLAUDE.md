@@ -342,7 +342,17 @@ antes de tocar el arranque de producción.
   (el panel no puede tocar el calendario de otra persona) y eso también se dice.
   El mismo modal (`MeetingModal.vue`) se abre desde la ficha del lead en los **dos funnels**: es la
   misma reunión y el mismo endpoint, y copiado en cada pantalla el tercero se queda con el
-  formulario viejo. La hora se manda con el huso de Lima escrito a mano (`-05:00`) y no con el del
+  formulario viejo. **La hora no se escribe: se elige entre las que de verdad se pueden** — el
+  horario del asesor cruzado con sus reuniones de ese día y con el reloj. Una hora entra solo si
+  **toda** la duración elegida cae dentro de su horario (una reunión de una hora que arranca a las
+  12:30 cuando él atiende hasta las 13:00 no es media hora libre, es media hora de ausencia), así
+  que la lista se rearma también al cambiar la duración. Las ocupadas y las que ya pasaron se
+  muestran **deshabilitadas y distintas entre sí** (tachada = hay algo ahí, apagada = ya fue) en vez
+  de desaparecer: una lista que salta de las 09:00 a las 11:00 no dice si el asesor no atiende o si
+  ya tiene algo, y de eso depende si conviene pedirle que lo mueva. Queda el escape de "escribir
+  otra hora" con el motivo a la vista, porque a veces hay que salirse del horario; y una hora que
+  vino pedida desde el calendario y no está libre **no se reemplaza en silencio**: se pasa a ese
+  modo con el aviso. La hora se manda con el huso de Lima escrito a mano (`-05:00`) y no con el del
   navegador: una laptop configurada en otra zona agendaría a una hora distinta de la que se escribió.
   **La agenda es del equipo, no de cada uno**: a diferencia del funnel —donde cada quien ve SUS
   leads—, quien tenga `calendar.view` ve las reuniones de toda el área comercial, las filtra por
