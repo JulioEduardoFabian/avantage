@@ -3270,7 +3270,7 @@ button.setter-btn {
 
 /* El botón de asignar en la ficha no se estira a lo ancho de la celda: el
    área de clic es el círculo con el nombre. */
-.detail-item > .lead-assignee-btn {
+.detail-item > .lead-assignee {
   align-self: flex-start;
 }
 

@@ -17,6 +17,13 @@
     Vive en un componente porque los dos tableros y las dos fichas de detalle
     lo usan igual; copiado cuatro veces, el cuarto se queda atrás.
   -->
+  <!--
+    Raíz ÚNICA a propósito: con el botón y el `Teleport` sueltos como dos
+    raíces, Vue no le pasa al componente ni la clase ni el atributo de estilo
+    del padre (es un fragmento), así que la tarjeta no podía sacar el círculo
+    del flujo y el nombre del lead se iba fuera del alto fijo.
+  -->
+  <span class="lead-assignee">
   <button
     type="button"
     class="lead-assignee-btn"
@@ -79,6 +86,7 @@
       </div>
     </div>
   </Teleport>
+  </span>
 </template>
 
 <script setup>
@@ -191,6 +199,13 @@ async function choose(userId) {
 
 <style scoped>
 /* ----------------------------------------------- El círculo en la tarjeta */
+/* La raíz solo envuelve: es la que la tarjeta posiciona y no debe ocupar nada
+   por su cuenta. */
+.lead-assignee {
+  display: inline-flex;
+  line-height: 0;
+}
+
 .lead-assignee-btn {
   display: inline-flex;
   align-items: center;

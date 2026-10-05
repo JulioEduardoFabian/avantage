@@ -3813,7 +3813,7 @@ onMounted(() => {
 
 /* El botón de asignar en la ficha no se estira a lo ancho del renglón: el
    área de clic es el círculo con el nombre, no toda la fila. */
-.info-item > .lead-assignee-btn {
+.info-item > .lead-assignee {
   align-self: flex-start;
   margin-top: 0.1rem;
 }
