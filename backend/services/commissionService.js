@@ -21,6 +21,22 @@ import { db } from '../db/connection.js';
 export const SETTER_COMMISSION_PERCENT = 2;
 
 /**
+ * El 2% de lo que se cobra, para quien registra el cobro en Cobranzas.
+ *
+ * Es otra comisión, no la misma: la de la setter se devenga UNA vez por venta
+ * sobre el precio total, y esta se devenga por **cuota** sobre lo que entró.
+ * Una venta en cuatro partes deja una comisión de setter y hasta cuatro de
+ * cobranza, que pueden ser de personas distintas.
+ */
+export const COLLECTION_COMMISSION_PERCENT = 2;
+
+/** Nombre legible del tipo de comisión, para la pantalla y los avisos. */
+export const COMMISSION_ROLE_LABEL = {
+  setter: 'Setter',
+  cobranza: 'Cobranza'
+};
+
+/**
  * El monto de la comisión, redondeado a dos decimales.
  *
  * Se redondea acá y se guarda ya redondeado porque es lo que se le va a pagar a
@@ -51,6 +67,21 @@ export function commissionEligibility(lead) {
   const base = Number(lead.total_amount);
   if (!Number.isFinite(base) || base <= 0) {
     return { ok: false, reason: 'La venta no tiene precio total registrado.' };
+  }
+  return { ok: true, base };
+}
+
+/**
+ * ¿Esta cuota cobrada genera comisión de cobranza? Devuelve el motivo cuando
+ * no, igual que la de la setter.
+ *
+ * Una cuota en cero (o sin monto) no se comisiona: no se cobró nada. Y una ya
+ * verificada tampoco se cobra desde acá — esa plata la cerró Finanzas.
+ */
+export function collectionEligibility(income) {
+  const base = Number(income?.monto);
+  if (!Number.isFinite(base) || base <= 0) {
+    return { ok: false, reason: 'La cuota no tiene monto: no hay sobre qué calcular el 2%.' };
   }
   return { ok: true, base };
 }
@@ -95,6 +126,62 @@ export class CommissionService {
     return { commission: await this.getById(id), reason: null };
   }
 
+  /**
+   * Registra el 2% de una cuota cobrada para quien la cobró.
+   *
+   * Es por cuota y por persona (índice único con `income_id`): marcar cobrado,
+   * deshacer y volver a marcar no paga dos veces, y dos cuotas del mismo lead
+   * sí comisionan las dos.
+   */
+  async registerForCollection(income, user) {
+    const elegible = collectionEligibility(income);
+    if (!elegible.ok) return { commission: null, reason: elegible.reason };
+    if (!user?.id) return { commission: null, reason: 'No se sabe quién registró el cobro.' };
+
+    const existente = await db('sales_commissions')
+      .where({ income_id: income.id, user_id: user.id, role: 'cobranza' })
+      .first();
+    if (existente) return { commission: existente, reason: null };
+
+    const cobrador = await db('users').where({ id: user.id }).first();
+    if (!cobrador) return { commission: null, reason: 'Quien registró el cobro ya no tiene cuenta en el panel.' };
+
+    const project = income.lead_id
+      ? await db('projects').where({ lead_id: income.lead_id }).first()
+      : null;
+    const monto = commissionAmount(elegible.base, COLLECTION_COMMISSION_PERCENT);
+
+    const [id] = await db('sales_commissions').insert({
+      lead_id: income.lead_id || null,
+      income_id: income.id,
+      project_id: project?.id || null,
+      user_id: cobrador.id,
+      beneficiary_name: cobrador.name,
+      role: 'cobranza',
+      percent: COLLECTION_COMMISSION_PERCENT,
+      base_amount: elegible.base,
+      monto,
+      estado: 'pendiente',
+      detalle: `Cobro de ${income.code || 'cuota'}${income.cuota ? ` (${income.cuota})` : ''}`
+    });
+
+    return { commission: await this.getById(id), reason: null };
+  }
+
+  /**
+   * Borra la comisión de cobranza de una cuota que se deshizo, siempre que
+   * todavía no se le haya pagado a nadie.
+   *
+   * Deshacer un cobro mal registrado tiene que deshacer también lo que se
+   * devengó por él; una comisión ya marcada como pagada, en cambio, es plata
+   * que ya salió y se corrige a mano, no borrándola por un clic.
+   */
+  async dropPendingCollectionCommission(incomeId) {
+    return db('sales_commissions')
+      .where({ income_id: incomeId, role: 'cobranza', estado: 'pendiente' })
+      .del();
+  }
+
   async getById(id) {
     return db('sales_commissions').where({ id }).first();
   }
@@ -108,12 +195,17 @@ export class CommissionService {
     const query = db('sales_commissions as c')
       .leftJoin('leads', 'leads.id', 'c.lead_id')
       .leftJoin('users', 'users.id', 'c.user_id')
+      .leftJoin('finance_income as cuota', 'cuota.id', 'c.income_id')
       .select(
         'c.*',
         db.raw('COALESCE(users.name, c.beneficiary_name) as beneficiario'),
         'leads.full_name as cliente',
         'leads.topic as tema',
-        'leads.status as lead_status'
+        'leads.status as lead_status',
+        // Solo las de cobranza cuelgan de una cuota: en las de setter viene
+        // vacío y la pantalla muestra la venta entera.
+        'cuota.code as income_code',
+        'cuota.cuota as income_cuota'
       )
       .orderBy('c.created_at', 'desc');
 

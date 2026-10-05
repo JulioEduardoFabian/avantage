@@ -31,6 +31,7 @@ const PERMISOS = [
   { key: 'documents.view', label: 'Documentos' },
   { key: 'projects.view', label: 'Proyectos' },
   { key: 'deliverables.view', label: 'Entregables' },
+  { key: 'collections.view', label: 'Cobranzas' },
   { key: 'finance.view', label: 'Finanzas (Ingresos y Egresos)' },
   { key: 'finance.verify', label: 'Verificar ingresos (Finanzas)' },
   { key: 'contracts.manage', label: 'Contratos' },
@@ -47,17 +48,17 @@ const ROLES = [
   {
     name: 'Comercial',
     description: 'Acceso al funnel de ventas (leads)',
-    permissions: ['leads.view', 'setter.view', 'database.view', 'documents.view', 'availability.view', 'whatsapp.view']
+    permissions: ['leads.view', 'setter.view', 'database.view', 'documents.view', 'availability.view', 'whatsapp.view', 'collections.view']
   },
   {
     name: 'Setter',
     description: 'Califica y agenda: Setter Funnel, WhatsApp e interacciones de redes',
-    permissions: ['setter.view', 'whatsapp.view', 'instagram.view', 'social.view', 'availability.view']
+    permissions: ['setter.view', 'whatsapp.view', 'instagram.view', 'social.view', 'availability.view', 'collections.view']
   },
   {
     name: 'Closer',
     description: 'Cierra la venta: Funnel de Ventas, documentos y contratos',
-    permissions: ['leads.view', 'documents.view', 'contracts.manage', 'availability.view', 'whatsapp.view']
+    permissions: ['leads.view', 'documents.view', 'contracts.manage', 'availability.view', 'whatsapp.view', 'collections.view']
   }
 ];
 

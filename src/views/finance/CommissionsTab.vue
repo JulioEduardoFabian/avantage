@@ -1,9 +1,10 @@
 <template>
   <section class="ledger-tab">
     <p class="ledger-hint">
-      El <strong>2%</strong> que le toca a la setter por cada venta que el closer cerró con un lead
-      que ella le pasó. Se registra solo al ganarse el lead, sobre el precio total de la venta.
-      Es lo que se le <strong>debe</strong>: el pago en sí se anota después en
+      Dos comisiones del <strong>2%</strong>: la de la <strong>setter</strong>, por cada venta que
+      el closer cerró con un lead que ella le pasó (sobre el precio total, al ganarse el lead), y la
+      de <strong>cobranza</strong>, por cada cuota cobrada desde el módulo de Cobranzas (sobre lo
+      que entró). Es lo que se <strong>debe</strong>: el pago en sí se anota después en
       <strong>Salarios</strong>, así que estas filas no entran en el resumen financiero ni en el
       libro diario.
     </p>
@@ -47,8 +48,8 @@
     <div v-if="!isLoading && visible.length === 0" class="empty-state">
       <p class="empty-state-title">Todavía no hay comisiones</p>
       <p class="empty-state-text">
-        Nacen solas cuando se gana un lead que pasó por el Setter Funnel y tiene precio total
-        registrado.
+        La de la setter nace sola al ganarse un lead que pasó por el Setter Funnel y tiene precio
+        total registrado; la de cobranza, al marcar una cuota como cobrada en Cobranzas.
       </p>
     </div>
 
@@ -68,12 +69,15 @@
         <tbody>
           <tr v-for="row in visible" :key="row.id">
             <td>
-              <span class="ledger-eyebrow">{{ row.role === 'setter' ? 'Setter' : row.role }}</span>
+              <span class="ledger-eyebrow">{{ ROLE_LABEL[row.role] || row.role }}</span>
               <span class="ledger-stack-main">{{ row.beneficiario }}</span>
             </td>
             <td>
               <span class="ledger-stack-main">{{ row.cliente || 'Sin nombre' }}</span>
-              <span class="ledger-eyebrow">Lead #{{ row.lead_id }} · {{ row.tema || 'Sin tema' }}</span>
+              <span class="ledger-eyebrow">
+                <template v-if="row.income_code">Cobro de {{ row.income_code }} · {{ row.income_cuota || 'cuota' }}</template>
+                <template v-else>Venta completa · Lead #{{ row.lead_id }}</template>
+              </span>
             </td>
             <td class="ledger-num"><span class="ledger-amount">{{ formatAmount(row.base_amount) }}</span></td>
             <td class="ledger-num">{{ Number(row.percent) }}%</td>
@@ -103,6 +107,10 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { formatAmount, formatDate } from './format.js';
 import './ledger.css';
+
+/* De dónde sale cada comisión: la de la setter es por venta, la de cobranza
+   por cuota cobrada. */
+const ROLE_LABEL = { setter: 'Setter', cobranza: 'Cobranza' };
 
 const rows = ref([]);
 const summary = reactive({ pendiente: { total: 0, n: 0 }, pagado: { total: 0, n: 0 } });

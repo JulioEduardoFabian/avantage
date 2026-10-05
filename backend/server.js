@@ -57,6 +57,7 @@ import { FinanceService } from './services/financeService.js';
 import { FinanceLedgerService } from './services/financeLedgerService.js';
 import { FinanceSalaryService } from './services/financeSalaryService.js';
 import { CommissionService } from './services/commissionService.js';
+import { CollectionService } from './services/collectionService.js';
 import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
 import { signToken, requireAuth, requirePermission, requireAnyPermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
@@ -123,6 +124,9 @@ const emailService = new EmailService();
 // viaja dentro de leadService y no colgado de la ruta de cierre: hay más de un
 // camino a "Ganado".
 const commissionService = new CommissionService();
+// Cobranzas no tiene tablas propias: es `finance_income` vista desde el trabajo
+// de cobrar, así que comparte el servicio del libro contable.
+const collectionService = new CollectionService({ commissionService });
 const leadService = new LeadService({ commissionService });
 const funnelColumnService = new FunnelColumnService();
 const careerCatalogService = new CareerCatalogService();
@@ -4557,6 +4561,59 @@ app.put('/api/users/:id/permissions', requireAuth, requirePermission('roles.mana
   } catch (error) {
     console.error('❌ Error al guardar los permisos del usuario:', error);
     res.status(500).json({ error: 'Error al guardar los permisos del usuario.', details: error.message });
+  }
+});
+
+/* -------------------------------- Cobranzas -------------------------------- */
+/*
+ * Las cuotas que faltan cobrar y las cobradas que Finanzas todavía no verificó.
+ * Permiso propio (`collections.view`): persigue los pagos quien no
+ * necesariamente puede ver Finanzas entera.
+ */
+
+app.get('/api/collections', requireAuth, requirePermission('collections.view'), async (req, res) => {
+  try {
+    const [collections, summary] = await Promise.all([
+      collectionService.list({ estado: req.query.estado || null }),
+      collectionService.summary()
+    ]);
+    res.json({ collections, summary });
+  } catch (error) {
+    console.error('❌ Error al obtener las cobranzas:', error);
+    res.status(500).json({ error: 'Error al obtener las cobranzas.', details: error.message });
+  }
+});
+
+/**
+ * Marca la cuota como cobrada. `commission: true` registra además el 2% para
+ * quien hace el cobro — es quien está en la sesión, no un campo del formulario:
+ * la comisión es de quien cobra, y dejarla elegir abriría la puerta a
+ * acreditársela a cualquiera.
+ */
+app.post('/api/collections/:id/collect', requireAuth, requirePermission('collections.view'), async (req, res) => {
+  try {
+    const resultado = await collectionService.collect(req.params.id, {
+      user: req.user,
+      commission: Boolean(req.body?.commission)
+    });
+    if (!resultado) return res.status(404).json({ error: 'Cuota no encontrada.' });
+    res.json(resultado);
+  } catch (error) {
+    if (error.code === 'ALREADY_VERIFIED') return res.status(409).json({ error: error.message });
+    console.error('❌ Error al registrar el cobro:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/collections/:id/revert', requireAuth, requirePermission('collections.view'), async (req, res) => {
+  try {
+    const resultado = await collectionService.revert(req.params.id);
+    if (!resultado) return res.status(404).json({ error: 'Cuota no encontrada.' });
+    res.json(resultado);
+  } catch (error) {
+    if (error.code === 'ALREADY_VERIFIED') return res.status(409).json({ error: error.message });
+    console.error('❌ Error al deshacer el cobro:', error);
+    res.status(400).json({ error: error.message });
   }
 });
 

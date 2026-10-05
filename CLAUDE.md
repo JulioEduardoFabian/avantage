@@ -316,6 +316,31 @@ antes de tocar el arranque de producción.
   dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
   El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
   y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
+- El módulo de **Cobranzas** (`/admin/cobranzas`, `CollectionsView.vue`, permiso `collections.view`,
+  `collectionService.js`) **no tiene tabla propia**: es `finance_income` mirada desde el trabajo de
+  cobrar — las cuotas en `pendiente` y en `pagado`, o sea todo lo que Finanzas todavía no verificó,
+  con el teléfono y el correo del cliente en la misma fila para no entrar a la ficha. Una tabla
+  paralela de cuotas obligaría a mantener dos listas sincronizadas, y el día que se separen nadie
+  sabría cuál dice la verdad. Lo único que no existía —quién cobró y cuándo— son dos columnas en esa
+  misma tabla (`collected_by`, `collected_at`).
+  **Cobrar no es verificar**: marcar "cobrado" deja la cuota en `pagado`, que es el estado que ya
+  significaba "el cliente pagó y Finanzas no dio el visto bueno". El visto bueno sigue siendo de
+  Finanzas con `finance.verify`, porque de él cuelgan el desbloqueo del proyecto, el aviso de
+  entregables y las cifras del módulo — por eso esta pantalla puede estar en manos de quien persigue
+  los pagos sin darle acceso al dinero. El cambio de estado pasa por
+  `financeLedgerService.updateIncomeEstado()`, el camino que ya existía (es el que impide tocar una
+  cuota verificada); Cobranzas no escribe `estado` por su cuenta.
+  Al cobrar se puede registrar el **2% para quien cobra** (`role: 'cobranza'` en
+  `sales_commissions`, sobre el monto de ESA cuota). Es opcional en cada cobro y no automático: hay
+  cuotas que entran solas y ahí no hay cobranza que comisionar. El beneficiario es **la sesión**, no
+  un campo del formulario: elegirlo abriría la puerta a acreditárselo a cualquiera. Deshacer un
+  cobro borra la comisión que generó **salvo que ya figure pagada** — esa es plata que salió y se
+  corrige a mano.
+  Por eso `sales_commissions.income_id` existe y el índice único es
+  (`lead_id`, `user_id`, `role`, `income_id`): la comisión de cobranza es por **cuota** y la de la
+  setter por **venta**, así que dos cuotas del mismo lead comisionan las dos, y el mismo cobro
+  marcado dos veces no paga dos veces. `lead_id` admite nulos porque hay ingresos que no cuelgan de
+  ningún lead y también se cobran.
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`), más
   `user_permissions`, que son las **excepciones de una persona** sobre lo que le da su rol. Los
   permisos efectivos (rol + otorgados − revocados) se resuelven en UN solo sitio
@@ -340,7 +365,7 @@ antes de tocar el arranque de producción.
   comercial** se define por permiso y no por nombre de rol: `listCommercialTeam()` toma a quien
   tenga `leads.view` o `setter.view` —efectivos, con las excepciones aplicadas— o sea a quien pueda
   trabajar un lead en alguno de los dos tableros.
-- La **comisión de la setter** es el 2% de la venta que el closer cerró con el lead que ella le
+- La **comisión de la setter** (`role: 'setter'`, la otra es la de cobranza) es el 2% de la venta que el closer cerró con el lead que ella le
   pasó (`sales_commissions`, `commissionService.js`, pestaña "Comisiones" en Finanzas bajo
   `finance.view`). Dos sellos en `leads` la sostienen: `setter_user_id` se escribe UNA vez, en el
   instante de la graduación (el mismo que `sales_funnel_at`), con quien tenía el lead asignado
