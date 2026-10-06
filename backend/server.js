@@ -2656,12 +2656,36 @@ app.get('/api/whatsapp/messages', requireAuth, requirePermission('whatsapp.view'
 
 /**
  * Bandeja de conversaciones de WhatsApp: un registro por contacto con su
- * último mensaje.
+ * último mensaje, **paginada**.
+ *
+ * Antes devolvía los 100 más recientes y punto: el resto de las conversaciones
+ * no existía para el panel. Ahora la pantalla pide páginas a medida que se
+ * baja (`before`, el cursor de la página anterior) y la búsqueda se resuelve
+ * acá, sobre todas las conversaciones y no sobre las que alcanzaron a cargarse.
+ *
+ * `total` viaja aparte para poder decir cuántas hay de verdad: "100
+ * conversaciones" era el tamaño de la página disfrazado de dato.
  */
 app.get('/api/whatsapp/conversations', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
   try {
-    const conversations = await whatsappMessageService.getConversations({ limit: 100 });
-    res.json({ conversations });
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
+    const search = String(req.query.search || '').slice(0, 120);
+    const before = req.query.beforeAt && req.query.beforeWaId
+      ? { lastAt: req.query.beforeAt, waId: String(req.query.beforeWaId) }
+      : null;
+
+    const { conversations, nextCursor, hasMore } = await whatsappMessageService.getConversations({
+      limit,
+      before,
+      search
+    });
+
+    // El total solo se cuenta en la PRIMERA página: es el dato de la cabecera y
+    // no cambia al bajar, así que recontarlo en cada scroll es una consulta
+    // sobre toda la tabla por cada tirón del dedo.
+    const total = before ? null : await whatsappMessageService.countConversations({ search });
+
+    res.json({ conversations, total, hasMore, nextCursor });
   } catch (error) {
     console.error('❌ Error al obtener las conversaciones de WhatsApp:', error);
     res.status(500).json({ error: 'Error al obtener las conversaciones de WhatsApp.', details: error.message });

@@ -681,13 +681,41 @@ export class WhatsappMessageService {
   }
 
   /**
-   * Lista de conversaciones (un registro por contacto con su último mensaje),
-   * conservando el canal de origen detectado en el PRIMER mensaje del
-   * contacto (el "referral" solo llega en el mensaje que inició la
-   * conversación, no en los siguientes).
+   * Una página de la bandeja: un registro por contacto con su último mensaje,
+   * de la conversación más reciente a la más vieja.
+   *
+   * Antes traía TODOS los mensajes de la tabla a memoria, los plegaba por
+   * contacto y recortaba a 100. Eso tenía dos problemas: la bandeja se quedaba
+   * en los 100 más recientes —el resto no existía para el panel— y cada
+   * refresco leía la tabla entera, que crece con cada mensaje de cada
+   * conversación. Ahora se pagina: primero se pide la PÁGINA de contactos
+   * (una consulta agrupada, que es lo que el índice `wa_id, received_at`
+   * resuelve), y recién después se traen los mensajes de esos contactos.
+   *
+   * El plegado sigue haciéndose en JavaScript sobre esos mensajes porque la
+   * bandeja necesita datos que no salen de la última fila: el canal del PRIMER
+   * mensaje, si ese primer mensaje entrante era el resumen de un formulario, y
+   * el último nombre de perfil conocido (los mensajes salientes lo traen en
+   * null). Son decenas de filas por contacto, no la tabla entera.
+   *
+   * `before` es el cursor: `{ lastAt, waId }` de la última fila entregada. Se
+   * pagina por el par y no solo por la fecha porque dos conversaciones pueden
+   * tener el mismo último mensaje al segundo, y con un cursor de fecha sola una
+   * de las dos se perdería entre páginas.
    */
-  async getConversations({ limit = 100 } = {}) {
-    const rows = await db('whatsapp_messages').whereNotNull('wa_id').where('wa_id', '!=', '').orderBy('received_at', 'asc');
+  async getConversations({ limit = 30, before = null, search = '' } = {}) {
+    const termino = String(search || '').trim();
+    const sufijos = await this.#leadPhoneSuffixesMatching(termino);
+
+    const pagina = await this.#conversationKeys({ limit, before, search: termino, sufijos });
+    if (pagina.length === 0) return { conversations: [], nextCursor: null, hasMore: false };
+
+    const waIds = pagina.map((fila) => fila.wa_id);
+    const rows = await db('whatsapp_messages')
+      .whereIn('wa_id', waIds)
+      .orderBy('received_at', 'asc')
+      .orderBy('id', 'asc');
+
     const map = new Map();
     for (const row of rows) {
       const prev = map.get(row.wa_id);
@@ -710,9 +738,9 @@ export class WhatsappMessageService {
       });
     }
 
-    const conversations = [...map.values()]
-      .sort((a, b) => new Date(b.received_at) - new Date(a.received_at))
-      .slice(0, limit);
+    // Se respeta el orden de la consulta paginada y no el del Map: es el único
+    // que coincide con el cursor que se devuelve.
+    const conversations = waIds.map((waId) => map.get(waId)).filter(Boolean);
 
     // El nombre REAL del lead (el que dio en el formulario) manda sobre el
     // alias del perfil de WhatsApp. Antes solo se usaba cuando el perfil no
@@ -724,24 +752,114 @@ export class WhatsappMessageService {
     // Marca las conversaciones que Avan transfirió a un asesor (ver
     // handOffToAdvisor en whatsappBotService.js), para que el panel pueda
     // resaltarlas como urgentes en vez de que se pierdan entre el resto.
-    const waIds = conversations.map((c) => c.wa_id);
-    if (waIds.length > 0) {
-      const sessions = await db('whatsapp_bot_sessions').whereIn('wa_id', waIds).select('wa_id', 'answers');
-      const handoffMap = new Map();
-      for (const session of sessions) {
-        try {
-          const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
-          if (answers.__handedOffAt) handoffMap.set(session.wa_id, answers.__handedOffAt);
-        } catch {
-          // Sesión con JSON corrupto: se ignora, no bloquea la bandeja.
-        }
-      }
-      for (const conversation of conversations) {
-        conversation.handed_off_at = handoffMap.get(conversation.wa_id) || null;
+    const sessions = await db('whatsapp_bot_sessions').whereIn('wa_id', waIds).select('wa_id', 'answers');
+    const handoffMap = new Map();
+    for (const session of sessions) {
+      try {
+        const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
+        if (answers.__handedOffAt) handoffMap.set(session.wa_id, answers.__handedOffAt);
+      } catch {
+        // Sesión con JSON corrupto: se ignora, no bloquea la bandeja.
       }
     }
+    for (const conversation of conversations) {
+      conversation.handed_off_at = handoffMap.get(conversation.wa_id) || null;
+    }
 
-    return conversations;
+    const ultima = pagina[pagina.length - 1];
+    return {
+      conversations,
+      // Se devuelve el cursor de la consulta agrupada, no el `received_at` de
+      // la conversación plegada: son el mismo instante, pero el de la consulta
+      // es el que la siguiente página va a comparar.
+      nextCursor: { lastAt: new Date(ultima.last_at).toISOString(), waId: ultima.wa_id },
+      hasMore: pagina.length === limit
+    };
+  }
+
+  /**
+   * La página de contactos ordenada por su último mensaje. Devuelve solo
+   * `wa_id` y esa fecha: traer el mensaje entero acá obligaría a una
+   * subconsulta por grupo que MySQL resuelve mucho peor que un GROUP BY plano.
+   */
+  async #conversationKeys({ limit, before, search, sufijos }) {
+    const query = db('whatsapp_messages')
+      .whereNotNull('wa_id')
+      .where('wa_id', '!=', '')
+      .groupBy('wa_id')
+      .select('wa_id')
+      .max('received_at as last_at')
+      .orderBy('last_at', 'desc')
+      .orderBy('wa_id', 'desc')
+      .limit(limit);
+
+    this.#applyConversationSearch(query, search, sufijos);
+
+    if (before?.lastAt && before?.waId) {
+      const fecha = new Date(before.lastAt);
+      query.havingRaw('(MAX(received_at) < ? OR (MAX(received_at) = ? AND wa_id < ?))', [fecha, fecha, before.waId]);
+    }
+
+    return query;
+  }
+
+  /** Cuántas conversaciones hay en total (con el filtro de búsqueda aplicado). */
+  async countConversations({ search = '' } = {}) {
+    const termino = String(search || '').trim();
+    const sufijos = await this.#leadPhoneSuffixesMatching(termino);
+
+    const query = db('whatsapp_messages')
+      .whereNotNull('wa_id')
+      .where('wa_id', '!=', '')
+      .countDistinct('wa_id as total');
+
+    this.#applyConversationSearch(query, termino, sufijos);
+    const [fila] = await query;
+    return Number(fila?.total || 0);
+  }
+
+  /**
+   * El filtro de la búsqueda de la bandeja, en el SERVIDOR.
+   *
+   * Se buscaba en el navegador sobre lo que ya estaba cargado, lo que con la
+   * lista completa significaría "busca entre los últimos 30": justo el
+   * contacto viejo que uno no encuentra a mano es el que se busca escribiendo.
+   *
+   * Se cruza por el número y por el alias del perfil; el nombre REAL del lead
+   * no está en esta tabla, así que llega resuelto en `sufijos` (los últimos 9
+   * dígitos de los teléfonos de los leads que coinciden por nombre).
+   */
+  #applyConversationSearch(query, search, sufijos) {
+    if (!search) return query;
+    // El LIKE se arma con el texto de quien busca: sus `%` y `_` se escapan
+    // para que no se conviertan en comodines.
+    const patron = `%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`;
+
+    return query.where((builder) => {
+      builder
+        .whereRaw('LOWER(wa_id) LIKE ?', [patron])
+        .orWhereRaw('LOWER(COALESCE(contact_name, "")) LIKE ?', [patron]);
+      for (const sufijo of sufijos) builder.orWhere('wa_id', 'like', `%${sufijo}`);
+    });
+  }
+
+  /**
+   * Los últimos 9 dígitos de los teléfonos de los leads cuyo nombre coincide
+   * con lo buscado — el puente entre "busco a Elisa Porras" y un `wa_id` que
+   * solo es un número. Se acota a 300 porque es una ayuda de búsqueda: con más
+   * coincidencias que eso, lo que hace falta es escribir un poco más.
+   */
+  async #leadPhoneSuffixesMatching(search) {
+    if (!search) return [];
+    const patron = `%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`;
+    const leads = await db('leads')
+      .whereNotNull('phone')
+      .where('phone', '!=', '')
+      .whereRaw('LOWER(full_name) LIKE ?', [patron])
+      .select('phone')
+      .limit(300);
+
+    return [...new Set(leads.map((lead) => phoneKey(lead.phone)).filter(Boolean))];
   }
 
   /** Borra la marca de "transferido a un asesor" de una conversación (ver

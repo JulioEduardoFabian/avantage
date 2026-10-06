@@ -304,7 +304,7 @@
 
     <!-- Bandeja de conversaciones -->
     <h3 class="subsection-title">Conversaciones</h3>
-    <section v-if="!isLoading && conversations.length === 0" class="empty-state">
+    <section v-if="!isLoading && conversations.length === 0 && !contactSearch" class="empty-state">
       <div class="empty-state-visual">
         <img src="/images/empty_chat_state.jpg" alt="WhatsApp Inbox" class="empty-state-photo" />
       </div>
@@ -316,8 +316,15 @@
       <aside class="contacts-panel">
         <div class="contacts-panel-head">
           <p class="contacts-count">
-            {{ filteredConversations.length }}<template v-if="contactSearch"> de {{ conversations.length }}</template>
-            {{ filteredConversations.length === 1 ? 'conversación' : 'conversaciones' }}
+            <template v-if="contactSearch">
+              {{ conversationsTotal }} {{ conversationsTotal === 1 ? 'resultado' : 'resultados' }}
+            </template>
+            <template v-else-if="conversations.length < conversationsTotal">
+              {{ conversations.length }} de {{ conversationsTotal }} conversaciones
+            </template>
+            <template v-else>
+              {{ conversationsTotal }} {{ conversationsTotal === 1 ? 'conversación' : 'conversaciones' }}
+            </template>
           </p>
           <div class="contact-search">
             <span class="contact-search-icon" aria-hidden="true">🔍</span>
@@ -330,13 +337,13 @@
           </div>
         </div>
 
-        <div class="contacts-list">
-          <p v-if="filteredConversations.length === 0" class="contacts-empty">
+        <div ref="contactsListEl" class="contacts-list" @scroll.passive="onContactsScroll">
+          <p v-if="conversations.length === 0 && !isLoadingConversations" class="contacts-empty">
             Sin resultados para "{{ contactSearch }}".
           </p>
 
           <button
-            v-for="c in filteredConversations"
+            v-for="c in conversations"
             :key="c.wa_id"
             class="contact-item"
             :class="{ 'is-active': c.wa_id === selectedWaId, 'is-urgent': c.handed_off_at }"
@@ -369,6 +376,15 @@
               </span>
             </span>
           </button>
+
+          <p v-if="isLoadingConversations" class="contacts-more">Cargando más…</p>
+          <button
+            v-else-if="conversationsHasMore"
+            type="button"
+            class="contacts-more contacts-more-btn"
+            @click="fetchConversations({ append: true })"
+          >Cargar más conversaciones</button>
+          <p v-else-if="conversations.length > 0" class="contacts-more">No hay más conversaciones.</p>
         </div>
       </aside>
 
@@ -536,13 +552,20 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, onUnmounted, computed, ref, reactive } from 'vue';
+import { nextTick, onMounted, onUnmounted, computed, ref, reactive, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import { Form } from 'lucide-vue-next';
 
 const conversations = ref([]);
 const contactSearch = ref('');
+/** Cuántas hay en total según el servidor (no cuántas se alcanzaron a cargar). */
+const conversationsTotal = ref(0);
+/** `{ lastAt, waId }` de la última cargada: por ahí sigue la próxima página. */
+const conversationsCursor = ref(null);
+const conversationsHasMore = ref(false);
+const isLoadingConversations = ref(false);
+const contactsListEl = ref(null);
 const stats = ref({ total: 0, contacts: 0 });
 const rawEvents = ref([]);
 const isLoading = ref(false);
@@ -674,16 +697,17 @@ const selectedContactName = computed(() => {
   return conv ? displayName(conv) : selectedWaId.value;
 });
 
-const filteredConversations = computed(() => {
-  const q = contactSearch.value.trim().toLowerCase();
-  if (!q) return conversations.value;
-  // Se busca por los dos nombres: quien atiende puede acordarse del real o
-  // del alias con el que lo tiene agendado.
-  return conversations.value.filter((c) =>
-    (c.lead_name || '').toLowerCase().includes(q) ||
-    (c.contact_name || '').toLowerCase().includes(q) ||
-    c.wa_id.includes(q)
-  );
+/*
+ * La búsqueda la resuelve el SERVIDOR (ver `/api/whatsapp/conversations`).
+ * Filtrarla acá, sobre lo que ya estaba cargado, significaba "busca entre las
+ * primeras 30": justo el contacto viejo que no se encuentra a mano es el que
+ * se busca escribiendo. Se espera a que la persona deje de teclear para no
+ * disparar una consulta por letra.
+ */
+let searchTimer = null;
+watch(contactSearch, () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => fetchConversations({ reset: true }), 300);
 });
 
 /**
@@ -759,15 +783,96 @@ function assignIfChanged(target, next) {
   if (JSON.stringify(target.value) !== serialized) target.value = next;
 }
 
-async function fetchConversations() {
+/** Cuántas conversaciones trae cada página de la bandeja. */
+const CONVERSATIONS_PAGE_SIZE = 30;
+
+/**
+ * Una página de la bandeja.
+ *
+ *  - `reset`: empieza de cero (al entrar y al cambiar la búsqueda).
+ *  - `append`: la siguiente página, que es lo que pide el scroll.
+ *  - sin nada: el sondeo automático. Trae la primera página y la **mezcla**
+ *    con lo que ya estaba cargado en vez de reemplazarlo: si no, cada cinco
+ *    segundos el operador perdería todo lo que bajó.
+ */
+async function fetchConversations({ append = false, reset = false } = {}) {
+  if (append && (!conversationsHasMore.value || isLoadingConversations.value)) return;
+  if (append || reset) isLoadingConversations.value = true;
+
   try {
-    const response = await apiFetch('/api/whatsapp/conversations');
+    const params = new URLSearchParams({ limit: String(CONVERSATIONS_PAGE_SIZE) });
+    const termino = contactSearch.value.trim();
+    if (termino) params.set('search', termino);
+    if (append && conversationsCursor.value) {
+      params.set('beforeAt', conversationsCursor.value.lastAt);
+      params.set('beforeWaId', conversationsCursor.value.waId);
+    }
+
+    const response = await apiFetch(`/api/whatsapp/conversations?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Error al obtener las conversaciones.');
-    assignIfChanged(conversations, data.conversations || []);
+
+    const pagina = data.conversations || [];
+    if (append) {
+      const vistos = new Set(conversations.value.map((c) => c.wa_id));
+      conversations.value = [...conversations.value, ...pagina.filter((c) => !vistos.has(c.wa_id))];
+      conversationsHasMore.value = Boolean(data.hasMore);
+    } else if (reset) {
+      conversations.value = pagina;
+      conversationsHasMore.value = Boolean(data.hasMore);
+    } else {
+      /*
+       * Sondeo: la primera página manda sobre lo que ya había (una
+       * conversación con un mensaje nuevo sube al tope), y el resto de lo
+       * cargado queda debajo. No hace falta reordenar: la página 1 son las más
+       * recientes del servidor, así que nada de lo de abajo puede ser más
+       * nuevo que ellas.
+       */
+      const enPagina = new Set(pagina.map((c) => c.wa_id));
+      const resto = conversations.value.filter((c) => !enPagina.has(c.wa_id));
+      assignIfChanged(conversations, [...pagina, ...resto]);
+    }
+
+    if (data.total !== null && data.total !== undefined) conversationsTotal.value = data.total;
+
+    /*
+     * El cursor se recalcula SIEMPRE desde la última conversación cargada, no
+     * desde el que devuelve la respuesta: el sondeo pide la primera página y
+     * su cursor apunta a la conversación número 30, que es justo la que ya
+     * tenemos. Con ese cursor, seguir bajando volvería a traer lo mismo.
+     */
+    const ultima = conversations.value[conversations.value.length - 1];
+    conversationsCursor.value = ultima
+      ? { lastAt: new Date(ultima.received_at).toISOString(), waId: ultima.wa_id }
+      : null;
+
+    // Si la primera página no llena el panel no hay scroll que disparar, y la
+    // lista se quedaría corta con más conversaciones esperando.
+    if (append || reset) await nextTick();
+    fillContactsList();
   } catch (error) {
     errorMessage.value = error.message;
+  } finally {
+    isLoadingConversations.value = false;
   }
+}
+
+/** A qué distancia del fondo se pide la página siguiente. */
+const CONTACTS_SCROLL_THRESHOLD_PX = 180;
+
+function onContactsScroll() {
+  const el = contactsListEl.value;
+  if (!el) return;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight <= CONTACTS_SCROLL_THRESHOLD_PX) {
+    fetchConversations({ append: true });
+  }
+}
+
+/** Sigue pidiendo mientras la lista no tenga nada que desplazar. */
+function fillContactsList() {
+  const el = contactsListEl.value;
+  if (!el || !conversationsHasMore.value || isLoadingConversations.value) return;
+  if (el.scrollHeight <= el.clientHeight) fetchConversations({ append: true });
 }
 
 async function fetchStats() {
@@ -995,6 +1100,7 @@ async function deleteConversation() {
     if (!response.ok) throw new Error(data.error || 'No se pudo eliminar la conversación.');
 
     conversations.value = conversations.value.filter((c) => c.wa_id !== waId);
+    conversationsTotal.value = Math.max(0, conversationsTotal.value - 1);
     selectedWaId.value = null;
     thread.value = [];
     botSession.value = null;
@@ -1145,7 +1251,9 @@ async function fetchAll({ silent = false, full = true } = {}) {
   if (!silent) isLoading.value = true;
   errorMessage.value = '';
 
-  const tasks = [fetchConversations()];
+  // Al entrar y al pulsar "Actualizar" se arranca de cero; el sondeo solo
+  // mezcla la primera página para no tirar lo que el operador ya bajó.
+  const tasks = [fetchConversations({ reset: !silent })];
   if (selectedWaId.value) tasks.push(fetchThread(selectedWaId.value), fetchBotSession(selectedWaId.value));
   if (full) tasks.push(fetchStats(), fetchRawEvents(), fetchBotActivity());
 
@@ -1591,6 +1699,23 @@ onUnmounted(() => {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.contacts-more {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  text-align: center;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  border: none;
+  background: none;
+  margin: 0;
+}
+
+.contacts-more-btn {
+  cursor: pointer;
+  color: var(--primary);
+  text-decoration: underline;
 }
 
 .contacts-empty {

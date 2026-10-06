@@ -484,6 +484,24 @@ antes de tocar el arranque de producción.
   cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago — cuando se le abone,
   ese egreso se registra en Salarios, y por eso las comisiones no entran en `finance_journal` ni en
   los totales de Finanzas.
+- La **bandeja de WhatsApp** (`/api/whatsapp/conversations`) está **paginada**: devolvía las 100 más
+  recientes y el resto no existía para el panel, y además leía la tabla entera de mensajes en cada
+  refresco para plegarla en memoria (crece con cada mensaje de cada conversación). Ahora primero se
+  pide la PÁGINA de contactos con un `GROUP BY wa_id` ordenado por `MAX(received_at)` —para eso está
+  el índice compuesto (`wa_id`, `received_at`)— y recién después los mensajes de esos contactos. El
+  plegado sigue en JavaScript porque la bandeja necesita datos que no salen de la última fila: el
+  canal del PRIMER mensaje, si ese primer entrante era el resumen de un formulario, y el último
+  nombre de perfil conocido (los salientes lo traen en null). El cursor es el par
+  (`received_at`, `wa_id`) y no solo la fecha: dos conversaciones pueden tener su último mensaje en
+  el mismo segundo y una se perdería entre páginas. **La búsqueda se resuelve en el servidor** —
+  filtrarla en el navegador sobre lo cargado es "busca entre las primeras 30", y el contacto viejo
+  que no se encuentra a mano es justo el que se escribe; el nombre real del lead no está en
+  `whatsapp_messages`, así que se traduce a los últimos 9 dígitos de los teléfonos de los leads que
+  coinciden (`phoneKey`) y se cruza por sufijo. En la pantalla, el sondeo automático trae la primera
+  página y la **mezcla** con lo ya cargado (reemplazarla tiraría todo lo que el operador bajó), y el
+  cursor se recalcula desde la última conversación de la lista y no desde el que devuelve esa
+  respuesta. `total` viaja aparte y solo en la primera página: "100 conversaciones" era el tamaño de
+  la página disfrazado de dato.
 - **Bot de WhatsApp** (`whatsappBotService.js`, el servicio más grande del backend): conversa con
   leads, agenda reuniones vía `googleCalendarService`/`scheduledMeetingService`, y hace seguimiento
   de conversaciones inactivas (recordatorio a la 1h, estado "Congelado" a las 2h — barrido cada
