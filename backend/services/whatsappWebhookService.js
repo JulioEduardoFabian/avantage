@@ -139,6 +139,13 @@ export class WhatsappWebhookService {
             : (message.type === 'audio' && record?.body !== '[Audio]' ? record?.body : null);
           if (isNew && isFreshMessage && this.botService && triggerText) {
             await this.botService.handleIncomingMessage(senderId, triggerText, message.id);
+          } else if (isNew && isFreshMessage && this.botService) {
+            // Lo que el bot NO puede leer (una foto, un PDF, un audio que no se
+            // pudo transcribir) caía acá y no pasaba nada: ni respuesta ni
+            // aviso. Desde el otro lado eso se lee como un visto. Ahora al
+            // menos se admite que llegó y se pide el dato por escrito — ver
+            // `handleUnreadableMessage`, que decide a qué tipos sí contestar.
+            await this.botService.handleUnreadableMessage(senderId, message.type);
           }
         } catch (error) {
           console.error(`❌ [WhatsApp Webhook] Error al guardar el mensaje ${message.id}:`, error);

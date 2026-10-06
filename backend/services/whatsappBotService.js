@@ -6,7 +6,7 @@ import { MIN_BOOKING_LEAD_MINUTES } from './googleCalendarService.js';
 import { normalizeUniversity } from './universityNormalizer.js';
 import { normalizeCareer } from './careerNormalizer.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
-import { criticalSignal, isTrustDoubt, mayBeRefusal, saysNotInterested } from './leadSignals.js';
+import { criticalSignal, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
@@ -393,6 +393,51 @@ const NUDGE_BURST_LIMIT = 3;
  * que si vuelve a escribir al día siguiente se entere alguien.
  */
 const PAUSED_INBOUND_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Cada cuánto, como mucho, se vuelve a avisar de que un lead está esperando en
+ * la reunión. Una hora: cubre la reunión entera, y quien espera suele escribir
+ * dos o tres veces seguidas — tres alertas idénticas no hacen que nadie entre
+ * más rápido.
+ */
+const WAITING_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+
+/**
+ * Tipos de mensaje a los que NO se les contesta nada cuando el bot no los
+ * puede leer: una reacción (un pulgar sobre un mensaje viejo), una edición o
+ * un mensaje borrado. No son alguien escribiéndole al negocio, son ruido del
+ * protocolo, y responderlos es el bot hablando solo.
+ */
+const IGNORED_MESSAGE_TYPES = new Set(['reaction', 'revoke', 'edit', 'system', 'ephemeral']);
+
+/**
+ * Cuánto se espera antes de volver a avisar de un lead transferido al que
+ * NADIE le escribió todavía.
+ *
+ * Entre el 20/09 y el 05/10 se transfirieron 17 leads a un asesor y ninguno
+ * terminó con una reunión agendada; en seis conversaciones el "en breve te
+ * escribe por aquí" fue literalmente el último mensaje. El aviso de la
+ * transferencia sale al instante, pero nada vuelve a mirar si alguien lo
+ * atendió, y un aviso que nadie leyó se parece mucho a no haber avisado.
+ *
+ * Tres horas: dentro de la misma jornada laboral, y lo bastante tarde como
+ * para no apurar a alguien que ya lo tiene en su lista.
+ */
+const HANDOFF_FOLLOWUP_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Cuánto puede quedar un mensaje del contacto sin ninguna respuesta antes de
+ * que se avise al equipo, en las conversaciones que los dos bucles de
+ * inactividad NO miran (sesión cerrada, congelada o con el bot apagado).
+ *
+ * Esos bucles solo recorren sesiones vivas, así que el peor caso quedaba
+ * afuera: 35 conversaciones del período terminaron con el contacto hablando y
+ * nadie respondiendo — cinco de ellas con un "Sí" a una propuesta de reserva
+ * que nunca se confirmó, y tres con una pregunta de precio sin contestar.
+ * El bot no puede retomarlas solo (están cerradas por una razón), pero sí
+ * puede hacer que alguien se entere.
+ */
+const UNANSWERED_ALERT_MS = 30 * 60 * 1000;
 
 /**
  * ¿Esa hora de Lima cae dentro de la franja de silencio?
@@ -1748,11 +1793,94 @@ export class WhatsappBotService {
    * de silencio antes de mandarlos al LLM; la selección de horario tras
    * ofrecer agendar se procesa aparte, sin debounce.
    */
+  /**
+   * El contacto mandó algo que el bot no puede leer: una foto, un PDF, un
+   * audio que no se pudo transcribir, un sticker, una ubicación.
+   *
+   * Antes no pasaba absolutamente nada — ni respuesta ni sesión ni aviso. De
+   * 18 mensajes de tipo no soportado en el período, solo 7 tuvieron alguna
+   * respuesta en los 10 minutos siguientes; el resto quedó en un silencio que
+   * desde el otro lado se lee como "me dejaron en visto". Y es un silencio
+   * caro: quien manda la foto de su plan de tesis es alguien trabajando, no
+   * alguien curioseando.
+   *
+   * El bot dice lo único honesto que puede decir —que no lo puede abrir— y
+   * pide el dato por escrito, que es lo que necesita para seguir. En paralelo
+   * avisa al equipo: si era un documento importante, alguien tiene que mirarlo
+   * con sus ojos.
+   *
+   * No contesta a reacciones, ediciones ni mensajes borrados: eso no es
+   * alguien escribiéndole al negocio, es ruido del protocolo, y responderlo
+   * sería el bot hablando solo.
+   */
+  async handleUnreadableMessage(waId, messageType) {
+    if (IGNORED_MESSAGE_TYPES.has(messageType)) return;
+
+    try {
+      const session = await this.getSession(waId);
+
+      // Con el bot pausado contesta una persona: que el bot se meta a decir
+      // "no puedo abrirlo" encima de una conversación atendida a mano es peor
+      // que el silencio. El aviso interno sí sale, por el camino de siempre.
+      if (session && !session.bot_enabled) {
+        await this._alertPausedInbound(waId, session, `[${messageType}]`);
+        return;
+      }
+
+      const answers = typeof session?.answers === 'string'
+        ? JSON.parse(session.answers)
+        : (session?.answers || {});
+
+      // Una sola vez por conversación: quien manda tres fotos seguidas no
+      // necesita tres veces el mismo aviso.
+      if (answers.__unreadableNoticeAt) {
+        this.logActivity({ type: 'unreadable_message_repeated', waId, messageType });
+        return;
+      }
+
+      if (session) {
+        answers.__unreadableNoticeAt = new Date().toISOString();
+        await this.updateSession(waId, { answers: JSON.stringify(answers) });
+      }
+
+      this.logActivity({ type: 'unreadable_message', waId, messageType });
+      await this.send(waId, whatsappBotCopy.unreadableMessage(messageType));
+
+      const lead = await this.leadService.findByPhone(waId).catch(() => null);
+      await this.alertInternal({
+        waId,
+        type: 'unreadable_message',
+        title: `${lead?.full_name || waId} mandó algo que el bot no puede leer`,
+        body: `Llegó un mensaje de tipo "${messageType}" y el bot no lo puede abrir, así que le pidió `
+          + 'el dato por escrito.\n\n'
+          + 'Si era un documento o una captura que importa, hay que revisarlo a mano desde el panel de WhatsApp.'
+      });
+    } catch (error) {
+      console.error(`❌ [WhatsApp Bot] Error al atender un mensaje ilegible de ${waId}:`, error.message);
+    }
+  }
+
   async handleIncomingMessage(waId, text, messageId = null) {
     // Se guarda el id del mensaje entrante para poder mostrar el indicador de
     // "escribiendo..." de WhatsApp (que se envía referenciando ese id) antes
     // de cada respuesta del bot.
     if (messageId) this.lastInboundMessageId.set(waId, messageId);
+
+    // "Estoy en sala de espera" se atiende ANTES que absolutamente todo lo
+    // demás, y por tres razones que no se cumplen más abajo:
+    //
+    //  - hay una reunión ocurriendo y lo que se mide son minutos: esperar los
+    //    segundos del buffer de agrupación ya es tarde;
+    //  - vale con el bot PAUSADO, que es cuando el turno ni siquiera corre —
+    //    y es el caso más probable, porque a quien ya agendó suele atenderlo
+    //    una persona;
+    //  - vale también si el lead ya graduó al Funnel de Ventas, que arriba
+    //    hace que el bot se calle: callarse acá sería dejar a alguien
+    //    conectado esperando a que nadie entre.
+    //
+    // Es el único camino con esta prioridad, y es deliberado: de los cuatro
+    // casos reales del período, ninguno recibió respuesta ni generó aviso.
+    if (await this._handleWaitingInMeeting(waId, await this.getSession(waId), text)) return;
 
     // El lead ya graduó al Funnel de Ventas: lo trabaja un closer, con
     // cotización de por medio, y el bot no tiene nada que hacer ahí — retomar
@@ -2414,6 +2542,19 @@ export class WhatsappBotService {
         return;
       }
 
+      // Preguntar el precio es la señal de intención más fuerte del embudo:
+      // entre el 20/09 y el 05/10, quien preguntó agendó el 42% contra el 19%
+      // del resto. Si ya tenemos todo lo que hace falta para ofrecerle
+      // horarios, se le ofrecen EN EL MISMO TURNO en vez de contestar
+      // "¿coordinamos?" y esperar un sí: ese turno de más es un turno donde se
+      // puede ir, y justo acá es el más caro de perder.
+      if (!nextDataQuestion(answers)) {
+        await this.updateSession(waId, { answers: JSON.stringify(answers) });
+        await this.send(waId, whatsappBotCopy.priceAnchor(isFirstTurn ? contactName : null, meetingDurationLabel(settings)));
+        this.logActivity({ type: 'price_anchor_with_slots', waId });
+        return this.finalize(waId, answers);
+      }
+
       // Queda constancia de que este turno terminó en una PROPUESTA
       // ("¿Coordinamos?"): lo que conteste a continuación hay que leerlo como
       // respuesta a eso, no como un mensaje suelto (ver más abajo).
@@ -2653,6 +2794,33 @@ export class WhatsappBotService {
   async _inactivityNudgeText(session, nudgesSent) {
     const generic = INACTIVITY_NUDGE_TEXTS[Math.min(nudgesSent, INACTIVITY_NUDGE_TEXTS.length - 1)];
     const isWarmup = session.status === WARMUP_STATUS;
+
+    // Conversación libre: el genérico era literalmente el último mensaje de 72
+    // conversaciones entre el 20/09 y el 05/10, con un 26% de respuesta.
+    // "¿Sigues por ahí?" no le da nada que contestar a alguien que ya se
+    // había distraído. Se le nombra el dato que falta y para qué sirve, que es
+    // lo único concreto que hay en este punto: todavía no se le puede reservar
+    // un bloque porque faltan datos para calificarlo, y prometerle un horario
+    // que después no se le reserva es peor que no decir nada.
+    if (session.status === 'active') {
+      const { answers } = this._readScheduling(session);
+      const pending = nextDataQuestion(answers);
+      if (!pending) return generic;
+      // La pregunta queda incrustada a mitad de una frase, así que su primera
+      // LETRA va en minúscula — la primera posición suele ser "¿", y bajarle
+      // la caja a un signo no hace nada.
+      const question = pending
+        .replace(/^¡Perfecto!\s*/, '')
+        // El "Y" de "¿Y en qué universidad estudias?" encadena con la pregunta
+        // anterior, que acá no existe: sin quitarlo queda "una sola cosa: ¿y
+        // en qué...", que suena a que viene de otra frase.
+        .replace(/^¿\s*[yY]\s+/, '¿')
+        .replace(/\p{L}/u, (letra) => letra.toLowerCase());
+      this.logActivity({ type: 'inactivity_nudge_pending_data', waId: session.wa_id });
+      return `¿Seguimos? Me quedó pendiente una sola cosa: ${question} `
+        + 'Con eso te paso los horarios libres del asesor 🙌';
+    }
+
     if (!isWarmup && !['scheduling_date', 'scheduling_time'].includes(session.status)) return generic;
 
     try {
@@ -2887,6 +3055,89 @@ export class WhatsappBotService {
 
     await this.send(waId, whatsappBotCopy.trustCredentials());
     return true;
+  }
+
+  /**
+   * El lead avisa que ya está esperando en la reunión.
+   *
+   * No se parece a ninguna otra señal y por eso no entra por
+   * `_handleCriticalSignal`: ahí todas terminan en `handOffToAdvisor()`, que
+   * cierra la sesión y mueve el lead a "transferido". Acá no hay nada que
+   * transferir —hay una reunión en curso— y moverle el funnel a alguien que
+   * está conectado esperando es, además de inútil, desprolijo.
+   *
+   * Lo único que importa es que alguien del equipo entre YA, así que el aviso
+   * interno sale primero y el acuse al lead después. Se manda aunque el bot
+   * esté pausado para ese contacto: con el bot apagado nadie le responde y
+   * nadie se entera, que es exactamente lo que pasó las cuatro veces que
+   * ocurrió.
+   *
+   * Se avisa una sola vez por reunión (`__waitingAlertAt`, con una ventana de
+   * una hora): la persona suele escribir dos o tres veces mientras espera, y
+   * tres alertas idénticas no hacen que nadie entre más rápido.
+   */
+  async _handleWaitingInMeeting(waId, session, incomingText) {
+    if (!isWaitingInMeeting(incomingText)) return false;
+
+    const answers = typeof session?.answers === 'string'
+      ? JSON.parse(session.answers)
+      : (session?.answers || {});
+
+    const lastAlert = answers.__waitingAlertAt ? new Date(answers.__waitingAlertAt).getTime() : 0;
+    if (Date.now() - lastAlert < WAITING_ALERT_COOLDOWN_MS) {
+      this.logActivity({ type: 'waiting_in_meeting_repeated', waId, text: incomingText });
+      return true;
+    }
+
+    if (session) {
+      answers.__waitingAlertAt = new Date().toISOString();
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+    }
+
+    this.logActivity({ type: 'waiting_in_meeting', waId, text: incomingText });
+
+    // El aviso primero: si algo falla después, el equipo ya se enteró.
+    const lead = await this.leadService.findByPhone(waId).catch(() => null);
+    const quien = lead?.full_name || waId;
+    const meeting = await this._nextMeetingFor(waId);
+    const cuando = meeting ? ` Su reunión es ${formatMeetingDateTimeLabel(meeting.start_time)}.` : '';
+    const enlace = meeting?.meet_link ? `
+
+Enlace: ${meeting.meet_link}` : '';
+
+    await this.alertInternal({
+      waId,
+      type: 'lead_waiting_in_meeting',
+      title: `⏰ URGENTE: ${quien} está esperando en la reunión`,
+      body: `${quien} (${waId}) avisó que ya está conectado esperando que lo admitan.${cuando}
+
+`
+        + `Escribió: "${String(incomingText || '').slice(0, 300)}"
+
+`
+        + `Hay que entrar al Meet AHORA. Si nadie puede, hay que escribirle por WhatsApp en este momento.${enlace}`
+    });
+
+    // El acuse sale también con el bot pausado, que es la única excepción a esa
+    // regla en todo el servicio. La regla existe para que el bot no CONVERSE
+    // por encima de una persona que ya está atendiendo; esto no conversa: no
+    // pregunta nada, no mueve el funnel y cierra el turno. Y el silencio acá
+    // es el peor de todos — del otro lado hay alguien mirando una sala vacía.
+    await this.send(waId, 'Ya aviso al asesor para que entre en este momento 🙌 Dame un minuto y quédate ahí, por favor.');
+    return true;
+  }
+
+  /** La próxima reunión agendada de ese contacto, para darle contexto al aviso. */
+  async _nextMeetingFor(waId) {
+    try {
+      return await db('scheduled_meetings')
+        .where({ wa_id: waId })
+        .where('start_time', '>=', new Date(Date.now() - 2 * 60 * 60 * 1000))
+        .orderBy('start_time', 'asc')
+        .first();
+    } catch {
+      return null;
+    }
   }
 
   async _handleCriticalSignal(waId, session, incomingText) {
@@ -5176,6 +5427,151 @@ ${numberedList(fullSlotLabels(offer))}
     }
 
     await this._recoverOrphanInbounds(now, isQuietHours);
+    await this._followUpStaleHandoffs(now);
+    await this._alertUnansweredInbounds(now);
+  }
+
+  /**
+   * Leads transferidos a un asesor a los que, horas después, todavía no les
+   * escribió nadie.
+   *
+   * El bot NO vuelve a hablarles, y es deliberado: ya les prometió que "en
+   * breve te escribe por aquí", y aparecer él otra vez convierte esa promesa
+   * en una del robot. Lo que falta no es otro mensaje al lead, es que una
+   * persona lo tome — así que esto escala hacia adentro.
+   *
+   * La condición es dura a propósito: solo cuenta si el ÚLTIMO mensaje
+   * saliente de la conversación sigue siendo el de la transferencia. Un asesor
+   * que contestó desde el panel o desde WhatsApp Business ya dejó su mensaje
+   * ahí (`recordOutboundEcho`), y a ese no hay que recordarle nada.
+   */
+  async _followUpStaleHandoffs(now) {
+    let candidatas;
+    try {
+      candidatas = await db('whatsapp_bot_sessions')
+        .where('status', 'completed')
+        .whereNotNull('answers')
+        .where('updated_at', '>=', new Date(now - MISSED_REPLY_MAX_AGE_MS))
+        .select('id', 'wa_id', 'answers');
+    } catch (error) {
+      console.error('❌ [WhatsApp Bot] No se pudieron revisar las transferencias:', error.message);
+      return;
+    }
+
+    for (const session of candidatas) {
+      let answers;
+      try {
+        answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
+      } catch {
+        continue;
+      }
+
+      if (!answers.__handedOffAt || answers.__handoffFollowUpAt) continue;
+      const handedOff = new Date(answers.__handedOffAt).getTime();
+      if (!handedOff || now - handedOff < HANDOFF_FOLLOWUP_MS) continue;
+
+      // Si alguien del equipo ya le escribió (desde el panel o desde WhatsApp
+      // Business, que llega por `recordOutboundEcho`), no hay nada que
+      // recordar. El minuto de gracia deja fuera el propio mensaje de
+      // transferencia.
+      const posterior = await db('whatsapp_messages')
+        .where({ wa_id: session.wa_id, direction: 'outbound' })
+        .where('received_at', '>', new Date(handedOff + 60 * 1000))
+        .first();
+      if (posterior) continue;
+
+      // Se reserva la marca ANTES de avisar: dos barridos solapados no pueden
+      // mandar el mismo aviso dos veces.
+      answers.__handoffFollowUpAt = new Date().toISOString();
+      const claimed = await db('whatsapp_bot_sessions')
+        .where({ id: session.id })
+        .whereRaw("answers NOT LIKE '%__handoffFollowUpAt%'")
+        .update({ answers: JSON.stringify(answers) });
+      if (!claimed) continue;
+
+      const horas = Math.round((now - handedOff) / (60 * 60 * 1000));
+      const lead = await this.leadService.findByPhone(session.wa_id).catch(() => null);
+      const quien = lead?.full_name || session.wa_id;
+
+      this.logActivity({ type: 'handoff_unattended', waId: session.wa_id, hours: horas });
+
+      await this.alertInternal({
+        waId: session.wa_id,
+        type: 'handoff_unattended',
+        title: `${quien} sigue esperando al asesor`,
+        body: `Hace ${horas} h le dijimos a ${quien} (${session.wa_id}) que un asesor le escribiría "en breve", `
+          + 'y todavía no le escribió nadie.\n\n'
+          + `Motivo de la transferencia: ${answers.__handedOffReason || 'sin motivo registrado'}.\n\n`
+          + 'El bot no le va a volver a escribir: ya le prometió que seguía una persona. Hay que tomarlo desde el panel.'
+      });
+    }
+  }
+
+  /**
+   * Conversaciones donde el contacto habló último y nadie respondió, en las
+   * sesiones que los bucles de inactividad no recorren: cerradas, congeladas o
+   * con el bot apagado.
+   *
+   * Esas sesiones están así por una razón válida (se agendó, se cerró, alguien
+   * la atiende a mano), y por eso el bot no las retoma solo. Pero "el bot no
+   * contesta" no puede significar también "nadie se entera": ahí quedaron el
+   * "Sí" que nunca se confirmó y las preguntas de precio sin responder.
+   *
+   * Comparte el marcador `paused_alert_at` con `_alertPausedInbound`, que
+   * avisa de lo mismo en caliente: es el único campo que dice "de este
+   * contacto ya avisamos", y dos avisos por el mismo silencio son ruido.
+   */
+  async _alertUnansweredInbounds(now) {
+    let sesiones;
+    try {
+      sesiones = await db('whatsapp_bot_sessions')
+        .where((builder) => builder
+          .whereIn('status', ['completed', FROZEN_STATUS])
+          .orWhere('bot_enabled', false))
+        .where('updated_at', '>=', new Date(now - MISSED_REPLY_MAX_AGE_MS))
+        .select('id', 'wa_id', 'paused_alert_at');
+    } catch (error) {
+      console.error('❌ [WhatsApp Bot] No se pudieron revisar los mensajes sin responder:', error.message);
+      return;
+    }
+
+    for (const session of sesiones) {
+      const lastAlert = session.paused_alert_at ? new Date(session.paused_alert_at).getTime() : 0;
+      if (now - lastAlert < PAUSED_INBOUND_ALERT_COOLDOWN_MS) continue;
+
+      const ultimo = await db('whatsapp_messages')
+        .where({ wa_id: session.wa_id })
+        .orderBy('id', 'desc')
+        .first();
+
+      if (!ultimo || ultimo.direction !== 'inbound') continue;
+      const edad = now - new Date(ultimo.received_at).getTime();
+      if (edad < UNANSWERED_ALERT_MS || edad > MISSED_REPLY_MAX_AGE_MS) continue;
+
+      const claimed = await db('whatsapp_bot_sessions')
+        .where({ id: session.id })
+        .where((builder) => (lastAlert
+          ? builder.where('paused_alert_at', session.paused_alert_at)
+          : builder.whereNull('paused_alert_at')))
+        .update({ paused_alert_at: db.fn.now() });
+      if (!claimed) continue;
+
+      const lead = await this.leadService.findByPhone(session.wa_id).catch(() => null);
+      const quien = lead?.full_name || session.wa_id;
+      const minutos = Math.round(edad / 60000);
+
+      this.logActivity({ type: 'unanswered_inbound', waId: session.wa_id, minutes: minutos });
+
+      await this.alertInternal({
+        waId: session.wa_id,
+        type: 'unanswered_inbound',
+        title: `${quien} escribió y nadie le respondió`,
+        body: `${quien} (${session.wa_id}) escribió hace ${minutos} min y su mensaje sigue sin respuesta. `
+          + 'El bot no le contesta porque su conversación está cerrada o pausada.\n\n'
+          + `Escribió: "${String(ultimo.body || '').slice(0, 400)}"\n\n`
+          + 'Hay que responderle a mano desde el panel de WhatsApp.'
+      });
+    }
   }
 
   /**

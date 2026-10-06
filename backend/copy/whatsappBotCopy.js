@@ -27,6 +27,36 @@ export function priceAnchor(contactName, durationLabel) {
   );
 }
 
+/**
+ * El contacto mandó algo que el bot no puede abrir (una foto, un PDF, un audio
+ * sin transcribir, un sticker).
+ *
+ * Tres reglas: se nombra lo que mandó —si no, parece que el mensaje ni llegó—,
+ * se admite la limitación sin disfrazarla, y se pide por escrito lo mínimo
+ * para poder seguir. Nunca se le pide que "lo vuelva a enviar": lo mandó bien,
+ * el que no puede leerlo es el bot.
+ */
+export function unreadableMessage(messageType) {
+  const QUE_MANDO = {
+    image: 'la imagen',
+    sticker: 'el sticker',
+    document: 'el archivo',
+    audio: 'tu audio',
+    voice: 'tu audio',
+    video: 'el video',
+    location: 'tu ubicación',
+    contacts: 'el contacto'
+  };
+  const cosa = QUE_MANDO[messageType] || 'eso';
+  const detalle = messageType === 'audio' || messageType === 'voice'
+    ? 'Por acá todavía no puedo escucharlo'
+    : `Por acá todavía no puedo abrirlo`;
+
+  return `Me llegó ${cosa}, pero te soy sincero: ${detalle} 🙈 `
+    + '¿Me lo cuentas en un mensaje escrito? Con eso sigo sin problema — y si es algo que necesitas que vea '
+    + 'alguien del equipo, ya les avisé para que lo revisen.';
+}
+
 /** F1 — Segunda vez que insiste con el precio: texto distinto al de la 1ª + handoff. */
 export function priceInsistedHandoff() {
   return 'Entiendo que quieres el número exacto ya 🙌 Te paso directo con el asesor para que te lo confirme y resuelva tus dudas al detalle.';

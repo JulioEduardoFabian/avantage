@@ -506,6 +506,43 @@ antes de tocar el arranque de producción.
   leads, agenda reuniones vía `googleCalendarService`/`scheduledMeetingService`, y hace seguimiento
   de conversaciones inactivas (recordatorio a la 1h, estado "Congelado" a las 2h — barrido cada
   `STALE_CONVERSATION_SWEEP_INTERVAL_MS`, definido en `server.js`).
+  **Seis reglas más salieron de revisar las 2.723 conversaciones del 08/09 al 05/10/2026** (258
+  contactos, 43 reuniones agendadas) y cada una ataca una fuga medida:
+  (1) **el lead que avisa que ya está esperando en la reunión** ("Estoy en sala de espera", "No hay
+  nadie quien me acepte") se atiende ANTES que todo lo demás, incluso antes que las señales
+  críticas, incluso con el bot pausado y aunque el lead ya haya graduado a Ventas
+  (`isWaitingInMeeting` + `_handleWaitingInMeeting`). No entra por `_handleCriticalSignal` porque
+  ahí todo termina en `handOffToAdvisor()`, que cierra la sesión y mueve el funnel: no hay nada que
+  transferir, hay una reunión en curso. Es la **única excepción** a "con el bot pausado el bot se
+  calla", y es legítima porque el acuse no conversa (no pregunta nada, no mueve nada): del otro lado
+  hay alguien mirando una sala vacía. Los cuatro casos reales del período no recibieron respuesta ni
+  generaron aviso;
+  (2) **el recordatorio de inactividad en conversación libre nombra el dato que falta** en vez de
+  "¿Sigues por ahí?" — el genérico fue el último mensaje de 72 conversaciones con 26% de respuesta.
+  No promete un horario: en ese punto todavía faltan datos para reservarlo, y prometer un bloque que
+  después no se reserva es peor que el genérico. Quien se quedó mudo frente a los horarios o en
+  `warmup` sigue recibiendo el suyo, con un bloque concreto;
+  (3) **preguntar el precio es la señal de intención más fuerte del embudo** (42% agenda contra 19%
+  del resto): si ya no falta ningún dato, el ancla de precio sale junto con los horarios en el mismo
+  turno en vez de contestar "¿coordinamos?" y esperar un sí — ese turno de más es el más caro de
+  perder;
+  (4) **lo que el bot no puede leer** (una foto, un PDF, un audio sin transcribir) ya no cae en el
+  vacío: `handleUnreadableMessage` admite que llegó, pide el dato por escrito y avisa al equipo por
+  si era un documento que importa. Nunca pide "vuelve a enviármelo" —lo mandó bien, el que no puede
+  leerlo es el bot— y no contesta a reacciones, ediciones ni mensajes borrados (`IGNORED_MESSAGE_TYPES`),
+  que son ruido del protocolo y no alguien escribiendo;
+  (5) **un lead transferido al que nadie le escribió en 3 horas escala hacia adentro**
+  (`_followUpStaleHandoffs`): 17 transferencias en el período, 0 reuniones agendadas. El bot **no**
+  vuelve a hablarle a propósito — ya le prometió que seguía una persona, y aparecer él otra vez
+  convierte esa promesa en una del robot. La condición es dura: solo cuenta si el último saliente
+  sigue siendo el mensaje de la transferencia (un asesor que contestó desde el panel o desde
+  WhatsApp Business ya dejó el suyo vía `recordOutboundEcho`);
+  (6) **un mensaje sin responder en una sesión cerrada, congelada o con el bot pausado también
+  avisa** (`_alertUnansweredInbounds`): los dos bucles de inactividad solo recorren sesiones vivas,
+  así que el peor caso quedaba afuera — 35 conversaciones terminaron con el contacto hablando y
+  nadie respondiendo, cinco de ellas con un "Sí" a una propuesta de reserva que nunca se confirmó.
+  Comparte el marcador `paused_alert_at` con `_alertPausedInbound` porque los dos avisan del mismo
+  silencio y dos avisos son ruido.
   Cinco reglas de UX conversacional salieron de revisar las conversaciones del 01/10/2026 (1 cita de
   25 contactos) y conviene no deshacerlas: (1) la apertura pide **solo la carrera**, y la universidad
   en el turno siguiente — pedirlas juntas abandonaba 9 de 25 ahí (`nextDataQuestion()` es el único

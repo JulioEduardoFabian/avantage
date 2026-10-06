@@ -36,7 +36,40 @@ function normalize(text) {
  * es nuestro. Responderle con cualquier otra cosa (y sobre todo con un
  * "¿agendamos otra?") se lee como que a nadie le importó.
  */
-const NO_SHOW_RE = /nadie\s+(entro|se\s+conecto|aparecio|llego|vino|me\s+atendio|me\s+respondio)|no\s+(entro|entraron|aparecio|llego|llegaron|se\s+conecto)\s+nadie|estuve\s+esperando|quede\s+esperando|me\s+dejaron\s+(plantad|esperando|colgad)|sala\s+(?:estaba\s+|esta\s+)?vacia|no\s+habia\s+nadie|el\s+asesor\s+no\s+(entro|llego|se\s+conecto|aparecio|me\s+atendio)|no\s+me\s+(atendieron|contestaron|respondieron)/;
+const NO_SHOW_RE = /nadie\s+(entro|se\s+conecto|aparecio|llego|vino|me\s+atendio|me\s+respondio)|no\s+(entro|entraron|aparecio|llego|llegaron|se\s+conecto)\s+nadie|estuve\s+esperando|quede\s+esperando|me\s+dejaron\s+(plantad|esperando|colgad)|sala\s+(?:estaba\s+|esta\s+)?vacia|no\s+(?:habia|hay)\s+nadie|el\s+asesor\s+no\s+(entro|llego|se\s+conecto|aparecio|me\s+atendio)|no\s+me\s+(atendieron|contestaron|respondieron|aceptan|acepto|aceptaron|dejan\s+entrar)/;
+
+/**
+ * El lead está EN la reunión AHORA MISMO: entró al Meet y espera que alguien
+ * lo admita. No es un plantón —todavía— y tratarlo como tal es perder la
+ * reunión por un minuto de diferencia: lo que necesita es que alguien del
+ * equipo entre YA, no una disculpa.
+ *
+ * Es la señal más urgente del sistema y la única que se mide en minutos. Salió
+ * de cuatro casos reales entre el 24/09 y el 03/10 —"Estoy en sala de espera",
+ * "Me encuentro en la sala de espera", "Me estoy uniendo", "No hay nadie quien
+ * me acepte..."— en los que el bot no respondió absolutamente nada y nadie del
+ * equipo se enteró. Los cuatro habían hecho todo bien: agendaron y se
+ * conectaron.
+ *
+ * Se evalúa ANTES que `noShow` porque los dos textos se parecen; la diferencia
+ * es el tiempo verbal, y de eso depende si la reunión todavía se puede salvar.
+ */
+const WAITING_IN_MEETING_RE = /(?:estoy|me\s+encuentro|sigo|ya\s+estoy|aqui\s+estoy)\s+(?:en\s+(?:la\s+)?(?:sala|reunion|llamada|meet)|conectad|esperando\s+en)|en\s+(?:la\s+)?sala\s+de\s+espera|me\s+estoy\s+uniendo|ya\s+(?:me\s+uni|entre|ingrese|estoy\s+dentro)|ya\s+(?:estoy\s+)?en\s+el\s+(?:meet|link|enlace)|no\s+me\s+(?:aceptan|acepta|dejan\s+entrar)|(?:nadie|no\s+hay\s+nadie)\s+(?:que|quien)\s+me\s+(?:acepte|admita|deje\s+entrar)|esperando\s+(?:a\s+)?que\s+me\s+(?:acepten|admitan|dejen\s+entrar)/;
+
+/**
+ * True si el lead avisa que ya está esperando en la reunión.
+ *
+ * Vive FUERA de `SIGNAL_TESTS` porque no se trata como las demás señales
+ * críticas: esas terminan en `handOffToAdvisor()` —que cierra la sesión y
+ * mueve el lead a "transferido"— y acá no hay nada que transferir, hay una
+ * reunión en curso. Lo que corresponde es avisar al equipo en el acto y
+ * decirle a la persona que ya se está avisando, sin tocar su funnel.
+ */
+export function isWaitingInMeeting(text) {
+  const clean = normalize(text);
+  if (!clean || clean.length > 200) return false;
+  return WAITING_IN_MEETING_RE.test(clean);
+}
 
 /**
  * Queja explícita sobre el servicio o la empresa.
