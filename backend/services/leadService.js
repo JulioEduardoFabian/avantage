@@ -322,6 +322,38 @@ ${note}` : note;
   }
 
   /**
+   * El evaluador público lo volvió a usar alguien que YA es un lead: la
+   * evaluación se cuelga de su ficha en vez de abrir una segunda.
+   *
+   * Una persona es un lead, no uno por cada vez que entra al evaluador. La
+   * ficha nueva nacía en "nuevo" y, al indexar por teléfono, tapaba a la que
+   * el equipo venía trabajando: así un lead ya GANADO aparecía en la
+   * trazabilidad de Campañas como "En espera de la reunión" (caso real:
+   * Rafael Anderson Gonzales Ureta, con una ficha ganada del 26/09 y un gemelo
+   * del 02/10). Es exactamente el mismo problema que `attachMetaLeadToExisting`
+   * resuelve para los formularios de Meta, y se arregla igual.
+   *
+   * Lo que se escribe es deliberadamente poco: la viabilidad nueva (que es el
+   * dato que acaba de calcularse) y las notas, agregadas al final. **No se
+   * toca el status** — moverlo es trabajo de `updateLeadStatus()` y haría que
+   * una evaluación nueva retrocediera a un lead cerrado — ni el tema ni los
+   * datos académicos que el equipo ya pudo haber corregido a mano.
+   */
+  async attachEvaluationToExisting(lead, { overallViabilityScore, viabilityLevel, topic, additionalNotes }) {
+    const patch = {};
+    if (overallViabilityScore != null) patch.overall_viability_score = overallViabilityScore;
+    if (viabilityLevel) patch.viability_level = viabilityLevel;
+
+    const notasPrevias = String(lead.additional_notes || '').trim();
+    const encabezado = `[Evaluador ${new Date().toISOString().slice(0, 10)}]${topic ? ` ${topic}` : ''}`;
+    const nota = [encabezado, String(additionalNotes || '').trim()].filter(Boolean).join('\n');
+    patch.additional_notes = notasPrevias ? `${notasPrevias}\n\n${nota}` : nota;
+
+    await db('leads').where({ id: lead.id }).update(patch);
+    return this.getLeadById(lead.id);
+  }
+
+  /**
    * Los `form_id` de Meta que ya produjeron al menos un lead acá.
    *
    * Es el plan B para descubrir formularios cuando la Graph API no deja

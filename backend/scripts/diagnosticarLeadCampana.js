@@ -34,9 +34,11 @@ try {
   const clave = phoneMatchKey(busqueda);
   const fichas = clave
     ? await db('leads').whereIn(db.raw(PHONE_MATCH_KEY_SQL), [clave])
-      .select('id', 'full_name', 'phone', 'status', 'sales_funnel_at', 'created_at')
+      .select('id', 'full_name', 'phone', 'status', 'sales_funnel_at', 'created_at',
+        'source', 'meta_leadgen_id', 'meta_created_time', 'additional_notes')
     : await db('leads').whereRaw('LOWER(full_name) LIKE ?', [`%${busqueda.toLowerCase()}%`])
-      .select('id', 'full_name', 'phone', 'status', 'sales_funnel_at', 'created_at');
+      .select('id', 'full_name', 'phone', 'status', 'sales_funnel_at', 'created_at',
+        'source', 'meta_leadgen_id', 'meta_created_time', 'additional_notes');
 
   if (fichas.length === 0) {
     console.log(`\n⚠ No hay ninguna ficha que coincida con "${busqueda}".`);
@@ -58,6 +60,22 @@ try {
     proyecto: conProyecto.has(f.id) ? 'sí' : 'no',
     creado: new Date(f.created_at).toISOString().slice(0, 10)
   })));
+
+  if (fichas.length > 1) {
+    // De dónde salió cada ficha. Con dos fichas del mismo teléfono, la
+    // pregunta siguiente siempre es "¿qué camino creó la segunda?", y la
+    // respuesta está en el origen y en el id de Meta.
+    console.log(`
+▶ De dónde salió cada ficha:`);
+    console.table(fichas.map((f) => ({
+      id: f.id,
+      origen: f.source || '(sin origen)',
+      meta_leadgen_id: f.meta_leadgen_id || '—',
+      meta_created_time: f.meta_created_time ? new Date(f.meta_created_time).toISOString().slice(0, 16) : '—',
+      creada: new Date(f.created_at).toISOString().slice(0, 16),
+      nota: String(f.additional_notes || '').replace(/\s+/g, ' ').slice(0, 60)
+    })));
+  }
 
   // La misma elección que hace `#enrichContacts`.
   let elegida = null;

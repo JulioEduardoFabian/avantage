@@ -1754,17 +1754,33 @@ app.post('/api/evaluate', async (req, res) => {
     // (no bloquea la respuesta al usuario si la base de datos no está disponible)
     let lead = null;
     try {
-      lead = await leadService.createLead({
-        topic,
-        academicLevel,
-        fieldOfStudy,
-        email,
-        phone,
-        additionalNotes,
-        overallViabilityScore: reportData.evaluation.overallViabilityScore,
-        viabilityLevel: reportData.evaluation.viabilityLevel
-      });
-      console.log(`💾 [Leads] Lead #${lead.id} registrado en MySQL (${email})`);
+      // Si ese teléfono YA es un lead, la evaluación se cuelga de su ficha.
+      // Sin esto, cada vuelta por el evaluador abría una ficha nueva: nacía en
+      // "nuevo", tapaba por teléfono a la que el equipo venía trabajando, y un
+      // lead ya cerrado volvía a verse como si recién empezara (ver
+      // `attachEvaluationToExisting`).
+      const existente = phone ? await leadService.findByPhone(phone) : null;
+      if (existente) {
+        lead = await leadService.attachEvaluationToExisting(existente, {
+          overallViabilityScore: reportData.evaluation.overallViabilityScore,
+          viabilityLevel: reportData.evaluation.viabilityLevel,
+          topic,
+          additionalNotes
+        });
+        console.log(`💾 [Leads] Evaluación agregada al lead existente #${lead.id} (${phone})`);
+      } else {
+        lead = await leadService.createLead({
+          topic,
+          academicLevel,
+          fieldOfStudy,
+          email,
+          phone,
+          additionalNotes,
+          overallViabilityScore: reportData.evaluation.overallViabilityScore,
+          viabilityLevel: reportData.evaluation.viabilityLevel
+        });
+        console.log(`💾 [Leads] Lead #${lead.id} registrado en MySQL (${email})`);
+      }
     } catch (dbError) {
       console.warn('⚠️ [Leads] No se pudo registrar el lead en MySQL:', dbError.message);
     }

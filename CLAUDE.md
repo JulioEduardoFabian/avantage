@@ -294,6 +294,23 @@ antes de tocar el arranque de producción.
   `lead_stage_changes`. La tarjeta tiene alto fijo (`--lead-card-h`, calibrado para que entren
   cinco/diez por columna sin scroll), así que el círculo va en una franja reservada a la derecha y
   el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado.
+- **Una persona es un lead, no uno por cada formulario que llena.** Los tres caminos que crean leads
+  desde afuera cruzan primero por teléfono (`findByPhone`, por los últimos 9 dígitos) y cuelgan lo
+  nuevo de la ficha que ya existe: el webhook de Meta (`attachMetaLeadToExisting`), el primer
+  mensaje de WhatsApp (`findOrCreateFromWhatsApp`) y el **evaluador público**
+  (`attachEvaluationToExisting`). El evaluador era el que faltaba: abría una ficha por cada vuelta,
+  la nueva nacía en `nuevo` y, al indexar por teléfono, tapaba a la que el equipo venía trabajando —
+  así un lead ya ganado aparecía en la trazabilidad de Campañas como "En espera de la reunión"
+  (Rafael Anderson Gonzales Ureta: ficha ganada del 26/09 y gemela del 02/10). Al colgarse de la
+  ficha existente se escribe deliberadamente poco: la viabilidad recién calculada y las notas al
+  final. **No se toca el status** —eso es trabajo de `updateLeadStatus()` y haría retroceder a un
+  lead cerrado— ni el tema ni los datos académicos que alguien pudo haber corregido a mano.
+  Para los duplicados que ya existen, `esMejorLead()` en `campaignService.js` elige entre las fichas
+  de un mismo teléfono: primero la que está **ganada**, después la que graduó, y recién al final la
+  más reciente. "La más reciente" sola era un desempate razonable mientras la gemela era una ficha
+  recién creada, y una moneda al aire en cuanto las dos graduaban.
+  `backend/scripts/diagnosticarLeadCampana.js` (solo lee) imprime todas las fichas de una persona,
+  de dónde salió cada una, cuál elige Campañas y por qué.
 - En **Campañas**, "venta ganada" no es la cadena `'ganado'`: es lo que devuelve
   `loadWinningStatuses()` —el desenlace fijo más la clave de la columna que el equipo marcó como
   `final`, que se genera sola (`col_mtc2nwec_fij`)— **o** que el lead ya tenga un proyecto abierto
