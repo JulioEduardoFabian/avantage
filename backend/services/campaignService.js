@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
 import { campaignAdImageDir } from '../middleware/upload.js';
+import { loadWinningStatuses } from './salesFunnelStage.js';
 
 /**
  * Campañas de marketing digital: definición manual (nombre, presupuesto,
@@ -44,9 +45,41 @@ function median(values) {
 
 const AD_IMAGE_MIME_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
 
-const WON_STATUSES = new Set(['ganado']);
+/*
+ * "Ganado" NO es la cadena 'ganado' y nada más.
+ *
+ * El equipo arma sus propias columnas en el Kanban y sus claves se generan
+ * solas (`col_mtc2nwec_fij`), así que la columna que ellos llaman "Ganado"
+ * tiene una clave que no se puede escribir acá. Con el conjunto fijo que había,
+ * un lead cerrado aparecía en la trazabilidad de Campañas como "En espera de la
+ * reunión" mientras en el funnel estaba en Ganado — y los contadores de la
+ * campaña (GANADOS, los ingresos atribuidos) lo dejaban afuera. Caso real:
+ * Rafael Anderson Gonzales Ureta, 05/10/2026.
+ *
+ * Se pregunta por `loadWinningStatuses()`, el mismo sitio del que cuelgan la
+ * creación del proyecto y la comisión de la setter: tres pantallas contestando
+ * la misma pregunta con tres listas propias es exactamente como se llega a que
+ * cada una diga un número distinto.
+ */
 const LOST_STATUSES = new Set(['perdido', 'descartado']);
 const APPOINTMENT_STATUSES = new Set(['cita_agendada']);
+
+/**
+ * ¿Esta venta está cerrada? Dos caminos, y hacen falta los dos.
+ *
+ * `wonStatuses` viene de `loadWinningStatuses()` y depende de que la columna
+ * del tablero esté marcada como `final`. `projectLeadIds` es el respaldo: si
+ * alguien recrea esa columna sin marcarla, el lead seguiría teniendo su
+ * proyecto abierto, y mostrar como "en espera de la reunión" a un cliente al
+ * que ya se le está entregando trabajo es el peor de los dos errores posibles.
+ *
+ * Vive fuera de la clase para poder probarla sin base de datos: es una regla
+ * de negocio, no una consulta.
+ */
+export function isWonLead(lead, wonStatuses, projectLeadIds) {
+  if (!lead) return false;
+  return wonStatuses.has(lead.status) || projectLeadIds.has(lead.id);
+}
 
 /**
  * De dos filas del mismo teléfono, cuál representa al lead real: primero la
@@ -234,6 +267,9 @@ export class CampaignService {
         .select('wa_id', 'lead_id', 'start_time', 'created_at')
     ]);
 
+    // Qué status significan "venta ganada" HOY, según el tablero del equipo.
+    const wonStatuses = await loadWinningStatuses();
+
     const firstOutByWa = new Map(outboundRows.map((r) => [r.wa_id, r.firstOut]));
     /*
      * Un teléfono puede tener MÁS de una fila en `leads` (la misma persona que
@@ -271,16 +307,31 @@ export class CampaignService {
     const proposalLeadIds = new Set();
     const paidByLead = new Map();
     const billedByLead = new Map();
+    /*
+     * Leads que ya tienen un proyecto abierto. Es el segundo camino para saber
+     * que la venta se cerró, y hace falta: el primero depende de que la
+     * columna del tablero esté marcada como `final`, y si alguien la recrea
+     * sin marcarla, la trazabilidad volvería a mostrar como "en espera" a un
+     * cliente al que ya se le está entregando trabajo. Un proyecto no nace
+     * solo — sale de ganar el lead, de cerrar con el pago inicial o de un alta
+     * manual — y los tres significan lo mismo.
+     */
+    const wonProjectLeadIds = new Set();
 
     if (leadIds.length) {
-      const [quotes, contracts, income] = await Promise.all([
+      const [quotes, contracts, income, projects] = await Promise.all([
         db('quotes').whereIn('lead_id', leadIds).orderBy('created_at', 'desc')
           .select('lead_id', 'amount', 'currency'),
         db('contracts').whereIn('lead_id', leadIds).whereNot('status', 'anulado')
           .select('lead_id'),
         db('finance_income').whereIn('lead_id', leadIds)
-          .select('lead_id', 'monto', 'estado')
+          .select('lead_id', 'monto', 'estado'),
+        db('projects').whereIn('lead_id', leadIds).select('lead_id')
       ]);
+
+      for (const project of projects) {
+        if (project.lead_id) wonProjectLeadIds.add(project.lead_id);
+      }
 
       for (const q of quotes) {
         if (!quoteByLead.has(q.lead_id)) quoteByLead.set(q.lead_id, q); // la más reciente
@@ -310,7 +361,7 @@ export class CampaignService {
         || (lead && lead.overall_viability_score != null)
         || (lead && !['nuevo'].includes(lead.status));
       const hasAppointment = !!meeting || (lead && APPOINTMENT_STATUSES.has(lead.status));
-      const won = lead && WON_STATUSES.has(lead.status);
+      const won = isWonLead(lead, wonStatuses, wonProjectLeadIds);
       const lost = lead && LOST_STATUSES.has(lead.status);
 
       const quote = won && lead ? quoteByLead.get(lead.id) : null;

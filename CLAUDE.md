@@ -294,6 +294,17 @@ antes de tocar el arranque de producción.
   `lead_stage_changes`. La tarjeta tiene alto fijo (`--lead-card-h`, calibrado para que entren
   cinco/diez por columna sin scroll), así que el círculo va en una franja reservada a la derecha y
   el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado.
+- En **Campañas**, "venta ganada" no es la cadena `'ganado'`: es lo que devuelve
+  `loadWinningStatuses()` —el desenlace fijo más la clave de la columna que el equipo marcó como
+  `final`, que se genera sola (`col_mtc2nwec_fij`)— **o** que el lead ya tenga un proyecto abierto
+  (`isWonLead()` en `campaignService.js`). Con la lista fija que había, un lead cerrado salía en la
+  trazabilidad como "En espera de la reunión" mientras el funnel lo mostraba en Ganado, y los
+  contadores de la campaña lo dejaban afuera. El segundo camino es el respaldo del primero: si
+  alguien recrea la columna sin marcarla `final`, el proyecto abierto sigue estando ahí, y mostrar
+  "en espera" a un cliente al que ya se le entrega trabajo es el peor de los dos errores. Es la
+  misma pregunta de la que cuelgan la creación del proyecto y la comisión de la setter, y se
+  contesta en un solo sitio a propósito: tres pantallas con tres listas propias es como se llega a
+  que cada una diga un número distinto.
 - Los leads de **Meta Lead Ads** entran por el webhook (`metaWebhookService.importLead()`), que es
   un punto único de falla **silencioso**: `/api/webhooks/meta` responde 200 ANTES de procesar (Meta
   espera una respuesta rápida), así que un fallo posterior no se reintenta y solo deja una línea en
