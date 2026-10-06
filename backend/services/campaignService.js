@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
 import { campaignAdImageDir } from '../middleware/upload.js';
+import { PHONE_MATCH_KEY_SQL, phoneMatchKey } from './leadService.js';
 import { loadWinningStatuses } from './salesFunnelStage.js';
 
 /**
@@ -86,9 +87,19 @@ export function isWonLead(lead, wonStatuses, projectLeadIds) {
  * que ya graduó al Funnel de Ventas (es la que el closer está trabajando) y,
  * entre iguales, la más reciente. Espejo de `leadService.findByPhone()`.
  */
-export function esMejorLead(candidato, actual) {
+export function esMejorLead(candidato, actual, wonStatuses = new Set()) {
+  // Primero el que llegó MÁS LEJOS en el embudo. "El más reciente" parecía
+  // razonable mientras los gemelos eran un lead viejo y uno recién creado,
+  // pero en cuanto los dos graduaron se volvió una moneda al aire: la ficha
+  // cerrada podía ser la vieja, y la campaña leía la otra. Así se veía
+  // "En espera de la reunión" en Campañas sobre un lead que el funnel ya
+  // mostraba en Ganado (caso real: Rafael Anderson Gonzales Ureta, 05/10/2026).
+  const ganado = (l) => (wonStatuses.has(l.status) ? 1 : 0);
+  if (ganado(candidato) !== ganado(actual)) return ganado(candidato) > ganado(actual);
+
   const graduado = (l) => (l.sales_funnel_at ? 1 : 0);
   if (graduado(candidato) !== graduado(actual)) return graduado(candidato) > graduado(actual);
+
   return new Date(candidato.created_at) > new Date(actual.created_at);
 }
 
@@ -253,11 +264,21 @@ export class CampaignService {
   async #enrichContacts(attribution) {
     const waIds = attribution.map((a) => a.waId);
     if (!waIds.length) return [];
+    const phoneKeys = [...new Set(waIds.map(phoneMatchKey).filter(Boolean))];
 
     const [outboundRows, leads, sessions, meetings] = await Promise.all([
       db('whatsapp_messages').whereIn('wa_id', waIds).andWhere('direction', 'outbound')
         .groupBy('wa_id').select('wa_id').min('received_at as firstOut'),
-      db('leads').whereIn('phone', waIds)
+      /*
+       * Los leads se cruzan por los ÚLTIMOS 9 DÍGITOS y no por la cadena
+       * exacta, igual que `leadService.findByPhone()`. El `wa_id` llega como
+       * lo manda Meta ("+51999922762" o "51999922762" según el caso) y el
+       * teléfono del lead se guardó como lo escribió quien llenó el formulario
+       * ("+51 999 922 762"). Comparando tal cual, el lead simplemente no
+       * aparecía: la trazabilidad mostraba al contacto sin ficha, o sea sin
+       * etapa comercial, y lo dejaba congelado en "En espera de la reunión".
+       */
+      db('leads').whereIn(db.raw(PHONE_MATCH_KEY_SQL), phoneKeys)
         .select('id', 'phone', 'status', 'created_at', 'full_name', 'topic', 'overall_viability_score',
           // Correo y carrera solo los usa la hoja "Ruta de leads" del Excel.
           'email', 'field_of_study', 'sales_funnel_at'),
@@ -288,8 +309,10 @@ export class CampaignService {
      */
     const leadByWa = new Map();
     for (const lead of leads) {
-      const previo = leadByWa.get(lead.phone);
-      if (!previo || esMejorLead(lead, previo)) leadByWa.set(lead.phone, lead);
+      const key = phoneMatchKey(lead.phone);
+      if (!key) continue;
+      const previo = leadByWa.get(key);
+      if (!previo || esMejorLead(lead, previo, wonStatuses)) leadByWa.set(key, lead);
     }
     const sessionByWa = new Map(sessions.map((s) => [s.wa_id, s]));
     const meetingByWa = new Map();
@@ -351,7 +374,7 @@ export class CampaignService {
     }
 
     return attribution.map((a) => {
-      const lead = leadByWa.get(a.waId) || null;
+      const lead = leadByWa.get(phoneMatchKey(a.waId)) || null;
       const session = sessionByWa.get(a.waId) || null;
       const meeting = meetingByWa.get(a.waId) || null;
       const firstOut = firstOutByWa.get(a.waId) || null;
