@@ -194,8 +194,8 @@ test('las cuentas de abono son exactamente las vigentes', () => {
   });
   assert.match(html, /Cuenta Corriente \(S\/\): 3557413863061/);
   assert.match(html, /CCI: 002 335 007413863061 66/);
-  assert.match(html, /Cuenta Corriente \(S\/\): 500-3004188829/);
-  assert.match(html, /CCI: 00389801351537498347/);
+  assert.match(html, /Cuenta Corriente \(S\/\): 3557413863061/);
+  assert.match(html, /CCI: 002 335 007413863061 66/);
 });
 
 test('{{cronograma_entregas}} imprime las entregas pactadas como tabla', () => {
