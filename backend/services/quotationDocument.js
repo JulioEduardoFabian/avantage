@@ -49,8 +49,16 @@ export const PAYMENT_METHODS = [
     short: 'Interbank',
     accent: '#0aa05a',
     holder: 'Julio Fabián Ninamango — Gerente General',
-    account: 'Cuenta Corriente (S/): 500-3004188829',
+    account: 'Cuenta Corriente (S/): 8983515374983',
     cci: 'CCI: 00389801351537498347'
+  },
+  {
+    bank: 'Banco de Crédito del Perú',
+    short: 'BCP',
+    accent: '#0aa05a',
+    holder: 'Christian Janampa García — Gerente Financiero',
+    account: 'Cuenta Corriente (S/): 35519829450083',
+    cci: 'CCI: 00235511982945008361'
   }
 ];
 
