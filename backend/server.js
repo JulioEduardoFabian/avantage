@@ -776,16 +776,23 @@ app.get('/api/meetings', requireAuth, requirePermission('calendar.view'), async 
 });
 
 /**
- * Los asesores a los que se les puede agendar: todo el área comercial, con el
- * aviso de quién tiene su Google conectado (sin conexión la reunión se guarda
- * igual, pero sin evento ni enlace de Meet).
+ * Los asesores a los que se les puede agendar, con el aviso de quién tiene su
+ * Google conectado.
+ *
+ * `viewerGoogleConnected` es la otra mitad de esa pregunta: cuando el asesor no
+ * lo tiene, el evento cae en el calendario de quien agenda, así que el
+ * formulario necesita saber si ESE existe para poder decir, antes de que la
+ * persona elija la hora, que la reunión por Meet no se va a poder crear. Quien
+ * agenda no siempre está en la lista (un administrador no es del área
+ * comercial), así que no se puede deducir de ella.
  */
 app.get('/api/meetings/advisors', requireAuth, requirePermission('calendar.view'), async (req, res) => {
   try {
     const equipo = await userService.listCommercialTeam();
     const conectados = new Set(await db('google_calendar_connections').pluck('user_id'));
     res.json({
-      advisors: equipo.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) }))
+      advisors: equipo.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) })),
+      viewerGoogleConnected: conectados.has(req.user.id)
     });
   } catch (error) {
     console.error('❌ Error al obtener los asesores del calendario:', error);
@@ -828,6 +835,12 @@ app.post('/api/meetings', requireAuth, requirePermission('calendar.view'), async
       endTime: req.body?.endTime,
       attendeeEmail: req.body?.attendeeEmail || null,
       waId: req.body?.waId || null,
+      // Con quién es la reunión y por dónde se hace. Sin `contactName`, el
+      // nombre sale del lead —y una reunión cargada desde el Calendario no
+      // tiene lead—; `modality: 'llamada'` es lo que permite agendarla sin
+      // conexión con Google (ver `bookManual`).
+      contactName: req.body?.contactName || null,
+      modality: req.body?.modality === 'llamada' ? 'llamada' : 'meet',
       createdBy: req.user.id
     });
     res.status(201).json(resultado);

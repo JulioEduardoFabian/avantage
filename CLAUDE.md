@@ -364,10 +364,29 @@ antes de tocar el arranque de producción.
   `source` (`bot` | `manual`), que es lo que después deja ver si está agendando el bot o el equipo.
   Agendar a mano (`scheduledMeetingService.bookManual()`, `POST /api/meetings`) crea el evento en el
   Google Calendar **del closer**; si él no tiene su cuenta conectada, lo crea en el de quien agenda
-  y lo invita por correo, para que le llegue igual. Si no hay ninguna conexión, **la reunión se
-  guarda lo mismo** sin evento ni enlace de Meet y la pantalla lo avisa: perder la reunión por no
-  poder crear el evento sería el peor desenlace. Borrarla del panel no cancela el evento en Google
-  (el panel no puede tocar el calendario de otra persona) y eso también se dice.
+  y lo invita por correo, para que le llegue igual. Borrarla del panel no cancela el evento en
+  Google (el panel no puede tocar el calendario de otra persona) y eso también se dice.
+  **Una reunión por Meet exige que haya una conexión con Google** (`modality`, `meet` | `llamada`).
+  Antes se guardaba igual sin evento ni enlace y la pantalla lo avisaba, pero eso deja al asesor con
+  una videollamada sin sala: el aviso se lee una vez y la cita queda ahí, con su hora y su cliente,
+  pareciendo completa. La comprobación es `meetBlockedReason()` y corre **antes** de guardar nada
+  —así no queda a medias—, y si el evento falla igual (token revocado entre medio, red) tampoco se
+  guarda. `modality: 'llamada'` es la salida legítima: la reunión telefónica no necesita sala, se
+  guarda aunque no haya ninguna conexión y su evento va al calendario sin Meet
+  (`createMeetEvent({ withMeet: false })`). Queda escrita en la fila en vez de deducirse de que
+  falte el enlace, que es lo mismo que le pasa a una reunión rota. El modal aplica la misma regla
+  antes de dejar elegir la hora (`meetBlockedReason` en `MeetingModal.vue`, con
+  `viewerGoogleConnected` de `/api/meetings/advisors`): lo que se ve y lo que se hace no pueden
+  decir cosas distintas, y el servidor es el que manda.
+  **Con quién es la reunión se guarda en la reunión** (`scheduled_meetings.contact_name`) y no se
+  deduce solo del lead: desde el Calendario no hay lead ninguno, y la ficha que abrió el bot muchas
+  veces todavía no tiene nombre de verdad. Qué se muestra lo resuelve `meetingContactName()` en un
+  solo sitio y en cada lectura (viaja como `contact_label`): el nombre escrito al agendar, el del
+  lead, y de último el **teléfono**. El marcador `'Contacto de WhatsApp'` que `findOrCreateFromWhatsApp()`
+  le pone a un contacto sin nombre de perfil **no cuenta como nombre** en ninguno de los dos pasos
+  —llenaba la agenda de filas idénticas que no identifican a nadie, mientras que un número sí—, ni
+  se precarga en el formulario, donde se confirmaría sin mirar. La regla vive en
+  `backend/services/contactName.js` y su espejo `src/contactName.js`.
   El mismo modal (`MeetingModal.vue`) se abre desde la ficha del lead en los **dos funnels**: es la
   misma reunión y el mismo endpoint, y copiado en cada pantalla el tercero se queda con el
   formulario viejo. **La hora no se escribe: se elige entre las que de verdad se pueden** — el

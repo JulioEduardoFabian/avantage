@@ -1,4 +1,5 @@
 import { db } from '../db/connection.js';
+import { GENERIC_CONTACT_NAME } from './contactName.js';
 import { LeadStageChangeService } from './leadStageChangeService.js';
 import { UserService } from './userService.js';
 import {
@@ -429,7 +430,7 @@ ${note}` : note;
     if (existing) return existing;
 
     return this.createLead({
-      fullName: fullName || 'Contacto de WhatsApp',
+      fullName: fullName || GENERIC_CONTACT_NAME,
       phone,
       topic: `Consulta por WhatsApp de ${fullName || phone}`,
       source: source || 'WhatsApp Directo',

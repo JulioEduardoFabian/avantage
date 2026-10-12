@@ -324,7 +324,7 @@ export class GoogleCalendarService {
    * agenda — el closer entra como invitado para que igual le llegue a su
    * correo y le aparezca en su agenda.
    */
-  async createMeetEvent(userId, { summary, description, startTime, endTime, attendeeEmail, extraAttendees = [], timeZone = 'America/Lima' }) {
+  async createMeetEvent(userId, { summary, description, startTime, endTime, attendeeEmail, extraAttendees = [], timeZone = 'America/Lima', withMeet = true }) {
     const client = await this.getAuthorizedClient(userId);
     const calendar = google.calendar({ version: 'v3', auth: client });
 
@@ -338,7 +338,7 @@ export class GoogleCalendarService {
     try {
       ({ data } = await calendar.events.insert({
       calendarId: 'primary',
-      conferenceDataVersion: 1,
+      conferenceDataVersion: withMeet ? 1 : 0,
       sendUpdates: attendees.length > 0 ? 'all' : 'none',
       requestBody: {
         summary,
@@ -346,12 +346,17 @@ export class GoogleCalendarService {
         start: { dateTime: startTime, timeZone },
         end: { dateTime: endTime, timeZone },
         attendees,
-        conferenceData: {
-          createRequest: {
-            requestId: `avan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            conferenceSolutionKey: { type: 'hangoutsMeet' }
+        // La reunión telefónica va al calendario igual —el asesor tiene que
+        // verla en su agenda— pero sin sala de Meet: crear una que nadie va a
+        // abrir manda al invitado un enlace que contradice lo acordado.
+        ...(withMeet ? {
+          conferenceData: {
+            createRequest: {
+              requestId: `avan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              conferenceSolutionKey: { type: 'hangoutsMeet' }
+            }
           }
-        }
+        } : {})
       }
       }));
     } catch (error) {

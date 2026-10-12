@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
+import { firstRealName } from './contactName.js';
 import { whatsappMediaDir } from '../middleware/upload.js';
 import { isAdFormMessage } from './whatsappBotService.js';
 import { WhisperService } from './whisperService.js';
@@ -669,9 +670,8 @@ export class WhatsappMessageService {
 
     for (const conversation of conversations) {
       const lead = porSufijo.get(phoneKey(conversation.wa_id));
-      const nombre = lead?.full_name?.trim();
       conversation.lead_id = lead?.id ?? null;
-      conversation.lead_name = nombre && nombre !== 'Contacto de WhatsApp' ? nombre : null;
+      conversation.lead_name = firstRealName(lead?.full_name);
     }
     return conversations;
   }

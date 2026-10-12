@@ -163,6 +163,7 @@
                 rel="noopener"
                 class="calendar-meeting-link"
               >🎥 Entrar a la reunión</a>
+              <span v-else-if="meeting.modality === 'llamada'" class="calendar-meeting-meta">📞 Por llamada telefónica</span>
               <span v-else class="calendar-meeting-meta">Sin enlace de Meet</span>
             </div>
             <button
@@ -240,6 +241,7 @@
                   rel="noopener"
                   class="dayview-meeting-link"
                 >🎥 Entrar</a>
+                <span v-else-if="bloque.meeting.modality === 'llamada'" class="dayview-meeting-meta">📞 Por llamada</span>
                 <button type="button" class="dayview-meeting-remove" title="Quitar del panel" @click="remove(bloque.meeting)">🗑️</button>
               </div>
             </div>
@@ -568,8 +570,14 @@ function hourOf(value) {
   return `${String(fecha.getHours()).padStart(2, '0')}:${String(fecha.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * Con quién es la reunión. `contact_label` lo arma el servidor
+ * (`meetingContactName()`): el nombre escrito al agendar, el del lead, y de
+ * último el teléfono — nunca el marcador del bot, que llenaba la agenda de
+ * "Contacto de WhatsApp" repetidos.
+ */
 function clientOf(meeting) {
-  return meeting.lead_full_name || meeting.lead_topic || meeting.topic || 'Reunión';
+  return meeting.contact_label || meeting.lead_topic || meeting.topic || 'Reunión';
 }
 
 function chipTitle(meeting) {
@@ -671,7 +679,7 @@ function openCreate(dateIso, time) {
 
 function onCreated(data) {
   notice.value = data.calendarError
-    ? `Reunión guardada, pero no se pudo crear el evento en Google Calendar (${data.calendarError}). No hay enlace de Meet.`
+    ? `Reunión guardada, pero sin evento en Google Calendar (${data.calendarError})`
     : '✅ Reunión agendada y enviada al calendario del asesor.';
   setTimeout(() => { notice.value = ''; }, 8000);
   load();

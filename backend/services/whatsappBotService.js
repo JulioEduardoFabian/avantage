@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { db } from '../db/connection.js';
+import { GENERIC_CONTACT_NAME } from './contactName.js';
 import { WhatsappBotSettingsService } from './whatsappBotSettingsService.js';
 import { buildKnowledgeBlock, meetingDurationLabel } from './whatsappBotPromptDefaults.js';
 import { MIN_BOOKING_LEAD_MINUTES } from './googleCalendarService.js';
@@ -977,10 +978,6 @@ function formatMeetingDateTimeLabel(isoStr) {
   const label = MEETING_DATETIME_FORMATTER.format(new Date(isoStr)).replace(/\./g, '').replace(/\s([ap])\s?m\b/, ' $1.m.');
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
-
-// Placeholder que usa findOrCreateFromWhatsApp() cuando WhatsApp no compartió
-// un nombre de perfil real — no debe tratarse como el nombre del contacto.
-const GENERIC_CONTACT_NAME = 'Contacto de WhatsApp';
 
 /**
  * Cierra una frase con punto sin duplicar el que ya trae "p.m." al final: las
