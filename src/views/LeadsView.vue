@@ -250,6 +250,7 @@
                    panel de detalle. Así entran cinco de un vistazo en la
                    columna, que es como se trabaja el tablero. -->
               <h4 class="card-lead-name" :title="getLeadFullName(lead)">
+                <span v-if="cameFromForm(lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
                 {{ getLeadFullName(lead) }}
               </h4>
               <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
@@ -1131,6 +1132,7 @@ import { apiFetch } from '../apiClient.js';
 import { QUOTE_PACKAGES, DEFAULT_QUOTE_PACKAGE, findQuotePackage, deliverableLine } from '../data/quoteDeliverables.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
+import { cameFromForm } from '../leadOrigin.js';
 import WinDealModal from '../components/WinDealModal.vue';
 import LeadNotes from '../components/LeadNotes.vue';
 import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
@@ -3255,6 +3257,14 @@ onMounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Marca de "llegó por formulario": va dentro del renglón del nombre para no
+   sumar alto a la tarjeta. */
+.card-form-mark {
+  font-size: 0.72rem;
+  margin-right: 0.15rem;
+  cursor: help;
 }
 
 .card-lead-phone {
