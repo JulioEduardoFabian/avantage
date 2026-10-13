@@ -602,6 +602,47 @@ ${note}` : note;
   }
 
   /**
+   * Asignación masiva: pone (o saca) responsable, setter y/o closer a muchos
+   * leads de una vez. De `team` solo se tocan las claves que vienen
+   * (`assignee`, `setter`, `closer`): ausente = no cambiar, null = dejar vacío,
+   * un id = esa persona.
+   *
+   * Es la misma escritura que `assignLead()` y `setLeadTeamMember()` —el
+   * responsable sale de `assignmentPatch()` para que el enlace y la copia del
+   * nombre sigan yendo juntos— hecha en una sola consulta. Tampoco mueve el
+   * funnel. `canSee` filtra los leads que quien la pide no puede ver: un id
+   * ajeno en la lista se saltea, no se asigna a ciegas.
+   */
+  async bulkSetLeadTeam(leadIds, team = {}, { canSee = () => true } = {}) {
+    const ids = [...new Set((Array.isArray(leadIds) ? leadIds : []).map(Number))]
+      .filter((id) => Number.isInteger(id) && id > 0);
+    if (ids.length === 0) throw new Error('Elige al menos un lead.');
+
+    const patch = {};
+    for (const key of ['assignee', 'setter', 'closer']) {
+      if (!(key in team) || team[key] === undefined) continue;
+      const empty = team[key] === null || team[key] === '';
+      let user = null;
+      if (!empty) {
+        user = await this.users.findCommercialMember(team[key]);
+        if (!user) {
+          const error = new Error('Ese usuario no existe o no pertenece al área comercial.');
+          error.code = 'NOT_COMMERCIAL';
+          throw error;
+        }
+      }
+      if (key === 'assignee') Object.assign(patch, assignmentPatch(user));
+      else patch[LEAD_TEAM_COLUMNS[key]] = user ? user.id : null;
+    }
+    if (Object.keys(patch).length === 0) throw new Error('Elige qué asignar: responsable, setter o closer.');
+
+    const rows = await db('leads').whereIn('id', ids);
+    const visibles = rows.filter(canSee).map((lead) => lead.id);
+    if (visibles.length > 0) await db('leads').whereIn('id', visibles).update(patch);
+    return { updated: visibles.length, skipped: ids.length - visibles.length };
+  }
+
+  /**
    * Punto ÚNICO por el que cambia la etapa de un lead, y donde viven las dos
    * reglas que impedían que esto funcionara:
    *
