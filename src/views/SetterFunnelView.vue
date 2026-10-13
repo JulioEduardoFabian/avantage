@@ -1,4 +1,24 @@
-﻿<template>
+    for (const id of leadPeople(lead)) {
+      const option = options.get(id) || { id, name: leadPersonName(lead, id) || `Usuario #${id}`, count: 0 };
+      option.count += 1;
+      options.set(id, option);
+    } * Filtro por responsable: el tablero de cada persona. Tiene su propio permiso
+ * (`setter.filter_assignee`) y es una herramienta de pantalla, no de datos — lo
+ * que cada quien puede ver lo sigue decidiendo `GET /api/leads`, así que sin
+ * `setter.view_all` ni `leads.manage_all` solo hay lo propio entre qué elegir.
+ *
+ * Un lead es "de" alguien si lo tiene a cargo o si es su setter: es la misma
+ * regla con la que el servidor arma el tablero de esa persona.
+ */
+const canFilterByAssignee = computed(() => hasPermission('setter.filter_assignee'));
+
+function leadPeople(lead) {
+  return [...new Set([lead.assigned_user_id, lead.setter_user_id].filter(Boolean))];
+}
+function leadPersonName(lead, id) {
+  if (id === lead.assigned_user_id) return lead.assigned_user_name || lead.assigned_to;
+  return lead.setter_name;
+}﻿<template>
   <main class="container-fluid kanban-page-wrapper">
     <!-- Header y Acciones Principales -->
     <header class="kanban-header">
@@ -33,7 +53,7 @@
       vacío sin explicación se lee como "se perdieron los leads".
     -->
     <p v-if="leadScope === 'mine'" class="info-box scope-note">
-      👤 Ves solo los leads que tienes asignados. El total y el reparto los maneja quien
+      👤 Ves solo los leads que tienes asignados o de los que eres setter. El total y el reparto los maneja quien
       administra el área comercial.
     </p>
     <p v-else-if="leadScope === 'setter'" class="info-box scope-note">
@@ -141,8 +161,9 @@
 
       <!--
         Filtro por responsable: el tablero tal como lo tiene cada persona (sus
-        leads asignados). Solo para quien ve leads ajenos — con lo propio nada
-        más, el desplegable tendría una sola opción que no filtra nada.
+        leads asignados). Solo para quien ve quien tiene el permiso
+        `setter.filter_assignee`; trabaja sobre los leads que el servidor ya le
+        manda a esa persona, no abre ninguno.
       -->
       <div v-if="canFilterByAssignee" class="items-per-page-box">
         <span class="toolbar-label">Responsable:</span>
@@ -842,6 +863,16 @@
               <span class="detail-label">🙋 Responsable comercial:</span>
               <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
             </div>
+            <!-- Setter y closer del lead: se pueden dejar puestos desde antes del
+                 pase y del cierre (los sellos automáticos no pisan lo elegido). -->
+            <div class="detail-item">
+              <span class="detail-label">🎯 Setter:</span>
+              <LeadAssignee :lead="selectedLead" role="setter" show-name @assigned="onLeadAssigned" />
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">🤝 Closer:</span>
+              <LeadAssignee :lead="selectedLead" role="closer" show-name @assigned="onLeadAssigned" />
+            </div>
             <div class="detail-item">
               <span class="detail-label">🎓 Grado Académico:</span>
               <span class="detail-value">{{ selectedLead.academic_level || 'No especificado' }}</span>
@@ -1121,7 +1152,7 @@ const assigneeOptions = computed(() => {
 });
 
 const unassignedCount = computed(
-  () => setterFunnelLeads.value.filter((lead) => !lead.assigned_user_id).length
+  () => setterFunnelLeads.value.filter((lead) => leadPeople(lead).length === 0).length
 );
 
 /**
@@ -1388,7 +1419,8 @@ const filteredLeadsByColumn = computed(() => {
 
     // Filtro por responsable
     if (canFilterByAssignee.value && assigneeFilter !== 'all') {
-      if (assigneeFilter === 'none' ? Boolean(lead.assigned_user_id) : lead.assigned_user_id !== assigneeFilter) {
+      const people = leadPeople(lead);
+      if (assigneeFilter === 'none' ? people.length > 0 : !people.includes(assigneeFilter)) {
         continue;
       }
     }

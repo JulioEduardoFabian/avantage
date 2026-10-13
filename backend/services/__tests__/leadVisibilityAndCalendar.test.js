@@ -78,3 +78,14 @@ test('sin setter.view_all, el Setter Funnel ajeno sigue cerrado', () => {
   const setter = { id: 4, permissions: ['setter.view'] };
   assert.equal(leads.canView({ id: 1, assigned_user_id: 7, status: 'calificando' }, setter, salesStatuses), false);
 });
+
+/*
+ * Un lead está asociado a una setter y a un closer además de a quien lo tiene
+ * a cargo: cualquiera de los tres lo ve, y nadie más.
+ */
+test('la setter y el closer de un lead lo ven aunque esté a cargo de otra persona', () => {
+  const lead = { id: 1, assigned_user_id: 7, setter_user_id: 4, closer_user_id: 5 };
+  assert.equal(leads.canView(lead, { id: 4, permissions: ['setter.view'] }), true);
+  assert.equal(leads.canView(lead, { id: 5, permissions: ['leads.view'] }), true);
+  assert.equal(leads.canView(lead, { id: 6, permissions: ['leads.view', 'setter.view'] }), false);
+});

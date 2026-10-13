@@ -83,6 +83,16 @@ export function setterSeal(lead, actor, actorType) {
   return setterId ? { setter_user_id: setterId } : {};
 }
 
+/**
+ * Las tres formas en que un lead es "de" alguien: quien lo tiene a cargo hoy,
+ * la setter que lo trabajó y el closer que lo cierra. Un lead le aparece a
+ * cualquiera de los tres (`canView()` y `getAllLeads()` leen esta lista).
+ */
+export const LEAD_PEOPLE_FIELDS = ['assigned_user_id', 'setter_user_id', 'closer_user_id'];
+
+/** Columna de `leads` que guarda a cada miembro del equipo del lead. */
+const LEAD_TEAM_COLUMNS = { setter: 'setter_user_id', closer: 'closer_user_id' };
+
 /** Los mismos dígitos, calculados en SQL sobre la columna `phone`. */
 export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
@@ -253,7 +263,9 @@ export class LeadService {
 
     if (viewerId) {
       query.where(function () {
-        this.where('leads.assigned_user_id', viewerId);
+        this.where('leads.assigned_user_id', viewerId)
+          .orWhere('leads.setter_user_id', viewerId)
+          .orWhere('leads.closer_user_id', viewerId);
         if (setterFunnelStatuses) {
           this.orWhere(function () {
             this.whereNull('leads.sales_funnel_at').andWhere(function () {
@@ -304,7 +316,7 @@ export class LeadService {
     if (!lead) return false;
     if (user?.permissions?.includes('leads.manage_all')) return true;
     if (!user?.id) return false;
-    if (lead.assigned_user_id === user.id) return true;
+    if (LEAD_PEOPLE_FIELDS.some((field) => lead[field] === user.id)) return true;
     if (salesStatuses && user.permissions?.includes('setter.view_all')) {
       return !leadHasGraduated(lead, salesStatuses);
     }
@@ -549,6 +561,42 @@ ${note}` : note;
     }
 
     await db('leads').where({ id }).update(assignmentPatch(user));
+    return this.getLeadById(id);
+  }
+
+  /**
+   * Pone (o saca) a la setter o al closer de un lead a mano, desde la ficha.
+   * `role` es `'setter'` o `'closer'`; `userId` null = nadie.
+   *
+   * Son las mismas dos columnas que se sellan solas —la setter al graduar, el
+   * closer al ganar— y los sellos nunca pisan un valor ya puesto, así que lo
+   * que se elige acá manda: el lead queda asociado a esas dos personas desde
+   * antes del pase y del cierre. De `setter_user_id` cuelga la comisión de la
+   * setter, que se calcula al ganar con quien figure entonces; cambiarla
+   * después no reescribe una comisión ya devengada.
+   *
+   * Como `assignLead()`, verifica el área comercial en el servidor y no mueve
+   * el funnel.
+   */
+  async setLeadTeamMember(id, role, userId) {
+    const column = LEAD_TEAM_COLUMNS[role];
+    if (!column) throw new Error(`Rol de lead desconocido: ${role}`);
+
+    const lead = await this.getLeadById(id);
+    if (!lead) return null;
+
+    const empty = userId === null || userId === undefined || userId === '';
+    let user = null;
+    if (!empty) {
+      user = await this.users.findCommercialMember(userId);
+      if (!user) {
+        const error = new Error('Ese usuario no existe o no pertenece al área comercial.');
+        error.code = 'NOT_COMMERCIAL';
+        throw error;
+      }
+    }
+
+    await db('leads').where({ id }).update({ [column]: user ? user.id : null });
     return this.getLeadById(id);
   }
 

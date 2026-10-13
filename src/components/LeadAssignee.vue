@@ -1,4 +1,35 @@
-<template>
+const ROLES = {
+  assignee: {
+    idField: 'assigned_user_id',
+    name: (lead) => lead.assigned_user_name || lead.assigned_to || '',
+    endpoint: 'assignee',
+    popTitle: 'Asignar a',
+    emptyLabel: 'Sin asignar',
+    clearLabel: 'Dejar sin asignar',
+    setLabel: 'Asignado a'
+  },
+  setter: {
+    idField: 'setter_user_id',
+    name: (lead) => lead.setter_name || '',
+    endpoint: 'setter',
+    popTitle: 'Setter del lead',
+    emptyLabel: 'Sin setter',
+    clearLabel: 'Dejar sin setter',
+    setLabel: 'Setter:'
+  },
+  closer: {
+    idField: 'closer_user_id',
+    name: (lead) => lead.closer_name || '',
+    endpoint: 'closer',
+    popTitle: 'Closer del lead',
+    emptyLabel: 'Sin closer',
+    clearLabel: 'Dejar sin closer',
+    setLabel: 'Closer:'
+  }
+};
+const meta = computed(() => ROLES[props.role] || ROLES.assignee);
+const currentId = computed(() => props.lead[meta.value.idField] ?? null);
+const assigneeName = computed(() => meta.value.name(props.lead));{{ assigneeName || meta.emptyLabel }}v-if="currentId || assigneeName"<template>
   <!--
     Quién del área comercial tiene este lead a su cargo, y el botón para
     cambiarlo.
@@ -44,7 +75,7 @@
     <div v-if="isOpen" class="lead-assignee-backdrop" @click="close" @contextmenu.prevent="close">
       <div class="lead-assignee-pop" :style="popStyle" @click.stop>
         <header class="pop-header">
-          <span class="pop-title">Asignar a</span>
+          <span class="pop-title">{{ meta.popTitle }}</span>
           <span class="pop-hint">Área comercial</span>
         </header>
 
@@ -60,7 +91,7 @@
             <button
               type="button"
               class="pop-option"
-              :class="{ 'is-current': user.id === lead.assigned_user_id }"
+              :class="{ 'is-current': user.id === currentId }"
               @click="choose(user.id)"
             >
               <span class="lead-assignee-dot" :style="{ background: avatarColor(user.name) }" aria-hidden="true">
@@ -70,7 +101,7 @@
                 <strong>{{ user.name }}</strong>
                 <small>{{ user.role_name }}</small>
               </span>
-              <span v-if="user.id === lead.assigned_user_id" class="pop-check" aria-hidden="true">✓</span>
+              <span v-if="user.id === currentId" class="pop-check" aria-hidden="true">✓</span>
             </button>
           </li>
         </ul>
@@ -81,7 +112,7 @@
           class="pop-clear"
           @click="choose(null)"
         >
-          Dejar sin asignar
+          {{ meta.clearLabel }}
         </button>
       </div>
     </div>
@@ -99,7 +130,13 @@ import { commercialTeam as team, loadCommercialTeam } from '../data/commercialTe
 const props = defineProps({
   lead: { type: Object, required: true },
   /** En la ficha de detalle se muestra el nombre al lado; en la tarjeta, solo el círculo. */
-  showName: { type: Boolean, default: false }
+  showName: { type: Boolean, default: false },
+  /**
+   * Qué puesto del lead se elige: `assignee` (quien lo tiene a cargo, el de la
+   * tarjeta), `setter` o `closer`. Los tres salen del área comercial y se
+   * guardan igual; cambia la columna, la ruta y los textos.
+   */
+  role: { type: String, default: 'assignee' }
 });
 const emit = defineEmits(['assigned']);
 
@@ -129,11 +166,11 @@ const canAssign = computed(() => hasPermission('leads.manage_all'));
 
 const buttonTitle = computed(() => {
   if (!canAssign.value) {
-    return assigneeName.value ? `Asignado a ${assigneeName.value}` : 'Sin asignar';
+    return assigneeName.value ? `${meta.value.setLabel} ${assigneeName.value}` : meta.value.emptyLabel;
   }
   return assigneeName.value
-    ? `Asignado a ${assigneeName.value} — clic para cambiar`
-    : 'Sin asignar — clic para asignar a alguien del área comercial';
+    ? `${meta.value.setLabel} ${assigneeName.value} — clic para cambiar`
+    : `${meta.value.emptyLabel} — clic para elegir a alguien del área comercial`;
 });
 
 function onKeydown(event) {
@@ -187,7 +224,7 @@ async function toggle(event) {
 }
 
 async function choose(userId) {
-  if (userId === (props.lead.assigned_user_id ?? null)) {
+  if (userId === currentId.value) {
     close();
     return;
   }
@@ -195,7 +232,7 @@ async function choose(userId) {
   saving.value = true;
   error.value = '';
   try {
-    const response = await apiFetch(`/api/leads/${props.lead.id}/assignee`, {
+    const response = await apiFetch(`/api/leads/${props.lead.id}/${meta.value.endpoint}`, {
       method: 'PATCH',
       body: JSON.stringify({ userId })
     });
