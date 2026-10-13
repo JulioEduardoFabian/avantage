@@ -822,7 +822,7 @@ app.post('/api/meetings', requireAuth, requirePermission('calendar.view'), async
     if (req.body?.leadId) {
       const lead = await leadService.getLeadById(req.body.leadId);
       if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
-      if (!leadService.canView(lead, req.user)) {
+      if (!(await leadService.canViewLead(lead, req.user))) {
         return res.status(403).json({ error: 'Ese lead está asignado a otra persona.' });
       }
     }
@@ -1847,7 +1847,8 @@ app.get('/api/history', (req, res) => {
  * Va en TODAS las rutas de un lead concreto y no solo en el listado: filtrar la
  * lista y dejar abierta la ficha por id sería una cortina, no un permiso —
  * cualquiera con el id vería (y movería) el lead ajeno. La regla es la misma de
- * `getAllLeads({ viewerId })`, escrita una sola vez en `leadService.canView()`.
+ * `getAllLeads({ viewerId })`, escrita una sola vez en `leadService.canView()`
+ * (`canViewLead()` le resuelve antes el alcance de quien mira).
  *
  * Deja el lead ya leído en `req.lead`, así el handler no lo vuelve a consultar.
  */
@@ -1855,7 +1856,7 @@ async function requireLeadVisible(req, res, next) {
   try {
     const lead = await leadService.getLeadById(req.params.id);
     if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
-    if (!leadService.canView(lead, req.user)) {
+    if (!(await leadService.canViewLead(lead, req.user))) {
       return res.status(403).json({
         error: 'Este lead está asignado a otra persona.',
         code: 'LEAD_NOT_YOURS'
@@ -1875,11 +1876,11 @@ async function requireLeadVisible(req, res, next) {
 app.get('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     // Cada quien ve sus leads; el que administra el área comercial ve todos y
-    // es el que reparte. `scope` se lo dice a la pantalla para que pueda
-    // explicar por qué el tablero está vacío en vez de parecer roto.
-    const manageAll = req.user.permissions?.includes('leads.manage_all');
-    const leads = await leadService.getAllLeads(manageAll ? {} : { viewerId: req.user.id });
-    res.json({ total: leads.length, leads, scope: manageAll ? 'all' : 'mine' });
+    // es el que reparte, y `setter.view_all` suma el Setter Funnel entero a lo
+    // propio. `scope` ('all' | 'setter' | 'mine') se lo dice a la pantalla para
+    // que pueda explicar por qué el tablero está vacío en vez de parecer roto.
+    const { leads, scope } = await leadService.getLeadsVisibleTo(req.user);
+    res.json({ total: leads.length, leads, scope });
   } catch (error) {
     console.error('❌ Error al obtener leads:', error);
     res.status(500).json({ error: 'Error al obtener los leads desde la base de datos.', details: error.message });

@@ -36,6 +36,10 @@
       👤 Ves solo los leads que tienes asignados. El total y el reparto los maneja quien
       administra el área comercial.
     </p>
+    <p v-else-if="leadScope === 'setter'" class="info-box scope-note">
+      👥 Ves todos los leads del Setter Funnel, tengan o no responsable. Asignarlos sigue siendo de
+      quien administra el área comercial.
+    </p>
     <p v-if="meetingNotice" class="info-box scope-note">{{ meetingNotice }}</p>
 
     <!-- Banner de Métricas del Setter Funnel -->

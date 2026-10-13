@@ -36,6 +36,10 @@
       👤 Ves solo los leads que tienes asignados. El total y el reparto los maneja quien
       administra el área comercial.
     </p>
+    <p v-else-if="leadScope === 'setter'" class="info-box scope-note">
+      👤 Del Funnel de Ventas ves solo los leads que tienes asignados; los que todavía no pasaron a
+      Ventas los ves todos.
+    </p>
     <p v-if="meetingNotice" class="info-box scope-note">{{ meetingNotice }}</p>
 
     <!-- Banner de Métricas del Funnel -->

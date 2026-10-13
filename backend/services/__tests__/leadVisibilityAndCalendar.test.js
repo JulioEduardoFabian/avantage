@@ -51,3 +51,30 @@ test('el rango de un día termina donde empieza el siguiente', () => {
   assert.equal(limaDayStart('2026-10-05', 1).toISOString(), '2026-10-06T05:00:00.000Z');
   assert.equal(limaDayStart('2026-10-31', 1).toISOString(), '2026-11-01T05:00:00.000Z');
 });
+
+/*
+ * `setter.view_all` es el punto medio: lo propio más todo el Setter Funnel (lo
+ * que todavía no graduó a Ventas, tenga o no responsable). No abre los leads
+ * que ya son del closer.
+ */
+test('con setter.view_all se ve todo el Setter Funnel, pero no lo que ya graduó', () => {
+  const salesStatuses = new Set(['cita_agendada', 'ganado', 'col_abc']);
+  const setter = { id: 4, permissions: ['setter.view', 'setter.view_all'] };
+
+  assert.equal(leads.canView({ id: 1, assigned_user_id: 7, status: 'calificando' }, setter, salesStatuses), true);
+  assert.equal(leads.canView({ id: 2, assigned_user_id: null, status: 'nuevo' }, setter, salesStatuses), true);
+  assert.equal(leads.canView({ id: 3, assigned_user_id: 7, status: 'col_abc' }, setter, salesStatuses), false);
+  // El sello manda sobre el status: la columna pudo haberse borrado.
+  assert.equal(
+    leads.canView({ id: 4, assigned_user_id: 7, status: 'calificando', sales_funnel_at: '2026-10-01' }, setter, salesStatuses),
+    false
+  );
+  // Lo propio se sigue viendo aunque ya haya graduado.
+  assert.equal(leads.canView({ id: 5, assigned_user_id: 4, status: 'ganado' }, setter, salesStatuses), true);
+});
+
+test('sin setter.view_all, el Setter Funnel ajeno sigue cerrado', () => {
+  const salesStatuses = new Set(['cita_agendada']);
+  const setter = { id: 4, permissions: ['setter.view'] };
+  assert.equal(leads.canView({ id: 1, assigned_user_id: 7, status: 'calificando' }, setter, salesStatuses), false);
+});

@@ -216,8 +216,14 @@ export class LeadService {
    * tiene asignado no es de nadie, y aparecerle a todos sería volver al tablero
    * compartido por la puerta de atrás. Los ve quien reparte, que es quien puede
    * hacer algo con ellos.
+   *
+   * `setterFunnelStatuses` abre, además de lo propio, todo el Setter Funnel
+   * (`setter.view_all`): los leads que todavía no graduaron a Ventas, tengan o
+   * no responsable. Es el conjunto de `loadSalesFunnelStatuses()` y la
+   * condición es el espejo en SQL de `leadHasGraduated()` — sin sello y con un
+   * status que no es comercial.
    */
-  async getAllLeads({ viewerId = null } = {}) {
+  async getAllLeads({ viewerId = null, setterFunnelStatuses = null } = {}) {
     const query = db('leads')
       .select(
         'leads.*',
@@ -246,19 +252,70 @@ export class LeadService {
       })
       .orderBy('leads.created_at', 'desc');
 
-    if (viewerId) query.where('leads.assigned_user_id', viewerId);
+    if (viewerId) {
+      query.where(function () {
+        this.where('leads.assigned_user_id', viewerId);
+        if (setterFunnelStatuses) {
+          this.orWhere(function () {
+            this.whereNull('leads.sales_funnel_at').andWhere(function () {
+              this.whereNull('leads.status').orWhereNotIn('leads.status', [...setterFunnelStatuses]);
+            });
+          });
+        }
+      });
+    }
     return query;
+  }
+
+  /**
+   * Qué alcance tiene esta persona sobre los leads, resuelto una vez por
+   * request: `all` (`leads.manage_all`), `setter` (`setter.view_all`: lo propio
+   * más todo el Setter Funnel) o `mine`. Solo el alcance `setter` necesita
+   * saber qué status son comerciales, así que solo ahí se consulta.
+   */
+  async visibilityFor(user) {
+    const permissions = user?.permissions || [];
+    if (permissions.includes('leads.manage_all')) return { scope: 'all', salesStatuses: null };
+    if (permissions.includes('setter.view_all')) {
+      return { scope: 'setter', salesStatuses: await loadSalesFunnelStatuses() };
+    }
+    return { scope: 'mine', salesStatuses: null };
+  }
+
+  /** Los leads que le tocan a esta persona según `visibilityFor()`. */
+  async getLeadsVisibleTo(user) {
+    const { scope, salesStatuses } = await this.visibilityFor(user);
+    const leads = await this.getAllLeads(
+      scope === 'all' ? {} : { viewerId: user.id, setterFunnelStatuses: salesStatuses }
+    );
+    return { leads, scope };
   }
 
   /**
    * ¿Esta persona puede ver este lead? Es la misma regla de `getAllLeads()`,
    * escrita una vez para que la lista y la ficha no puedan discrepar: con el
    * permiso de administrador comercial, todo; sin él, solo lo propio.
+   *
+   * Con `setter.view_all` se suma el Setter Funnel entero: cualquier lead que
+   * todavía no graduó a Ventas. `salesStatuses` es lo que devuelve
+   * `visibilityFor()`; sin él esa parte de la regla no se puede contestar y se
+   * responde que no — negar de más es el error barato.
    */
-  canView(lead, user) {
+  canView(lead, user, salesStatuses = null) {
     if (!lead) return false;
     if (user?.permissions?.includes('leads.manage_all')) return true;
-    return Boolean(user?.id) && lead.assigned_user_id === user.id;
+    if (!user?.id) return false;
+    if (lead.assigned_user_id === user.id) return true;
+    if (salesStatuses && user.permissions?.includes('setter.view_all')) {
+      return !leadHasGraduated(lead, salesStatuses);
+    }
+    return false;
+  }
+
+  /** `canView()` para un solo lead, cuando no hay un alcance ya resuelto. */
+  async canViewLead(lead, user) {
+    const { salesStatuses } = await this.visibilityFor(user);
+    return this.canView(lead, user, salesStatuses);
   }
 
   async findByAdditionalNotesContaining(text) {
