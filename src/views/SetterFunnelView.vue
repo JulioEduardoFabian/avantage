@@ -960,7 +960,7 @@
          tablero muestra con sus filtros actuales. -->
     <BulkLeadTeamModal
       v-if="showBulkTeamModal"
-      :leads="boardLeads"
+      :groups="boardGroups"
       @close="showBulkTeamModal = false"
       @updated="onBulkTeamUpdated"
     />
@@ -1581,7 +1581,11 @@ function scrollBoard(direction) {
  * leads, algunas pueden dejar de ser suyas.
  */
 const showBulkTeamModal = ref(false);
-const boardLeads = computed(() => Object.values(filteredLeadsByColumn.value).flat());
+const boardGroups = computed(() => columns.value.map((col) => ({
+  key: col.key,
+  label: `${col.icon || ''} ${col.label}`.trim(),
+  leads: filteredLeadsByColumn.value[col.key] || []
+})));
 
 function onBulkTeamUpdated() {
   showBulkTeamModal.value = false;
