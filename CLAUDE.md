@@ -628,6 +628,11 @@ antes de tocar el arranque de producción.
   (`lateBatchNeedsTurn`); en la conversación libre se guarda lo extraído pero solo se contesta si
   trajo un dato que faltaba o pregunta algo. Ese silencio es deliberado y no dispara la red de
   `_runTurnGuarded`.
+  **Nunca se nombra un horario que ya pasó.** Quien se quedó a medio agendar y vuelve días después
+  recibía "¿Confirmo *Vie, 9 oct*?" con la fecha vencida. `staleSchedulingSlot()` lo detecta antes de
+  enrutar el paso (confirmación, teléfono/correo pendiente, o una lista con todos los horarios
+  vencidos) y `bookSlot()`/`confirmSlot()` lo frenan si se elige uno vencido de una lista vieja; en
+  los tres casos `_reofferBecauseSlotPassed()` dice que ese horario ya pasó y ofrece los vigentes.
 - El **conteo de seguidores de la página de Meta** se sondea periódicamente
   (`FOLLOWER_POLL_INTERVAL_MS` en `server.js`) porque Meta no lo notifica vía webhook.
 - Los **webhooks de Meta/WhatsApp** validan la firma `X-Hub-Signature-256` contra `req.rawBody`

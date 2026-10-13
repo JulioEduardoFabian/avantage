@@ -1175,6 +1175,45 @@ export function usableProposedSlot(slot) {
   return startsAt > Date.now() + MIN_BOOKING_LEAD_MINUTES * 60 * 1000 ? slot : null;
 }
 
+// Margen con el que un horario ya se da por pasado: una reunión que arranca en
+// cinco minutos no se puede confirmar ni reservar, nadie llega a conectarse.
+const SLOT_PASSED_MARGIN_MS = 10 * 60 * 1000;
+
+/** ¿Este horario ya empezó (o empieza en menos de diez minutos)? */
+export function slotHasPassed(slot, now = Date.now()) {
+  const startsAt = slot?.startTime ? new Date(slot.startTime).getTime() : NaN;
+  if (!Number.isFinite(startsAt)) return false;
+  return startsAt <= now + SLOT_PASSED_MARGIN_MS;
+}
+
+/**
+ * El horario vencido que el paso actual del agendamiento le volvería a
+ * nombrar al contacto, o null si no hay ninguno. Pasa cuando vuelve a escribir
+ * días después de quedarse a medio agendar: el 11/10 a Delia le preguntaron
+ * "¿Confirmo *Vie, 9 oct, 3:00 p.m.*?", y el 05/10 a Alex "¿Confirmo… el
+ * *mar, 29 set*?" — fechas que ya habían pasado.
+ *
+ * En la elección de horario solo cuenta si TODA la lista venció: si queda
+ * alguno vigente la lista sigue sirviendo, y elegir uno vencido lo frena
+ * `bookSlot`.
+ */
+export function staleSchedulingSlot(status, scheduling, now = Date.now()) {
+  if (!scheduling) return null;
+  if (status === 'scheduling_confirm') {
+    const slot = scheduling.awaitingConfirm;
+    return slot && slotHasPassed(slot, now) ? slot : null;
+  }
+  if (status === 'scheduling_phone' || status === 'scheduling_email') {
+    const slot = scheduling.pendingSlot;
+    return slot && slotHasPassed(slot, now) ? slot : null;
+  }
+  if (status === 'scheduling_time') {
+    const slots = scheduling.slots || [];
+    return slots.length > 0 && slots.every((slot) => slotHasPassed(slot, now)) ? slots[0] : null;
+  }
+  return null;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2340,7 +2379,13 @@ export class WhatsappBotService {
     // caso no se corre otro turno de conversación libre: se redirige el
     // mensaje al handler que corresponde al estado real.
     if (session && session.status !== 'active') {
-      if (SCHEDULING_STATUSES.includes(session.status)) return this.handleSchedulingTurn(waId, session, incomingText, { lateBatch });
+      if (SCHEDULING_STATUSES.includes(session.status)) {
+        // Volvió cuando el horario que tenía pendiente ya pasó: antes que
+        // nada se le ofrecen horarios al día (ver `staleSchedulingSlot`).
+        const stale = staleSchedulingSlot(session.status, this._readScheduling(session).scheduling);
+        if (stale) return this._reofferBecauseSlotPassed(waId, stale, incomingText);
+        return this.handleSchedulingTurn(waId, session, incomingText, { lateBatch });
+      }
       if (session.status === WARMUP_STATUS) return this.handleWarmupTurn(waId, session, incomingText, { inboundMark, lateBatch });
       if (session.status === 'completed') {
         // Sesión cerrada pero con reunión agendada: el mensaje (ya agrupado)
@@ -4948,6 +4993,8 @@ ${numberedList(fullSlotLabels(offer))}
     const session = await this.getSession(waId);
     const { answers, scheduling } = this._readScheduling(session);
     if (!scheduling) { await this.updateSession(waId, { status: 'completed' }); return; }
+    // Eligió de una lista vieja un horario que ya pasó.
+    if (slotHasPassed(slot)) return this._reofferBecauseSlotPassed(waId, slot);
 
     scheduling.awaitingConfirm = slot;
     await this.updateSession(waId, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
@@ -4972,6 +5019,30 @@ ${numberedList(fullSlotLabels(offer))}
    * vez: así se perdió una reunión ya confirmada el 28/09. El pedido extra se
    * atiende DESPUÉS de reservar, nunca en vez de reservar.
    */
+  /**
+   * El horario que se le iba a confirmar o reservar ya pasó: se suelta todo lo
+   * que lo nombra y se le ofrecen horarios al día, diciéndole por qué —
+   * cambiarle la lista sin una palabra se lee como que el bot se olvidó de lo
+   * que habían hablado. Si lo que escribió nombra un día o una hora ("mejor el
+   * jueves"), se usa para buscar los horarios (`scheduling.when`, que consume
+   * `promptForDate`).
+   */
+  async _reofferBecauseSlotPassed(waId, slot, text = null) {
+    const { answers, scheduling } = this._readScheduling(await this.getSession(waId));
+    if (!scheduling) return;
+
+    for (const key of ['awaitingConfirm', 'pendingSlot', 'lastProposed', 'slots', 'availableDays', 'availableWindows']) {
+      delete scheduling[key];
+    }
+    this._clearStepMisses(scheduling);
+    if (text && SCHEDULE_CHANGE_HINT_RE.test(text)) scheduling.when = text;
+
+    await this.updateSession(waId, { status: 'scheduling_time', answers: JSON.stringify(answers) });
+    this.logActivity({ type: 'stale_slot_reoffered', waId, slot: slot?.label || null, text });
+    await this.send(waId, `El horario que teníamos${slot?.label ? ` (*${slot.label}*)` : ''} ya pasó 🙈 Te paso los próximos libres:`);
+    return this.promptForDate(waId);
+  }
+
   async handleSchedulingConfirmReply(waId, session, text) {
     const { answers, scheduling } = this._readScheduling(session);
     if (!scheduling) { await this.updateSession(waId, { status: 'completed' }); return; }
@@ -5048,6 +5119,9 @@ ${numberedList(fullSlotLabels(offer))}
     const session = await this.getSession(waId);
     const { answers, scheduling } = this._readScheduling(session);
     if (!scheduling) { await this.updateSession(waId, { status: 'completed' }); return; }
+    // Un sí (o el teléfono/correo que faltaba) que llegó cuando el horario ya
+    // pasó: crear el evento sería una reunión en el pasado.
+    if (slotHasPassed(slot)) return this._reofferBecauseSlotPassed(waId, slot);
 
     const isPhone = scheduling.mode === 'phone';
     const contactPhone = formatPhoneForAdvisor(scheduling.phone || (waIdIsPhone(waId) ? waId : null));
