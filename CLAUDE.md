@@ -633,6 +633,14 @@ antes de tocar el arranque de producción.
   enrutar el paso (confirmación, teléfono/correo pendiente, o una lista con todos los horarios
   vencidos) y `bookSlot()`/`confirmSlot()` lo frenan si se elige uno vencido de una lista vieja; en
   los tres casos `_reofferBecauseSlotPassed()` dice que ese horario ya pasó y ofrece los vigentes.
+  **Contar el avance no es despedirse.** "Ya tengo el plan aprobado" o "Ya tengo título" empiezan con
+  "ya tengo", que `mayBeRefusal` manda al LLM, y el LLM los cerraba como "no interesado".
+  `describesThesisProgress()` (leadSignals) los saca del camino del rechazo salvo que el mismo
+  mensaje rechace en serio ("ya tengo quien me haga la tesis"). Si igual se cierra por error, un
+  mensaje de fondo dentro de la semana reabre la conversación (`shouldReopenClosedConversation`; una
+  cortesía como "gracias" no). "No hay problema", "sin problema" y los dedazos de "sí" ("Dii") son un
+  sí, y una respuesta ambigua al "¿Confirmo…?" repregunta una vez por el mismo horario
+  (`confirmReasked`) en vez de soltarlo y preguntar "¿qué día te viene mejor?".
 - El **conteo de seguidores de la página de Meta** se sondea periódicamente
   (`FOLLOWER_POLL_INTERVAL_MS` en `server.js`) porque Meta no lo notifica vía webhook.
 - Los **webhooks de Meta/WhatsApp** validan la firma `X-Hub-Signature-256` contra `req.rawBody`

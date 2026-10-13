@@ -7,7 +7,7 @@ import { MIN_BOOKING_LEAD_MINUTES } from './googleCalendarService.js';
 import { normalizeUniversity } from './universityNormalizer.js';
 import { normalizeCareer } from './careerNormalizer.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
-import { criticalSignal, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
+import { criticalSignal, describesThesisProgress, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
@@ -171,9 +171,14 @@ export function modeLabel(mode) {
  * "sí tengo una duda" o "sí, pero mejor el jueves" siguen sin ser un sí —
  * este último además lo veta `SCHEDULE_CHANGE_HINT_RE`.
  */
-const AFFIRMATIVE_HEAD = String.raw`(?:s[ií]+|sip|sipi|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|confirmo|confirmado|de\s+acuerdo|va|ya|as[ií]\s+es|me\s+parece|excelente|genial|(?:as[ií]\s+)?est[aá]\s+bien)`;
+// "No hay problema" y "sin problema" también son un sí, y los dos se leían como
+// un no: el 09/10 un docente contestó "No hay problema. Estamos en contacto." a
+// "¿Confirmo Sáb, 10 oct, 10:00 a.m.?" y recibió "Sin problema 🙌 Dime qué día y
+// a qué hora te viene mejor" — después de haber elegido él mismo esa hora. Lo
+// mismo con los dedazos de "sí" ("Dii", "zi"), del 10/10.
+const AFFIRMATIVE_HEAD = String.raw`(?:s[ií]+|sip|sipi|di{2,}|zi+|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|confirmo|confirmado|de\s+acuerdo|va|ya|as[ií]\s+es|me\s+parece|excelente|genial|(?:as[ií]\s+)?est[aá]\s+bien|no\s+hay\s+problema|sin\s+problema)`;
 
-const AFFIRMATIVE_TAIL = String.raw`(?:s[ií]|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|excelente|genial|va|ya|pues|entonces|que\s+s[ií]|bien|todo\s+bien|de\s+acuerdo|as[ií]\s+es|(?:as[ií]\s+)?est[aá]\s+bien|me\s+parece|sin\s+problema|adelante|confirmo|confirmado|por\s+favor|porfa|porfis|gracias|muchas\s+gracias)`;
+const AFFIRMATIVE_TAIL = String.raw`(?:s[ií]|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|excelente|genial|va|ya|pues|entonces|que\s+s[ií]|bien|todo\s+bien|de\s+acuerdo|as[ií]\s+es|(?:as[ií]\s+)?est[aá]\s+bien|me\s+parece|sin\s+problema|no\s+hay\s+problema|estamos\s+en\s+contacto|adelante|confirmo|confirmado|por\s+favor|porfa|porfis|gracias|muchas\s+gracias)`;
 
 const AFFIRMATIVE_RE = new RegExp(String.raw`^${AFFIRMATIVE_HEAD}(?:\s+${AFFIRMATIVE_TAIL})*$`, 'i');
 
@@ -232,7 +237,7 @@ export function isExplicitNo(text) {
  * "¿Coordinamos?", ella contestó "Ok" y el bot le repitió la MISMA pregunta
  * que ya le había hecho dos turnos antes. Ese "Ok" era un sí.
  */
-const EXPLICIT_YES_RE = /^(?:si+|sii+|claro|ok+|oka+y?|dale|listo|dale\s*pues|dale\s*nomas|dale\s*no\s*mas|dale\s*ok|dalee+|dsp|dcl|dele|dale\s*si|dale\s*gracias|dale\s*porfa|me\s*parece|dale\s*entonces|dale\s*va|dale\s*vale|vale|dale\s*listo|perfecto|dale\s*perfecto|de\s*acuerdo|por\s*supuesto|bueno|esta\s*bien|asi\s*es|correcto|afirmativo|coordinemos|coordinamos|agendemos|agendamos|ya|ya\s*pues)(?:\s*(?:gracias|porfa|por\s*favor|pues|nomas|no\s*mas|si|ok|claro|listo))?$/i;
+const EXPLICIT_YES_RE = /^(?:si+|sii+|dii+|zi+|no\s*hay\s*problema|sin\s*problema|claro|ok+|oka+y?|dale|listo|dale\s*pues|dale\s*nomas|dale\s*no\s*mas|dale\s*ok|dalee+|dsp|dcl|dele|dale\s*si|dale\s*gracias|dale\s*porfa|me\s*parece|dale\s*entonces|dale\s*va|dale\s*vale|vale|dale\s*listo|perfecto|dale\s*perfecto|de\s*acuerdo|por\s*supuesto|bueno|esta\s*bien|asi\s*es|correcto|afirmativo|coordinemos|coordinamos|agendemos|agendamos|ya|ya\s*pues)(?:\s*(?:gracias|porfa|por\s*favor|pues|nomas|no\s*mas|si|ok|claro|listo))?$/i;
 
 export function isExplicitYes(text) {
   const clean = normalize((text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -1214,6 +1219,33 @@ export function staleSchedulingSlot(status, scheduling, now = Date.now()) {
   return null;
 }
 
+// Cuánto tiempo después de un cierre por "no interesado"/"más adelante" un
+// mensaje de fondo todavía reabre la conversación. Pasado eso, quien vuelve lo
+// atiende el flujo normal de un contacto que regresa.
+const REOPEN_CLOSED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Lo que se contesta a una despedida y no pide nada: "gracias", "ok",
+// "igualmente", un emoji. Eso no reabre la conversación — sería el bot
+// volviendo a hablarle a alguien que solo se despidió.
+const CLOSING_COURTESY_RE = /^(?:(?:ok(?:ey)?|okay|ya|listo|vale|bueno|entendido|de\s+acuerdo|perfecto|igual(?:mente)?|gracias|muchas|mil|chau|chao|bye|adios|saludos|bendiciones|cuidese|cuidate|a\s+usted|a\s+ti|de\s+nada|no\s+hay\s+de\s+que|buen\s+dia|buenas\s+(?:tardes|noches)|hasta\s+luego|exitos)\s*)+$/;
+
+/**
+ * ¿Este mensaje reabre una conversación que el bot cerró por "no interesado"
+ * o "más adelante"? Solo si llega dentro de la semana, trae algo de fondo
+ * (no una cortesía de despedida) y no es otra negativa.
+ */
+export function shouldReopenClosedConversation(session, text, now = Date.now()) {
+  const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
+  if (!['no_interesado', 'pospuesto'].includes(answers.__closedReason)) return false;
+  const closedAt = Date.parse(answers.__closedAt || '');
+  if (!Number.isFinite(closedAt) || now - closedAt > REOPEN_CLOSED_WINDOW_MS) return false;
+
+  const clean = normalize(String(text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean || CLOSING_COURTESY_RE.test(clean)) return false;
+  if (isExplicitNo(text) || saysNotInterested(text)) return false;
+  return true;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2031,6 +2063,16 @@ export class WhatsappBotService {
         // También pasan por el buffer: quien ya agendó escribe igual de
         // entrecortado que el resto ("gracias" / "una consulta...").
         this.bufferMessage(waId, text, this.debounceForStatus(session.status));
+        return;
+      }
+
+      // Se le cerró por "no interesado" o "más adelante" y vuelve con algo de
+      // fondo: el cierre fue un error de lectura o cambió de idea. El 07/10 a
+      // un lead se le cerró por "Ya tengo el plan aprobado" y su siguiente
+      // mensaje —"Necesito apoyo en ciertos puntos"— no lo leyó nadie.
+      if (shouldReopenClosedConversation(session, text)) {
+        await this.reopenClosedConversation(waId, session);
+        this.bufferMessage(waId, text, this.debounceForStatus('active'));
         return;
       }
 
@@ -2960,6 +3002,7 @@ export class WhatsappBotService {
         await this.updateSession(session.wa_id, { answers: JSON.stringify(answers) });
       } else {
         scheduling.awaitingConfirm = slot;
+        delete scheduling.confirmReasked;
         await this.updateSession(session.wa_id, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
       }
       this.logActivity({ type: 'inactivity_nudge_slot_offer', waId: session.wa_id, slot: slot.label, step: session.status });
@@ -3294,6 +3337,23 @@ Enlace: ${meeting.meet_link}` : '';
    * No se le transfiere a un asesor: no hay nada que atender y meterlo en la
    * cola del closer haría que alguien lo llame para insistirle.
    */
+  /**
+   * Deshace un cierre por "no interesado"/"más adelante": la sesión vuelve a la
+   * conversación libre y el lead a "En Calificación". Ver
+   * `shouldReopenClosedConversation`.
+   */
+  async reopenClosedConversation(waId, session) {
+    const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
+    const reason = answers.__closedReason;
+    delete answers.__closedReason;
+    delete answers.__closedAt;
+    await db('whatsapp_bot_sessions').where({ wa_id: waId }).update({
+      status: 'active', nudge_sent_at: null, nudge_count: 0, answers: JSON.stringify(answers), updated_at: db.fn.now()
+    });
+    await this.moveFunnelStage(waId, 'calificando');
+    this.logActivity({ type: 'closed_conversation_reopened', waId, reason });
+  }
+
   async closeAsNotInterested(waId, text) {
     const session = await this.getSession(waId);
     const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
@@ -4199,6 +4259,13 @@ Enlace: ${meeting.meet_link}` : '';
       return true;
     }
 
+    // "Ya tengo el plan aprobado" contesta lo que se le preguntó; no es una
+    // despedida (ver `describesThesisProgress`).
+    if (describesThesisProgress(text)) {
+      this.logActivity({ type: 'refusal_skipped_progress', waId, text });
+      return false;
+    }
+
     if (saysNotInterested(text)) {
       await this.closeAsNotInterested(waId, text);
       return true;
@@ -4997,6 +5064,7 @@ ${numberedList(fullSlotLabels(offer))}
     if (slotHasPassed(slot)) return this._reofferBecauseSlotPassed(waId, slot);
 
     scheduling.awaitingConfirm = slot;
+    delete scheduling.confirmReasked;
     await this.updateSession(waId, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
     this.logActivity({ type: 'booking_confirmation_asked', waId, slot: slot.label, mode: scheduling.mode || 'meet' });
 
@@ -5071,6 +5139,7 @@ ${numberedList(fullSlotLabels(offer))}
 
     if (decision === 'confirm') {
       delete scheduling.awaitingConfirm;
+      delete scheduling.confirmReasked;
       await this.updateSession(waId, { answers: JSON.stringify(answers) });
       // El pedido que venía pegado al sí queda en la bitácora del panel. No
       // hace falta contestarlo aparte: `confirmSlot` manda el link y los datos
@@ -5104,6 +5173,22 @@ ${numberedList(fullSlotLabels(offer))}
       this.logActivity({ type: 'mode_switched_at_confirm', waId, mode: 'phone' });
       return this.bookSlot(waId, slot);
     }
+
+    // No dijo que sí, pero tampoco pidió otra cosa: soltarle el horario que él
+    // mismo eligió y preguntarle "¿qué día te viene mejor?" se lee como que no
+    // se le leyó (el docente del 09/10 contestó "Usted está hablando del
+    // sábado, y ahora no sabe de qué se trata"). Se le vuelve a preguntar UNA
+    // vez por ese mismo horario; la segunda, sí se abre la elección.
+    if (decision !== 'change' && !SCHEDULE_CHANGE_HINT_RE.test(trimmed) && !scheduling.confirmReasked) {
+      scheduling.awaitingConfirm = slot;
+      scheduling.confirmReasked = true;
+      delete scheduling.lastProposed;
+      await this.updateSession(waId, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'confirm_reasked', waId, slot: slot.label, text: trimmed });
+      await this.send(waId, `Para dejarlo listo: ¿te reservo *${slot.label}*? Responde *sí*, o dime qué día u hora prefieres 🙂`);
+      return;
+    }
+    delete scheduling.confirmReasked;
 
     // Nombró un día o una hora: es una corrección, se reinterpreta como si
     // estuviera eligiendo de nuevo.
