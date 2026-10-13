@@ -2146,6 +2146,29 @@ app.patch('/api/leads/:id/assignee', requireAuth, requirePermission('leads.manag
 });
 
 /**
+ * La setter y el closer de un lead, elegidos a mano desde su ficha
+ * (`PATCH /api/leads/:id/setter` y `/closer`, cuerpo `{ userId }`, null = nadie).
+ *
+ * Mismo permiso que asignar: decidir de quién es un lead es repartir, y de
+ * `setter_user_id` cuelga además una comisión.
+ */
+for (const role of ['setter', 'closer']) {
+  app.patch(`/api/leads/:id/${role}`, requireAuth, requirePermission('leads.manage_all'), requireLeadVisible, async (req, res) => {
+    try {
+      const lead = await leadService.setLeadTeamMember(req.params.id, role, req.body?.userId ?? null);
+      if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
+      res.json({ lead });
+    } catch (error) {
+      if (error.code === 'NOT_COMMERCIAL') {
+        return res.status(422).json({ error: error.message, code: error.code });
+      }
+      console.error(`❌ Error al cambiar el ${role} del lead:`, error);
+      res.status(500).json({ error: `Error al cambiar el ${role} del lead.`, details: error.message });
+    }
+  });
+}
+
+/**
  * Cierre de venta desde el funnel: el vendedor arrastra el lead a "Ganado" y
  * registra en el mismo paso el precio total del cierre y el monto del primer
  * pago (pueden ser distintos si el cliente paga en cuotas). Varias cosas

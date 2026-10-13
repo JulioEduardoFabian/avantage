@@ -33,7 +33,7 @@
       vacío sin explicación se lee como "se perdieron los leads".
     -->
     <p v-if="leadScope === 'mine'" class="info-box scope-note">
-      👤 Ves solo los leads que tienes asignados. El total y el reparto los maneja quien
+      👤 Ves solo los leads que tienes asignados o de los que eres setter o closer. El total y el reparto los maneja quien
       administra el área comercial.
     </p>
     <p v-else-if="leadScope === 'setter'" class="info-box scope-note">
@@ -710,6 +710,17 @@
               <div class="info-item">
                 <span class="info-label">Asignado a:</span>
                 <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
+              </div>
+              <!-- Setter y closer del lead: se pueden dejar puestos desde antes
+                   del pase y del cierre (los sellos automáticos no pisan lo
+                   elegido). -->
+              <div class="info-item">
+                <span class="info-label">Setter:</span>
+                <LeadAssignee :lead="selectedLead" role="setter" show-name @assigned="onLeadAssigned" />
+              </div>
+              <div class="info-item">
+                <span class="info-label">Closer:</span>
+                <LeadAssignee :lead="selectedLead" role="closer" show-name @assigned="onLeadAssigned" />
               </div>
             </div>
 

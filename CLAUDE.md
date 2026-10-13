@@ -371,6 +371,16 @@ antes de tocar el arranque de producción.
   tableros se ven vacíos para todos menos para el administrador — es a propósito, no se borra ni se
   toca ningún dato, y la pantalla lo dice en vez de parecer rota (`scope: 'mine' | 'all'` viaja en
   la respuesta justamente para poder explicarlo).
+  "Sus leads" son tres columnas y no una (`LEAD_PEOPLE_FIELDS` en `leadService.js`): quien lo tiene
+  a cargo (`assigned_user_id`), su setter (`setter_user_id`) y su closer (`closer_user_id`). Las dos
+  últimas se sellan solas —al graduar y al ganar— pero también se eligen **a mano desde la ficha**
+  en los dos tableros (`LeadAssignee.vue` con `role="setter"`/`"closer"`, `PATCH
+  /api/leads/:id/setter` y `/closer`, bajo `leads.manage_all`); los sellos nunca pisan un valor ya
+  puesto, así que lo elegido manda.
+  Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
+  graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
+  "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para
+  recorrer el tablero de cada persona y **no abre leads** — filtra lo que el servidor ya mandó.
 - El módulo de **Calendario** (`/admin/calendario`, `CalendarView.vue`, permiso `calendar.view`) es
   la agenda del closer: las reuniones que agendó el bot por WhatsApp y las cargadas a mano, en una
   grilla mensual. Lee `scheduled_meetings`, que dejó de ser solo del bot — `wa_id` admite nulos (una
