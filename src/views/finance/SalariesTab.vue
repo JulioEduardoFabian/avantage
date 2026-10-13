@@ -210,7 +210,7 @@
                 <td>
                   <button
                     type="button"
-                    class="pill salary-status-pill"
+                    class="pill pill-toggle"
                     :class="row.estado === 'pendiente' ? 'pill-warning' : 'pill-success'"
                     :disabled="statusSavingId === row.id"
                     :title="row.estado === 'pendiente' ? 'Marcar como pagado' : 'Marcar como pendiente'"
@@ -605,15 +605,4 @@ onBeforeUnmount(releaseUrls);
 
 <style scoped>
 .salary-amount-out { color: #EF4444; }
-
-.salary-status-pill {
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.72rem;
-  border: none;
-  white-space: nowrap;
-}
-
-.salary-status-pill:hover { filter: brightness(0.97); }
-.salary-status-pill:disabled { opacity: 0.6; cursor: wait; }
 </style>

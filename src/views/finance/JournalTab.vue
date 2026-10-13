@@ -3,7 +3,8 @@
     <p class="ledger-hint">
       Código autogenerado por día. El monto admite valores negativos y el ITF se calcula
       sobre su valor absoluto. Los asientos <strong>pendientes</strong> no suman en los
-      totales de arriba: solo cuenta el dinero que ya se movió.
+      totales de arriba: solo cuenta el dinero que ya se movió, así que haz clic en el
+      estado de una fila para cambiarlo.
     </p>
 
     <div class="ledger-controls">
@@ -211,7 +212,21 @@
                 </td>
                 <td>{{ row.banco }}</td>
                 <td>
-                  <span class="pill" :class="row.estado === 'pagado' ? 'pill-success' : 'pill-warning'">{{ row.estado }}</span>
+                  <!--
+                    El estado se cambia desde la propia celda: marcar un asiento
+                    como pagado es lo que más se hace en esta tabla y abrir el
+                    formulario entero —con su fecha, su monto y sus
+                    comprobantes— para cambiar una palabra invita a tocar de
+                    paso algo que nadie quería tocar.
+                  -->
+                  <button
+                    type="button"
+                    class="pill pill-toggle"
+                    :class="row.estado === 'pagado' ? 'pill-success' : 'pill-warning'"
+                    :disabled="estadoSavingId === row.id"
+                    :title="row.estado === 'pagado' ? 'Marcar como pendiente' : 'Marcar como pagado'"
+                    @click="toggleEstado(row)"
+                  >{{ row.estado }}</button>
                 </td>
                 <td>
                   <span v-if="row.area" class="ledger-eyebrow">{{ row.area }}</span>
@@ -309,6 +324,8 @@ const MAX_RECEIPTS = 10;
 const isFormOpen = ref(false);
 const isSaving = ref(false);
 const isLoading = ref(false);
+/** La fila cuyo estado se está guardando, para no aceptar dos clics seguidos. */
+const estadoSavingId = ref(null);
 const errorMessage = ref('');
 const successMessage = ref('');
 
@@ -519,6 +536,36 @@ async function submit() {
     errorMessage.value = error.message;
   } finally {
     isSaving.value = false;
+  }
+}
+
+/**
+ * Pagado ⇄ pendiente de un clic.
+ *
+ * Al volver, se escribe la fila que ya está en memoria en vez de recargar la
+ * tabla entera: recargar devolvería al usuario al principio de la paginación y
+ * volvería a descargar las miniaturas de los comprobantes, todo para cambiar
+ * una palabra. Los totales de arriba se recalculan solos porque salen de
+ * `filtered`.
+ */
+async function toggleEstado(row) {
+  const siguiente = row.estado === 'pagado' ? 'pendiente' : 'pagado';
+  estadoSavingId.value = row.id;
+  errorMessage.value = '';
+  try {
+    const response = await apiFetch(`/api/finance/journal/${row.id}/estado`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estado: siguiente })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo cambiar el estado del asiento.');
+    // El estado que vale es el que devolvió el servidor, no el que se supuso.
+    row.estado = data.journal?.estado ?? siguiente;
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    estadoSavingId.value = null;
   }
 }
 

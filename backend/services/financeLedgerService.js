@@ -755,6 +755,31 @@ export class FinanceLedgerService {
     }
   }
 
+  /**
+   * Pasa un asiento de pendiente a pagado y al revés, sin tocar nada más.
+   *
+   * Va aparte de `updateJournal()` porque es otra operación: aquella pide el
+   * asiento entero (fecha, monto, banco, detalle) y es la que se usa desde el
+   * formulario; esta es un clic sobre la celda de estado en la tabla. Mandar el
+   * asiento completo para cambiar una palabra obliga a la pantalla a reenviar
+   * campos que nadie editó, y cualquiera que llegue vacío o normalizado
+   * distinto se reescribe de paso — un recálculo de ITF o una fecha corrida por
+   * una vuelta que solo quería decir "esto ya se pagó".
+   *
+   * De este estado cuelgan los totales de la pestaña: lo pendiente es dinero
+   * que todavía no se movió y suma aparte, así que el clic cambia las cifras de
+   * arriba y no solo el color de la píldora.
+   */
+  async updateJournalEstado(id, estado) {
+    if (!ESTADOS_DIARIO.includes(estado)) {
+      throw new Error(`El estado debe ser uno de: ${ESTADOS_DIARIO.join(', ')}.`);
+    }
+    const existing = await db('finance_journal').where({ id }).first();
+    if (!existing) return null;
+    await db('finance_journal').where({ id }).update({ estado });
+    return this.getJournalById(id);
+  }
+
   async deleteJournal(id) {
     const receipts = await db('finance_journal_receipts').where('journal_id', id).select('filename');
     receipts.forEach((r) => unlinkQuiet(r.filename));

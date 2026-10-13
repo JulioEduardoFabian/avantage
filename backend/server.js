@@ -1470,6 +1470,23 @@ app.put('/api/finance/journal/:id', requireAuth, requirePermission('finance.view
   }
 });
 
+/**
+ * Pagado ⇄ pendiente desde la propia tabla, de un clic. No pasa por el PUT de
+ * arriba a propósito: ese pide el asiento entero y va por multer porque admite
+ * comprobantes, y reenviar todo para cambiar una palabra es lo que termina
+ * reescribiendo campos que nadie tocó.
+ */
+app.patch('/api/finance/journal/:id/estado', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const record = await financeLedgerService.updateJournalEstado(req.params.id, req.body?.estado);
+    if (!record) return res.status(404).json({ error: 'Asiento no encontrado.' });
+    res.json({ journal: record });
+  } catch (error) {
+    console.error('❌ Error al cambiar el estado del asiento:', error);
+    res.status(400).json({ error: error.message || 'Error al cambiar el estado del asiento.' });
+  }
+});
+
 // Los comprobantes del libro diario son 1:N, igual que los de los ingresos.
 app.post('/api/finance/journal/:id/receipts', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {

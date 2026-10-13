@@ -220,6 +220,20 @@ antes de tocar el arranque de producción.
   desplazamiento horizontal. Unificarla con la densidad del resto del panel deshace justo lo que se
   pidió. Los nombres de estado que se ven en pantalla salen de `STATE_META` en la vista, no de
   `row.state_label` (el vocabulario del dominio): dentro de esa pantalla se habla un solo idioma.
+- El **estado de un asiento del Libro Diario** (`finance_journal.estado`, `pagado`/`pendiente`) se
+  cambia de un clic sobre su propia celda: la píldora de la tabla es un `<button>` y llama a
+  `PATCH /api/finance/journal/:id/estado` → `updateJournalEstado()`. Va aparte del
+  `PUT /api/finance/journal/:id` del formulario a propósito: ese pide el asiento entero (y pasa por
+  multer porque admite comprobantes), y reenviarlo para cambiar una palabra reescribe de paso
+  campos que nadie tocó — un ITF recalculado, una fecha normalizada distinto. De ese estado cuelgan
+  los totales de la pestaña (lo pendiente es dinero que todavía no se movió y suma aparte), así que
+  el clic cambia las cifras de arriba y no solo el color; al volver se escribe **la fila en
+  memoria** y no se recarga la tabla, que devolvería al usuario al principio de la paginación y
+  volvería a bajar las miniaturas de los comprobantes. La píldora pulsable es `.pill` + `.pill-toggle`
+  de `src/style.css` —no una copia en el `<style scoped>` de cada pestaña—, y `.pill-toggle` agrega
+  **solo** el cursor y el realce: el color, el borde y la tipografía los sigue poniendo `.pill-*`,
+  que es lo que la mantiene indistinguible de una píldora de solo lectura. La misma pareja la usa
+  la pestaña de Salarios.
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
   registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
   `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los

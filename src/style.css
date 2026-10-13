@@ -774,6 +774,26 @@ p.section-subheading {
 .pill-danger { background: rgba(200, 85, 50, 0.12); color: #7A3620; border: 1px solid rgba(200, 85, 50, 0.35); }
 .pill-info { background: rgba(107, 122, 94, 0.14); color: #3F4A38; border: 1px solid rgba(107, 122, 94, 0.35); }
 
+/*
+ * Una pill que además es el interruptor de ese estado: un `<button>` que se ve
+ * exactamente igual que la pill de al lado pero se puede pulsar. Vive acá y no
+ * dentro del `<style scoped>` de una pestaña porque la usan el Libro Diario y
+ * Salarios, y el día que la copie una tercera pantalla la heredaría del
+ * navegador — un botón gris y plano donde debería haber una píldora.
+ *
+ * Solo agrega el affordance —el cursor y el realce al pasar por encima—: la
+ * tipografía, el relleno, el color y el borde los siguen poniendo `.pill` y
+ * `.pill-*`, que son estilos de autor y ya le ganan a lo que el navegador le
+ * pone de suyo a un `<button>`. Repetirlos acá es lo que haría que la versión
+ * pulsable se viera distinta de la de solo lectura.
+ */
+.pill-toggle {
+  cursor: pointer;
+}
+
+.pill-toggle:hover:not(:disabled) { filter: brightness(1.08); }
+.pill-toggle:disabled { opacity: 0.6; cursor: wait; }
+
 :root[data-theme="dark"] .pill-primary { color: var(--on-tint-strong); }
 :root[data-theme="dark"] .pill-success { color: #5FBE79; }
 :root[data-theme="dark"] .pill-warning { color: #F0A87E; }
