@@ -2,10 +2,11 @@
   <!--
     Asignación masiva de responsable, setter y closer.
 
-    Recibe los leads que el tablero tiene a la vista —ya pasados por sus filtros
-    (búsqueda, canal, fecha, responsable)—, así que la forma de armar un lote es
-    filtrar primero el tablero y abrir esto después. Acá solo se marca y se
-    elige a quién.
+    Recibe los leads que el tablero tiene a la vista —ya pasados por sus
+    filtros— agrupados por columna, y acá se terminan de acotar por etapa del
+    funnel, por fecha de registro y por texto antes de marcar. La etapa es la
+    COLUMNA en la que el tablero puso al lead, no `lead.status`: varios status
+    caen en la primera columna y el lote tiene que coincidir con lo que se ve.
 
     Vive en un componente porque lo abren los dos tableros con el mismo
     endpoint (`POST /api/leads/bulk-team`).
@@ -19,9 +20,29 @@
 
       <div class="modal-body bulk-body">
         <p class="bulk-note">
-          Se listan los leads que el tablero muestra ahora. Para acotar el lote, cierra esta ventana
-          y usa los filtros del tablero.
+          Se listan los leads que el tablero muestra ahora. Acota el lote por etapa y por fecha de
+          registro antes de marcar.
         </p>
+
+        <div class="bulk-filters">
+          <label class="bulk-field">
+            <span class="form-label">Etapa del funnel</span>
+            <select v-model="stage" class="form-select">
+              <option value="all">Todas ({{ leads.length }})</option>
+              <option v-for="group in groups" :key="group.key" :value="group.key">
+                {{ group.label }} ({{ group.leads.length }})
+              </option>
+            </select>
+          </label>
+          <label class="bulk-field">
+            <span class="form-label">Registrado desde</span>
+            <input v-model="dateFrom" type="date" class="form-input" :max="dateTo || undefined" />
+          </label>
+          <label class="bulk-field">
+            <span class="form-label">Registrado hasta</span>
+            <input v-model="dateTo" type="date" class="form-input" :min="dateFrom || undefined" />
+          </label>
+        </div>
 
         <div class="bulk-fields">
           <label v-for="field in FIELDS" :key="field.key" class="bulk-field">
@@ -44,9 +65,15 @@
           </button>
           <span class="bulk-count">{{ selected.size }} marcados</span>
         </div>
+        <!-- Lo marcado no se pierde al cambiar de filtro: si quedó algo fuera
+             de la lista, se avisa, porque también se va a aplicar. -->
+        <p v-if="hiddenSelected > 0" class="bulk-note">
+          {{ hiddenSelected }} de los marcados no están en la lista con estos filtros, pero siguen
+          marcados. <button type="button" class="bulk-link" @click="keepOnlyShown">Quitarlos</button>
+        </p>
 
         <p v-if="leads.length === 0" class="bulk-empty">El tablero no tiene leads con los filtros actuales.</p>
-        <p v-else-if="shown.length === 0" class="bulk-empty">Ningún lead coincide con la búsqueda.</p>
+        <p v-else-if="shown.length === 0" class="bulk-empty">Ningún lead coincide con estos filtros.</p>
 
         <ul v-else class="bulk-list custom-scrollbar">
           <li v-for="lead in shown" :key="lead.id">
@@ -54,7 +81,7 @@
               <input type="checkbox" :checked="selected.has(lead.id)" @change="toggle(lead.id)" />
               <span class="bulk-row-main">
                 <strong>{{ lead.full_name || `Lead #${lead.id}` }}</strong>
-                <small>{{ lead.phone || 'Sin celular' }} · {{ shortDate(lead.created_at) }}</small>
+                <small>{{ lead.phone || 'Sin celular' }} · {{ shortDate(lead.created_at) }} · {{ stageLabelOf.get(lead.id) }}</small>
               </span>
               <span class="bulk-row-team">
                 <small>Resp.: {{ lead.assigned_user_name || lead.assigned_to || '—' }}</small>
@@ -83,8 +110,22 @@ import { apiFetch } from '../apiClient.js';
 import { commercialTeam as team, loadCommercialTeam } from '../data/commercialTeam.js';
 
 const props = defineProps({
-  /** Los leads que el tablero muestra ahora (ya filtrados). */
-  leads: { type: Array, required: true }
+  /**
+   * Las columnas del tablero con los leads que muestra ahora (ya filtrados):
+   * `[{ key, label, leads }]`.
+   */
+  groups: { type: Array, required: true }
+});
+
+const leads = computed(() => props.groups.flatMap((group) => group.leads));
+
+/** id del lead → etiqueta de su columna, para mostrarla en cada fila. */
+const stageLabelOf = computed(() => {
+  const labels = new Map();
+  for (const group of props.groups) {
+    for (const lead of group.leads) labels.set(lead.id, group.label);
+  }
+  return labels;
 });
 const emit = defineEmits(['close', 'updated']);
 
@@ -103,17 +144,47 @@ const FIELDS = [
 const choice = reactive({ assigneeUserId: KEEP, setterUserId: KEEP, closerUserId: KEEP });
 const selected = ref(new Set());
 const query = ref('');
+const stage = ref('all');
+const dateFrom = ref(''); // YYYY-MM-DD, día de Lima
+const dateTo = ref('');
 const saving = ref(false);
 const error = ref('');
 const teamError = ref('');
 
+/** El día de calendario de Lima en que se registró el lead, como lo escribe el `<input type="date">`. */
+function limaDay(dateStr) {
+  const d = new Date(dateStr);
+  if (!dateStr || isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+}
+
 const shown = computed(() => {
   const text = query.value.trim().toLowerCase();
-  if (!text) return props.leads;
-  return props.leads.filter((lead) =>
-    (lead.full_name || '').toLowerCase().includes(text) || (lead.phone || '').toLowerCase().includes(text)
-  );
+  const pool = stage.value === 'all'
+    ? leads.value
+    : (props.groups.find((group) => group.key === stage.value)?.leads || []);
+
+  return pool.filter((lead) => {
+    if (dateFrom.value || dateTo.value) {
+      const day = limaDay(lead.created_at);
+      if (!day) return false;
+      if (dateFrom.value && day < dateFrom.value) return false;
+      if (dateTo.value && day > dateTo.value) return false;
+    }
+    if (!text) return true;
+    return (lead.full_name || '').toLowerCase().includes(text) || (lead.phone || '').toLowerCase().includes(text);
+  });
 });
+
+const hiddenSelected = computed(() => {
+  const visible = new Set(shown.value.map((lead) => lead.id));
+  return [...selected.value].filter((id) => !visible.has(id)).length;
+});
+
+function keepOnlyShown() {
+  const visible = new Set(shown.value.map((lead) => lead.id));
+  selected.value = new Set([...selected.value].filter((id) => visible.has(id)));
+}
 
 const allShownSelected = computed(
   () => shown.value.length > 0 && shown.value.every((lead) => selected.value.has(lead.id))
@@ -198,6 +269,18 @@ onMounted(() => {
   margin: 0;
 }
 
+.bulk-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-main);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.bulk-filters,
 .bulk-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
