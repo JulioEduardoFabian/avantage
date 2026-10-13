@@ -139,6 +139,36 @@
         </button>
       </div>
 
+      <!--
+        Filtro por responsable: el tablero tal como lo tiene cada persona (sus
+        leads asignados). Solo para quien ve leads ajenos — con lo propio nada
+        más, el desplegable tendría una sola opción que no filtra nada.
+      -->
+      <div v-if="canFilterByAssignee" class="items-per-page-box">
+        <span class="toolbar-label">Responsable:</span>
+        <select v-model="selectedAssigneeFilter" class="items-select" title="Ver los leads asignados a una persona">
+          <option value="all">Todos</option>
+          <option v-for="option in assigneeOptions" :key="option.id" :value="option.id">
+            {{ option.name }} ({{ option.count }})
+          </option>
+          <option value="none">Sin asignar ({{ unassignedCount }})</option>
+        </select>
+      </div>
+
+      <!-- Filtro por fecha de registro del lead (día de Lima, ambos extremos incluidos) -->
+      <div class="items-per-page-box date-filter-box">
+        <span class="toolbar-label">Registrado:</span>
+        <input v-model="dateFrom" type="date" class="items-select date-input" :max="dateTo || undefined" title="Desde" />
+        <span class="toolbar-label">a</span>
+        <input v-model="dateTo" type="date" class="items-select date-input" :min="dateFrom || undefined" title="Hasta" />
+        <button
+          v-if="dateFrom || dateTo"
+          class="clear-search-btn"
+          title="Quitar el filtro de fecha"
+          @click="dateFrom = ''; dateTo = ''"
+        >✕</button>
+      </div>
+
       <!-- Control de Tarjetas por Columna -->
       <div class="items-per-page-box">
         <span class="toolbar-label">Por pág:</span>
@@ -327,7 +357,14 @@
               <h4 class="card-lead-name" :title="getLeadFullName(lead)">
                 {{ getLeadFullName(lead) }}
               </h4>
-              <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+              <!-- La fecha de registro comparte renglón con el celular: una
+                   línea más rompería el alto fijo de la tarjeta. -->
+              <span class="card-lead-meta">
+                <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+                <span class="card-lead-date" :title="`Registrado: ${formatDate(lead.created_at)}`">
+                  🗓 {{ formatCardDate(lead.created_at) }}
+                </span>
+              </span>
 
               <!-- Responsable comercial: el círculo va en la franja reservada
                    a la derecha, sin sumar una línea, para no romper el alto
@@ -909,6 +946,7 @@ import LeadNotes from '../components/LeadNotes.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import { hasPermission } from '../auth.js';
+import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
 
 /** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
@@ -1037,6 +1075,64 @@ const projectToast = ref(null);
 const searchQuery = ref('');
 const selectedChannelFilter = ref('all');
 const selectedViabilityFilter = ref('all');
+
+/*
+ * Filtro por responsable. Lo usa quien ve leads ajenos (`setter.view_all` o
+ * `leads.manage_all`): al resto el servidor ya le manda solo lo suyo, así que
+ * no habría nada entre qué elegir. Es comodidad de pantalla, no un permiso — lo
+ * que cada quien puede ver lo decide `GET /api/leads`.
+ */
+const canFilterByAssignee = computed(
+  () => hasPermission('setter.view_all') || hasPermission('leads.manage_all')
+);
+const selectedAssigneeFilter = ref('all'); // 'all' | 'none' | id de usuario
+const dateFrom = ref(''); // YYYY-MM-DD, día de Lima
+const dateTo = ref('');
+
+/** Los leads que son de este tablero: los que todavía no graduaron a Ventas. */
+const setterFunnelLeads = computed(
+  () => leads.value.filter((lead) => !leadHasGraduated(lead, salesFunnelStatuses.value))
+);
+
+/**
+ * Las personas del desplegable, con cuántos leads tiene cada una en este
+ * tablero. Sale del área comercial (para que aparezca también quien hoy no
+ * tiene ninguno) más los responsables que traen los leads, por si la lista del
+ * equipo no llegó a cargar.
+ */
+const assigneeOptions = computed(() => {
+  const options = new Map();
+  for (const member of commercialTeam.value) {
+    options.set(member.id, { id: member.id, name: member.name, count: 0 });
+  }
+  for (const lead of setterFunnelLeads.value) {
+    if (!lead.assigned_user_id) continue;
+    const option = options.get(lead.assigned_user_id) || {
+      id: lead.assigned_user_id,
+      name: lead.assigned_user_name || lead.assigned_to || `Usuario #${lead.assigned_user_id}`,
+      count: 0
+    };
+    option.count += 1;
+    options.set(option.id, option);
+  }
+  return [...options.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+});
+
+const unassignedCount = computed(
+  () => setterFunnelLeads.value.filter((lead) => !lead.assigned_user_id).length
+);
+
+/**
+ * El día de calendario de Lima en que se registró el lead (`YYYY-MM-DD`), que
+ * es como lo escribe el `<input type="date">`. Con el huso del navegador, un
+ * lead de las 23:00 caería en el día siguiente para una laptop en otra zona.
+ */
+function limaDay(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+}
 
 // Paginación por Columna
 const columnPages = reactive({});
@@ -1277,6 +1373,7 @@ const filteredLeadsByColumn = computed(() => {
 
   const query = searchQuery.value.trim().toLowerCase();
   const channelFilter = selectedChannelFilter.value;
+  const assigneeFilter = selectedAssigneeFilter.value;
   const firstColKey = columns.value[0]?.key || 'conversacion_abierta';
 
   for (const lead of leads.value) {
@@ -1285,6 +1382,21 @@ const filteredLeadsByColumn = computed(() => {
     // Filtro por Canal de Origen
     if (channelFilter !== 'all' && channelInfo.type !== channelFilter) {
       continue;
+    }
+
+    // Filtro por responsable
+    if (canFilterByAssignee.value && assigneeFilter !== 'all') {
+      if (assigneeFilter === 'none' ? Boolean(lead.assigned_user_id) : lead.assigned_user_id !== assigneeFilter) {
+        continue;
+      }
+    }
+
+    // Filtro por fecha de registro
+    if (dateFrom.value || dateTo.value) {
+      const day = limaDay(lead.created_at);
+      if (!day) continue;
+      if (dateFrom.value && day < dateFrom.value) continue;
+      if (dateTo.value && day > dateTo.value) continue;
     }
 
     // Filtro por texto de búsqueda
@@ -1807,6 +1919,23 @@ function formatDate(dateStr) {
   });
 }
 
+/**
+ * La fecha de registro en la tarjeta: día y mes, y el año solo si no es el
+ * actual. La hora completa queda en el `title` y en la ficha.
+ */
+function formatCardDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '—';
+  const sameYear = limaDay(dateStr).slice(0, 4) === limaDay(new Date()).slice(0, 4);
+  return d.toLocaleDateString('es-PE', {
+    timeZone: 'America/Lima',
+    day: '2-digit',
+    month: 'short',
+    ...(sameYear ? {} : { year: '2-digit' })
+  });
+}
+
 function formatClock(dateStr) {
   if (!dateStr) return '';
   const d = new Date(dateStr);
@@ -1892,6 +2021,9 @@ onMounted(() => {
   loadSetterColumns();
   fetchSalesColumns();
   fetchAll();
+  // Para el filtro por responsable. Si falla, el desplegable se arma igual con
+  // los responsables que traen los leads.
+  if (canFilterByAssignee.value) loadCommercialTeam().catch(() => {});
 });
 </script>
 
@@ -2686,11 +2818,33 @@ onMounted(() => {
   text-overflow: ellipsis;
 }
 
+.card-lead-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .card-lead-phone {
   font-family: var(--font-mono);
   font-size: 0.73rem;
   color: var(--text-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* La fecha no se recorta: si falta ancho, cede el celular. */
+.card-lead-date {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.date-input {
+  color-scheme: light dark;
 }
 
 /* Silueta Drop Preview */
