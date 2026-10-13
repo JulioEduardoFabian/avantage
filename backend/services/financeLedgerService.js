@@ -339,6 +339,60 @@ export class FinanceLedgerService {
     await db('finance_income').where({ id: first.id }).update({ is_initial_payment: true });
   }
 
+  /**
+   * Lo que un lead ya tiene registrado en Finanzas, mirado desde el cierre de
+   * venta: su precio total, la suma de lo ya asentado en cuotas y cuánto falta
+   * por registrar.
+   *
+   * Existe porque el cierre NO siempre es el primer sitio donde aparece el
+   * dinero: el cronograma también nace del contrato (`replaceScheduleForLead`)
+   * y Finanzas puede asentar el pago por su cuenta. Cuando eso ya pasó, el
+   * modal de cierre pedía igual "el primer pago" y el alta chocaba contra
+   * `#assertWithinLeadTotal` ("supera el saldo pendiente... S/ 0.00") sin decir
+   * que el dinero ya estaba — y el lead se quedaba sin poder ganarse.
+   *
+   * Va aparte de `listLeadsDirectory()` porque esto lo lee el closer con
+   * `leads.view` —es su propia venta, el precio lo fija él en este mismo
+   * modal— y aquel es el directorio completo de Finanzas.
+   */
+  async getLeadSettlement(leadId) {
+    const empty = { total: null, registered: 0, remaining: null, installments: [] };
+    if (!leadId) return empty;
+    const lead = await db('leads').where({ id: leadId }).select('total_amount').first();
+    if (!lead) return empty;
+
+    const rows = await db('finance_income')
+      .where({ lead_id: leadId })
+      .select('id', 'code', 'cuota', 'monto', 'itf', 'emitir', 'banco', 'estado', 'fecha', 'due_date', 'is_initial_payment')
+      .orderBy('due_date', 'asc')
+      .orderBy('id', 'asc');
+
+    const total = lead.total_amount != null ? Number(lead.total_amount) : null;
+    const registered = Math.round(rows.reduce((sum, row) => sum + Number(row.monto), 0) * 100) / 100;
+    return {
+      total,
+      registered,
+      remaining: total != null ? Math.round((total - registered) * 100) / 100 : null,
+      installments: rows.map((row) => ({
+        ...withIsoDates(row),
+        monto: Number(row.monto),
+        is_initial_payment: Boolean(row.is_initial_payment)
+      }))
+    };
+  }
+
+  /**
+   * Pone el marcador de pago inicial en la primera cuota del lead cuando
+   * todavía no lo tiene ninguna. Lo usa el cierre de venta que se registra
+   * sobre cuotas que ya existían: el proyecto que acaba de nacer tiene que
+   * quedar esperando la verificación de ese pago igual que cualquier otro
+   * cierre. Fuera de ese momento el marcador no se repone solo (ver
+   * `#syncInitialPayment`).
+   */
+  async ensureInitialPayment(leadId) {
+    await this.#syncInitialPayment(leadId, { ensure: true });
+  }
+
   /** El pago inicial ya registrado de un lead, si lo tiene (uno por lead). */
   async findInitialPaymentByLead(leadId) {
     if (!leadId) return null;

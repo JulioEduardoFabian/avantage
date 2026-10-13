@@ -60,6 +60,7 @@ import { CommissionService } from './services/commissionService.js';
 import { CollectionService } from './services/collectionService.js';
 import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
+import { planWinDeal } from './services/winDeal.js';
 import { signToken, requireAuth, requirePermission, requireAnyPermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
 
 import { uploadProjectUpdateAttachment, uploadDir, uploadDeliverableAttachment, deliverableDir, uploadFinanceReceipt, uploadFinanceFile, uploadEmailAttachments, financeReceiptDir, whatsappMediaDir, campaignAdImageDir } from './middleware/upload.js';
@@ -2227,6 +2228,25 @@ function parseInstallments(raw) {
   }
 }
 
+/**
+ * Lo que el modal de cierre necesita saber ANTES de pedir el primer pago: si
+ * este lead ya tiene cuotas asentadas en Finanzas y cuánto falta. El dinero no
+ * siempre nace aquí — el cronograma del contrato y la propia pantalla de
+ * Finanzas escriben las mismas filas —, y sin este dato el modal pedía un pago
+ * que ya no cabía en el total y el cierre moría con un "supera el saldo
+ * pendiente: S/ 0.00" que no explicaba nada.
+ */
+app.get('/api/leads/:id/win-preview', requireAuth, requirePermission('leads.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const lead = await leadService.getLeadById(req.params.id);
+    if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
+    res.json(await financeLedgerService.getLeadSettlement(lead.id));
+  } catch (error) {
+    console.error('❌ Error al leer lo ya registrado del lead:', error);
+    res.status(500).json({ error: 'No se pudo leer lo ya registrado de este lead.' });
+  }
+});
+
 app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), requireLeadVisible, uploadFinanceReceipt, async (req, res) => {
   const vouchers = req.receipts || [];
   try {
@@ -2242,9 +2262,19 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), req
       });
     }
 
+    const settlement = await financeLedgerService.getLeadSettlement(lead.id);
+    const installments = parseInstallments(req.body?.installments);
+
+    // Un cierre puede llegar con el dinero YA asentado (lo pactó el contrato o
+    // lo registró Finanzas). En ese caso `hasAmount` es false: el cierre solo
+    // gana el lead, abre su proyecto y adopta esas cuotas como su cronograma —
+    // registrar otro ingreso sería cobrar dos veces lo mismo. Las reglas se
+    // verifican ANTES de mover nada (ver `winDeal.js`).
+    const { hasAmount, amount, setsTotal } = planWinDeal({ settlement, monto, totalAmount, installments });
+
     // El precio total se fija antes de crear el ingreso, para que la validación
     // de "la suma de cuotas no supera el total" también corra sobre este primer pago.
-    if (totalAmount !== undefined && totalAmount !== null && totalAmount !== '') {
+    if (setsTotal) {
       await financeLedgerService.setLeadTotalAmount(lead.id, totalAmount);
     }
 
@@ -2255,47 +2285,63 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), req
     const created = await projectService.createProjectFromLead(updatedLead);
 
     const today = new Date().toISOString().slice(0, 10);
-    const income = await financeLedgerService.createIncome({
-      fecha: today,
-      dueDate: today,
-      leadId: lead.id,
-      cuota: '1era',
-      emitir: emitir || 'boleta',
-      monto,
-      banco: banco || 'BCP',
-      estado: 'pendiente',
-      isInitialPayment: true,
-      createdBy: req.user.id
-    });
+    let income = null;
+    if (hasAmount) {
+      income = await financeLedgerService.createIncome({
+        fecha: today,
+        dueDate: today,
+        leadId: lead.id,
+        cuota: '1era',
+        emitir: emitir || 'boleta',
+        monto: amount,
+        banco: banco || 'BCP',
+        estado: 'pendiente',
+        isInitialPayment: true,
+        createdBy: req.user.id
+      });
 
-    // El voucher es opcional; si viene, el ingreso queda cobrado de una vez.
-    let withVoucher = income;
-    if (vouchers.length > 0) {
-      await financeLedgerService.addIncomeReceipts(income.id, vouchers);
-      withVoucher = await financeLedgerService.getIncomeById(income.id);
+      // El voucher es opcional; si viene, el ingreso queda cobrado de una vez.
+      if (vouchers.length > 0) {
+        await financeLedgerService.addIncomeReceipts(income.id, vouchers);
+        income = await financeLedgerService.getIncomeById(income.id);
+      }
     }
 
     // Las cuotas que faltan por cobrar quedan pactadas desde el minuto cero,
     // cada una con su vencimiento: es el cronograma que después se imprime en
-    // el contrato y que el cliente ve en su portal. El primer pago ya creado
-    // entra en la lista para que no se le renumere ni se le duplique.
-    let schedule = [withVoucher];
-    const installments = parseInstallments(req.body?.installments);
+    // el contrato y que el cliente ve en su portal. Las que ya existían y el
+    // primer pago recién creado entran en la lista POR SU ID: el cronograma se
+    // reemplaza entero, y dejarlas fuera las borraría.
+    let schedule = await financeLedgerService.listScheduleByLead(lead.id);
     if (installments.length > 0) {
+      const kept = schedule.map((row) => ({
+        id: row.id,
+        monto: Number(row.monto),
+        dueDate: row.due_date || today,
+        emitir: row.emitir,
+        banco: row.banco
+      }));
       schedule = await financeLedgerService.replaceScheduleForLead(
         lead.id,
-        [{ id: withVoucher.id, monto: withVoucher.monto, dueDate: today, emitir: withVoucher.emitir, banco: withVoucher.banco }, ...installments],
+        [...kept, ...installments],
         { createdBy: req.user.id }
       );
     }
+
+    // El proyecto recién abierto espera la verificación de su primer pago, lo
+    // haya creado este cierre o lo hubiera asentado antes el contrato.
+    await financeLedgerService.ensureInitialPayment(lead.id);
+    const initialPayment = income
+      ? await financeLedgerService.getIncomeById(income.id)
+      : await financeLedgerService.findInitialPaymentByLead(lead.id);
 
     // Se relee el proyecto ya con su pago inicial: el bloqueo se deriva del
     // ingreso, que no existía cuando se creó el proyecto unas líneas antes.
     const project = await projectService.getProjectById(created.id);
 
-    console.log(`🏆 [Ventas] Lead #${lead.id} ganado · proyecto #${project.id} · ingreso ${withVoucher.code} (${withVoucher.estado})` +
-      ` · cronograma de ${schedule.length} cuota(s)`);
-    res.status(201).json({ lead: updatedLead, project, income: withVoucher, schedule });
+    console.log(`🏆 [Ventas] Lead #${lead.id} ganado · proyecto #${project.id} · ingreso ${initialPayment?.code || 's/n'} (${initialPayment?.estado || 's/n'})` +
+      ` · cronograma de ${schedule.length} cuota(s)` + (hasAmount ? '' : ' · sin pago nuevo: ya estaba registrado'));
+    res.status(201).json({ lead: updatedLead, project, income: initialPayment, schedule });
   } catch (error) {
     vouchers.forEach((f) => financeLedgerService.discardUploadedFile(f));
     console.error('❌ Error al registrar el cierre de venta:', error);

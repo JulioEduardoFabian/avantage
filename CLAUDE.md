@@ -155,6 +155,18 @@ antes de tocar el arranque de producción.
   del `PUT /api/contracts/:id`, que imprime la tabla con el marcador `{{cronograma_pagos}}`) y desde
   Finanzas — `financeLedgerService.replaceScheduleForLead()` es el único camino, y rechaza quitar o
   cambiar el monto de una cuota ya cobrada, o pasarse de `leads.total_amount`.
+  Como el dinero puede nacer por cualquiera de esos tres caminos, **el cierre de venta no da por
+  hecho que la plata empieza en él**: el modal lee primero lo ya asentado
+  (`getLeadSettlement()`, `GET /api/leads/:id/win-preview`), lo muestra cuota por cuota y propone
+  solo el saldo. Si las cuotas que ya existen cubren el precio total, el cierre **no registra otro
+  ingreso** — solo gana el lead, abre su proyecto y adopta ese cronograma, poniéndole el marcador de
+  pago inicial a la primera cuota (`ensureInitialPayment()`) para que el proyecto espere su
+  verificación igual que cualquier otro cierre. Antes se pedía igual "el primer pago" y el alta
+  chocaba contra `#assertWithinLeadTotal` ("supera el saldo pendiente de este lead: S/ 0.00"): un
+  cliente que pagaba todo de una no se podía ganar. Las reglas de plata del cierre viven en
+  `backend/services/winDeal.js` (`planWinDeal()`) y corren **antes** de mover nada: puestas después,
+  como estaban, un monto que no cuadraba dejaba el lead ya ganado y su proyecto abierto pero sin
+  ingreso, y el vendedor solo veía el error.
 - Un hito de la línea de tiempo puede atarse a una cuota (`project_updates.income_id`): el cliente
   lo ve en su portal con el adjunto **bloqueado** hasta que Finanzas verifique ese pago. Como
   `projects.is_locked`, el `is_locked` del hito se deriva del estado del ingreso en cada lectura —

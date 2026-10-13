@@ -1964,10 +1964,14 @@ function onDealWon(data) {
   lead.status = data.lead.status;
   lead.project_id = data.project?.id ?? lead.project_id;
   lead.project_status = data.project?.status ?? lead.project_status;
-  lead.initial_payment_id = data.income.id;
-  lead.initial_payment_code = data.income.code;
-  lead.initial_payment_monto = data.income.monto;
-  lead.initial_payment_estado = data.income.estado;
+  // Un cierre sobre cuotas que ya existían no crea un ingreso nuevo: el que
+  // vuelve es la primera cuota del cronograma, ya marcada como pago inicial.
+  if (data.income) {
+    lead.initial_payment_id = data.income.id;
+    lead.initial_payment_code = data.income.code;
+    lead.initial_payment_monto = data.income.monto;
+    lead.initial_payment_estado = data.income.estado;
+  }
 
   if (data.project) {
     projectToast.value = data.project;
