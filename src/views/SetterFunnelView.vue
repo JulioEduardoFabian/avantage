@@ -1,24 +1,4 @@
-    for (const id of leadPeople(lead)) {
-      const option = options.get(id) || { id, name: leadPersonName(lead, id) || `Usuario #${id}`, count: 0 };
-      option.count += 1;
-      options.set(id, option);
-    } * Filtro por responsable: el tablero de cada persona. Tiene su propio permiso
- * (`setter.filter_assignee`) y es una herramienta de pantalla, no de datos — lo
- * que cada quien puede ver lo sigue decidiendo `GET /api/leads`, así que sin
- * `setter.view_all` ni `leads.manage_all` solo hay lo propio entre qué elegir.
- *
- * Un lead es "de" alguien si lo tiene a cargo o si es su setter: es la misma
- * regla con la que el servidor arma el tablero de esa persona.
- */
-const canFilterByAssignee = computed(() => hasPermission('setter.filter_assignee'));
-
-function leadPeople(lead) {
-  return [...new Set([lead.assigned_user_id, lead.setter_user_id].filter(Boolean))];
-}
-function leadPersonName(lead, id) {
-  if (id === lead.assigned_user_id) return lead.assigned_user_name || lead.assigned_to;
-  return lead.setter_name;
-}﻿<template>
+﻿<template>
   <main class="container-fluid kanban-page-wrapper">
     <!-- Header y Acciones Principales -->
     <header class="kanban-header">
@@ -1110,14 +1090,23 @@ const selectedChannelFilter = ref('all');
 const selectedViabilityFilter = ref('all');
 
 /*
- * Filtro por responsable. Lo usa quien ve leads ajenos (`setter.view_all` o
- * `leads.manage_all`): al resto el servidor ya le manda solo lo suyo, así que
- * no habría nada entre qué elegir. Es comodidad de pantalla, no un permiso — lo
- * que cada quien puede ver lo decide `GET /api/leads`.
+ * Filtro por responsable: el tablero de cada persona. Tiene su propio permiso
+ * (`setter.filter_assignee`) y es una herramienta de pantalla, no de datos — lo
+ * que cada quien puede ver lo sigue decidiendo `GET /api/leads`, así que sin
+ * `setter.view_all` ni `leads.manage_all` solo hay lo propio entre qué elegir.
+ *
+ * Un lead es "de" alguien si lo tiene a cargo o si es su setter: es la misma
+ * regla con la que el servidor arma el tablero de esa persona.
  */
-const canFilterByAssignee = computed(
-  () => hasPermission('setter.view_all') || hasPermission('leads.manage_all')
-);
+const canFilterByAssignee = computed(() => hasPermission('setter.filter_assignee'));
+
+function leadPeople(lead) {
+  return [...new Set([lead.assigned_user_id, lead.setter_user_id].filter(Boolean))];
+}
+function leadPersonName(lead, id) {
+  if (id === lead.assigned_user_id) return lead.assigned_user_name || lead.assigned_to;
+  return lead.setter_name;
+}
 const selectedAssigneeFilter = ref('all'); // 'all' | 'none' | id de usuario
 const dateFrom = ref(''); // YYYY-MM-DD, día de Lima
 const dateTo = ref('');
@@ -1139,14 +1128,11 @@ const assigneeOptions = computed(() => {
     options.set(member.id, { id: member.id, name: member.name, count: 0 });
   }
   for (const lead of setterFunnelLeads.value) {
-    if (!lead.assigned_user_id) continue;
-    const option = options.get(lead.assigned_user_id) || {
-      id: lead.assigned_user_id,
-      name: lead.assigned_user_name || lead.assigned_to || `Usuario #${lead.assigned_user_id}`,
-      count: 0
-    };
-    option.count += 1;
-    options.set(option.id, option);
+    for (const id of leadPeople(lead)) {
+      const option = options.get(id) || { id, name: leadPersonName(lead, id) || `Usuario #${id}`, count: 0 };
+      option.count += 1;
+      options.set(id, option);
+    }
   }
   return [...options.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
 });

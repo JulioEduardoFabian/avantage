@@ -1,35 +1,4 @@
-const ROLES = {
-  assignee: {
-    idField: 'assigned_user_id',
-    name: (lead) => lead.assigned_user_name || lead.assigned_to || '',
-    endpoint: 'assignee',
-    popTitle: 'Asignar a',
-    emptyLabel: 'Sin asignar',
-    clearLabel: 'Dejar sin asignar',
-    setLabel: 'Asignado a'
-  },
-  setter: {
-    idField: 'setter_user_id',
-    name: (lead) => lead.setter_name || '',
-    endpoint: 'setter',
-    popTitle: 'Setter del lead',
-    emptyLabel: 'Sin setter',
-    clearLabel: 'Dejar sin setter',
-    setLabel: 'Setter:'
-  },
-  closer: {
-    idField: 'closer_user_id',
-    name: (lead) => lead.closer_name || '',
-    endpoint: 'closer',
-    popTitle: 'Closer del lead',
-    emptyLabel: 'Sin closer',
-    clearLabel: 'Dejar sin closer',
-    setLabel: 'Closer:'
-  }
-};
-const meta = computed(() => ROLES[props.role] || ROLES.assignee);
-const currentId = computed(() => props.lead[meta.value.idField] ?? null);
-const assigneeName = computed(() => meta.value.name(props.lead));{{ assigneeName || meta.emptyLabel }}v-if="currentId || assigneeName"<template>
+<template>
   <!--
     Quién del área comercial tiene este lead a su cargo, y el botón para
     cambiarlo.
@@ -68,7 +37,7 @@ const assigneeName = computed(() => meta.value.name(props.lead));{{ assigneeName
       :style="assigneeName ? { background: avatarColor(assigneeName) } : null"
       aria-hidden="true"
     >{{ assigneeName ? initials(assigneeName) : '?' }}</span>
-    <span v-if="showName" class="lead-assignee-name">{{ assigneeName || 'Sin asignar' }}</span>
+    <span v-if="showName" class="lead-assignee-name">{{ assigneeName || meta.emptyLabel }}</span>
   </button>
 
   <Teleport to="body">
@@ -107,7 +76,7 @@ const assigneeName = computed(() => meta.value.name(props.lead));{{ assigneeName
         </ul>
 
         <button
-          v-if="lead.assigned_user_id || lead.assigned_to"
+          v-if="currentId || assigneeName"
           type="button"
           class="pop-clear"
           @click="choose(null)"
@@ -154,7 +123,38 @@ const popStyle = ref({});
  * texto libre de `assigned_to` (los leads viejos y los asesores sin cuenta en
  * el panel siguen anotados ahí).
  */
-const assigneeName = computed(() => props.lead.assigned_user_name || props.lead.assigned_to || '');
+const ROLES = {
+  assignee: {
+    idField: 'assigned_user_id',
+    name: (lead) => lead.assigned_user_name || lead.assigned_to || '',
+    endpoint: 'assignee',
+    popTitle: 'Asignar a',
+    emptyLabel: 'Sin asignar',
+    clearLabel: 'Dejar sin asignar',
+    setLabel: 'Asignado a'
+  },
+  setter: {
+    idField: 'setter_user_id',
+    name: (lead) => lead.setter_name || '',
+    endpoint: 'setter',
+    popTitle: 'Setter del lead',
+    emptyLabel: 'Sin setter',
+    clearLabel: 'Dejar sin setter',
+    setLabel: 'Setter:'
+  },
+  closer: {
+    idField: 'closer_user_id',
+    name: (lead) => lead.closer_name || '',
+    endpoint: 'closer',
+    popTitle: 'Closer del lead',
+    emptyLabel: 'Sin closer',
+    clearLabel: 'Dejar sin closer',
+    setLabel: 'Closer:'
+  }
+};
+const meta = computed(() => ROLES[props.role] || ROLES.assignee);
+const currentId = computed(() => props.lead[meta.value.idField] ?? null);
+const assigneeName = computed(() => meta.value.name(props.lead));
 
 /**
  * Repartir leads es del administrador del área comercial (`leads.manage_all`).
