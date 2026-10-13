@@ -355,6 +355,7 @@
                    tablero. El borde de color se conserva porque no ocupa
                    espacio y es como el setter distingue el canal de origen. -->
               <h4 class="card-lead-name" :title="getLeadFullName(lead)">
+                <span v-if="cameFromForm(lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
                 {{ getLeadFullName(lead) }}
               </h4>
               <!-- La fecha de registro comparte renglón con el celular: una
@@ -946,6 +947,7 @@ import LeadNotes from '../components/LeadNotes.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import { hasPermission } from '../auth.js';
+import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
 
@@ -2823,6 +2825,14 @@ onMounted(() => {
   align-items: baseline;
   gap: 0.5rem;
   min-width: 0;
+}
+
+/* Marca de "llegó por formulario": va dentro del renglón del nombre para no
+   sumar alto a la tarjeta. */
+.card-form-mark {
+  font-size: 0.72rem;
+  margin-right: 0.15rem;
+  cursor: help;
 }
 
 .card-lead-phone {
