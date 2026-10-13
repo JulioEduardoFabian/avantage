@@ -138,6 +138,10 @@ const MAX_STEP_TURNS = 4;
 // Estados del flujo de agendamiento (todos "esperan respuesta del contacto").
 const SCHEDULING_STATUSES = ['scheduling_mode', 'scheduling_phone', 'scheduling_email', 'scheduling_date', 'scheduling_time', 'scheduling_confirm'];
 
+// Datos del perfil que, si una burbuja tardía los completa, justifican
+// responderle aunque haya llegado tarde: el bot puede estar pidiendo justo eso.
+const LATE_BATCH_DATA_KEYS = ['field', 'university', 'problem', 'level', 'email', 'phone'];
+
 // Paso previo al agendamiento para los leads que llegan del formulario de un
 // anuncio: se les hace UNA pregunta cerrada ("¿coordinamos?") y los horarios
 // salen recién cuando contestan. Ver `whatsappBotCopy.warmupAsk`. No entra en
@@ -234,6 +238,53 @@ export function isExplicitYes(text) {
   const clean = normalize((text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!clean) return false;
   return EXPLICIT_YES_RE.test(clean);
+}
+
+/**
+ * ¿Lo que se va a procesar lo escribió el contacto ANTES de que le llegara el
+ * último mensaje del bot? Es la "burbuja tardía": llega mientras el bot está
+ * armando su respuesta (la evaluación con IA del `finalize` tarda 10–20 s), y
+ * el buffer la procesa recién después, como si fuera la respuesta a una
+ * pregunta que el contacto todavía no había visto.
+ *
+ * Del 06 al 13/10 eso produjo el "No te entendí bien 🤔" pegado a la lista de
+ * horarios (Lu, Josselyn, Eberth, Delia: "Culminé en diciembre del año pasado"
+ * leído como elección de horario) y las preguntas dobles de la conversación
+ * libre (Grace, Alina). `lastBotSendAt` es el momento del último envío del bot,
+ * reservado o real (`lastSentAt`).
+ */
+export function wasWrittenBeforeLastReply(lastBubbleAt, lastBotSendAt) {
+  return !!lastBubbleAt && !!lastBotSendAt && lastBubbleAt < lastBotSendAt;
+}
+
+// Arranques de pregunta que la gente escribe sin signos ("Donde es su
+// oficina", "cuanto cuesta"). Ante la duda se considera pregunta: una burbuja
+// tardía que pregunta algo se contesta igual.
+const QUESTION_START_RE = /(?:^|\n)\s*(?:y\s+)?(?:cuant[oa]s?|como|donde|que|cual(?:es)?|quien(?:es)?|cuando|por\s*que|me\s+pued\w*|pued\w*|hacen|tienen|atienden|trabajan)\b/;
+
+export function looksLikeQuestion(text) {
+  const t = String(text || '');
+  if (!t.trim()) return false;
+  return /[?¿]/.test(t) || PRICE_QUESTION_RE.test(t) || QUESTION_START_RE.test(normalize(t.toLowerCase()));
+}
+
+/**
+ * Una burbuja tardía en pleno agendamiento: ¿hay que procesarla o el bot se
+ * calla? El contacto tiene en pantalla la pregunta del paso (los horarios,
+ * el "¿Confirmo…?") y la va a contestar; procesar lo que escribió antes de
+ * verla solo puede salir como "no te entendí" o, peor, como respuesta al paso
+ * (Josselyn mandó "1" a la lista vieja y el "¿Confirmo…?" que le llegó encima
+ * lo leyó como "no").
+ *
+ * Se procesa igual si pregunta algo —una pregunta sin respuesta es peor que
+ * una respuesta un poco tarde— o si es inconfundiblemente el dato del paso
+ * ("2", un correo). En la confirmación, nunca: un "sí" escrito antes de ver la
+ * fecha no puede valer por esa fecha.
+ */
+export function lateBatchNeedsTurn(status, text) {
+  if (looksLikeQuestion(text)) return true;
+  if (status === 'scheduling_confirm') return false;
+  return isObviousStepAnswer(status, text);
 }
 
 // Descuento que se aplica si el lead elige reunión por Google Meet en vez de
@@ -2081,7 +2132,10 @@ export class WhatsappBotService {
     this.inboundCounter.set(waId, (this.inboundCounter.get(waId) || 0) + 1);
 
     const pending = this.pendingMessages.get(waId) || { messages: [], timer: null };
-    if (text && text.trim()) pending.messages.push(text.trim());
+    if (text && text.trim()) {
+      pending.messages.push(text.trim());
+      pending.lastBubbleAt = Date.now();
+    }
     // Una burbuja que llega mientras ya hay buffer conserva la espera con la
     // que se abrió (la del estado en que estaba el contacto).
     pending.waitMs = pending.waitMs ?? waitMs;
@@ -2104,6 +2158,10 @@ export class WhatsappBotService {
       // dispara y el turno lee la sesión hay consultas a la base de datos, y
       // una burbuja que cayera justo ahí ya no se detectaría como posterior.
       const mark = this.inboundCounter.get(waId) || 0;
+      // ¿Todo esto lo escribió antes de recibir la última respuesta del bot?
+      // Pasa cuando la burbuja cae mientras el turno anterior se estaba
+      // armando: ver `wasWrittenBeforeLastReply`.
+      const lateBatch = wasWrittenBeforeLastReply(pending.lastBubbleAt, this.lastSentAt.get(waId));
 
       // El buffer NO se borra al disparar: el turno tarda lo que tarde el LLM
       // más la espera del gap de envío (juntos, más de diez segundos), y en
@@ -2134,7 +2192,8 @@ export class WhatsappBotService {
       // A la cola serializada: si todavía hay un turno anterior en curso para
       // este contacto, este espera a que termine (y re-evalúa el estado)
       // en vez de correr en paralelo y duplicar mensajes.
-      this.runSerialized(waId, () => this._runTurnGuarded(waId, joined, mark)).then(done, (error) => {
+      if (lateBatch) this.logActivity({ type: 'late_batch', waId, text: joined });
+      this.runSerialized(waId, () => this._runTurnGuarded(waId, joined, mark, { lateBatch })).then(done, (error) => {
         this.logActivity({ type: 'conversation_turn_failed', waId, error: error.message });
         console.error(`❌ [WhatsApp Bot] Error en el turno de conversación con ${waId}:`, error);
         done();
@@ -2187,12 +2246,12 @@ export class WhatsappBotService {
    * (bot pausado, sesión cerrada, turno obsoleto) no están en un paso de
    * agendamiento y no disparan nada.
    */
-  async _runTurnGuarded(waId, incomingText, inboundMark = null) {
+  async _runTurnGuarded(waId, incomingText, inboundMark = null, { lateBatch = false } = {}) {
     const sentBefore = this.sendCounter.get(waId) || 0;
     let failure = null;
 
     try {
-      await this.runConversationTurn(waId, incomingText, inboundMark);
+      await this.runConversationTurn(waId, incomingText, inboundMark, { lateBatch });
     } catch (error) {
       failure = error;
       this.logActivity({ type: 'turn_error_recovering', waId, text: incomingText, error: error.message });
@@ -2212,7 +2271,10 @@ export class WhatsappBotService {
       this.logActivity({ type: 'turn_recovery_session_failed', waId, error: error.message });
     }
 
-    const owesReply = session?.bot_enabled && SCHEDULING_STATUSES.includes(session.status);
+    // Una burbuja tardía que el turno decidió no contestar no deja ninguna
+    // pregunta colgada: la última palabra la tiene el bot, con la pregunta del
+    // paso que el contacto recién está viendo.
+    const owesReply = session?.bot_enabled && SCHEDULING_STATUSES.includes(session.status) && !(lateBatch && !failure);
     if (!owesReply) {
       if (failure) throw failure;
       return;
@@ -2237,7 +2299,7 @@ export class WhatsappBotService {
     }
   }
 
-  async runConversationTurn(waId, incomingText, inboundMark = null) {
+  async runConversationTurn(waId, incomingText, inboundMark = null, { lateBatch = false } = {}) {
     let session = await this.getSession(waId);
 
     // El lead pudo graduar al Funnel de Ventas mientras este mensaje esperaba
@@ -2278,8 +2340,8 @@ export class WhatsappBotService {
     // caso no se corre otro turno de conversación libre: se redirige el
     // mensaje al handler que corresponde al estado real.
     if (session && session.status !== 'active') {
-      if (SCHEDULING_STATUSES.includes(session.status)) return this.handleSchedulingTurn(waId, session, incomingText);
-      if (session.status === WARMUP_STATUS) return this.handleWarmupTurn(waId, session, incomingText, { inboundMark });
+      if (SCHEDULING_STATUSES.includes(session.status)) return this.handleSchedulingTurn(waId, session, incomingText, { lateBatch });
+      if (session.status === WARMUP_STATUS) return this.handleWarmupTurn(waId, session, incomingText, { inboundMark, lateBatch });
       if (session.status === 'completed') {
         // Sesión cerrada pero con reunión agendada: el mensaje (ya agrupado)
         // se clasifica en vez de ignorarse. Sin reunión no se responde nada,
@@ -2430,6 +2492,9 @@ export class WhatsappBotService {
     if (result.reply) result.reply = collapseDuplicatePreposition(result.reply);
 
     const extracted = result.extracted || {};
+    // Qué datos faltaban ANTES de este mensaje: con eso se sabe si una burbuja
+    // tardía trajo algo nuevo (ver el final del turno).
+    const missingBefore = LATE_BATCH_DATA_KEYS.filter((key) => !answers[key]);
 
     // Red de seguridad: si este mensaje trae el patrón de un formulario de
     // Meta Ads ("¿Pregunta?: Respuesta" línea a línea), esos datos priman
@@ -2640,6 +2705,14 @@ export class WhatsappBotService {
         university: 'Perfecto 🙌 Una última cosa antes de coordinar la reunión: ¿en qué universidad estudias?'
       };
       await this.send(waId, askMissing[missingAcademic]);
+    } else if (lateBatch && !missingBefore.some((key) => answers[key]) && !looksLikeQuestion(incomingText)) {
+      // Burbuja tardía que no trajo ningún dato nuevo ni pregunta nada: el
+      // contacto tiene en pantalla la pregunta que el bot le acaba de hacer y
+      // la va a contestar. Responderle encima es la pregunta doble (Grace, el
+      // 12/10: "¿Cuál es el tema?" y, catorce segundos después, otra vez
+      // "¿Cuál es el tema…?"). Lo que dijo igual queda en el hilo que lee el
+      // LLM en el turno siguiente.
+      this.logActivity({ type: 'late_batch_reply_suppressed', waId, text: incomingText, reply: result.reply });
     } else {
       await this._sendConversationalReply(waId, result.reply, answers, history);
     }
@@ -2918,7 +2991,7 @@ export class WhatsappBotService {
    * lead que rompió el silencio para preguntar algo y recibe un menú de
    * horarios como respuesta es exactamente el bot que este cambio quita.
    */
-  async handleWarmupTurn(waId, session, incomingText, { inboundMark = null } = {}) {
+  async handleWarmupTurn(waId, session, incomingText, { inboundMark = null, lateBatch = false } = {}) {
     const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
     const text = String(incomingText || '').trim();
 
@@ -2950,7 +3023,7 @@ export class WhatsappBotService {
     // vuelva a agendar se le recalculan los bloques.
     delete answers.__warmupSlot;
     await this.updateSession(waId, { status: 'active', answers: JSON.stringify(answers) });
-    return this.runConversationTurn(waId, incomingText, inboundMark);
+    return this.runConversationTurn(waId, incomingText, inboundMark, { lateBatch });
   }
 
   /**
@@ -3541,9 +3614,16 @@ Enlace: ${meeting.meet_link}` : '';
    *   - Solo pregunta → se responde y se retoma el paso en el mismo mensaje,
    *     sin cambiar de estado ni tratar el texto como un dato inválido.
    */
-  async handleSchedulingTurn(waId, session, text) {
+  async handleSchedulingTurn(waId, session, text, { lateBatch = false } = {}) {
     const { scheduling } = this._readScheduling(session);
     const trimmed = (text || '').trim();
+
+    // Burbuja tardía: lo escribió antes de ver la pregunta de este paso (ver
+    // `lateBatchNeedsTurn`). Una negativa sí se respeta aunque llegue tarde.
+    if (lateBatch && scheduling && !this._isSchedulingRefusal(trimmed) && !lateBatchNeedsTurn(session.status, trimmed)) {
+      this.logActivity({ type: 'late_batch_ignored', waId, status: session.status, text: trimmed });
+      return;
+    }
 
     // Casos que la máquina de estados ya resuelve bien por sí sola: no se
     // gasta una llamada al LLM en ellos.

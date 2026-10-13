@@ -617,6 +617,17 @@ antes de tocar el arranque de producción.
   (`BARE_FORM_LABEL_RE`); (5) un "ok/sí/dale" **suelto** después de una propuesta es una aceptación
   (`isExplicitYes` + `answers.__awaitingYes`), no un mensaje al que responder repitiendo la pregunta
   anterior.
+  De revisar las conversaciones del 06 al 13/10 salieron más reglas:
+  **Las burbujas tardías no se contestan como respuestas.** Lo que el contacto escribe mientras el bot
+  arma su respuesta (el `finalize` tarda 10–20 s por la evaluación con IA) se procesaba después como
+  respuesta a una pregunta que todavía no había visto: "Culminé en diciembre" leído como elección de
+  horario ("No te entendí bien 🤔") y preguntas dobles en la conversación libre. El buffer marca el
+  lote como tardío si su última burbuja es anterior al último envío del bot
+  (`wasWrittenBeforeLastReply`). En el agendamiento se ignora salvo que pregunte algo o sea
+  inconfundiblemente el dato del paso, y en la confirmación nunca vale como sí
+  (`lateBatchNeedsTurn`); en la conversación libre se guarda lo extraído pero solo se contesta si
+  trajo un dato que faltaba o pregunta algo. Ese silencio es deliberado y no dispara la red de
+  `_runTurnGuarded`.
 - El **conteo de seguidores de la página de Meta** se sondea periódicamente
   (`FOLLOWER_POLL_INTERVAL_MS` en `server.js`) porque Meta no lo notifica vía webhook.
 - Los **webhooks de Meta/WhatsApp** validan la firma `X-Hub-Signature-256` contra `req.rawBody`
