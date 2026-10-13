@@ -2116,6 +2116,33 @@ app.patch('/api/leads/:id/assignee', requireAuth, requirePermission('leads.manag
 });
 
 /**
+ * Asignación masiva de responsable, setter y closer
+ * (`{ leadIds, assigneeUserId?, setterUserId?, closerUserId? }`). Un campo que
+ * no viene no se toca; null lo deja vacío. Mismo permiso que asignar de a uno.
+ */
+app.post('/api/leads/bulk-team', requireAuth, requirePermission('leads.manage_all'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const team = {};
+    if ('assigneeUserId' in body) team.assignee = body.assigneeUserId;
+    if ('setterUserId' in body) team.setter = body.setterUserId;
+    if ('closerUserId' in body) team.closer = body.closerUserId;
+
+    const { salesStatuses } = await leadService.visibilityFor(req.user);
+    const result = await leadService.bulkSetLeadTeam(body.leadIds, team, {
+      canSee: (lead) => leadService.canView(lead, req.user, salesStatuses)
+    });
+    res.json(result);
+  } catch (error) {
+    if (error.code === 'NOT_COMMERCIAL') {
+      return res.status(422).json({ error: error.message, code: error.code });
+    }
+    console.error('❌ Error en la asignación masiva:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
  * La setter y el closer de un lead, elegidos a mano desde su ficha
  * (`PATCH /api/leads/:id/setter` y `/closer`, cuerpo `{ userId }`, null = nadie).
  *

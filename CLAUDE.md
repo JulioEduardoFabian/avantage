@@ -362,7 +362,10 @@ antes de tocar el arranque de producción.
   últimas se sellan solas —al graduar y al ganar— pero también se eligen **a mano desde la ficha**
   en los dos tableros (`LeadAssignee.vue` con `role="setter"`/`"closer"`, `PATCH
   /api/leads/:id/setter` y `/closer`, bajo `leads.manage_all`); los sellos nunca pisan un valor ya
-  puesto, así que lo elegido manda.
+  puesto, así que lo elegido manda. Para repartir de a muchos está la **asignación masiva**
+  (`BulkLeadTeamModal.vue`, botón en los dos tableros, `POST /api/leads/bulk-team`): el lote son los
+  leads que el tablero muestra con sus filtros, y cada campo tiene tres estados — no cambiar, una
+  persona o dejar vacío — porque un campo que no viaja no se toca.
   Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para

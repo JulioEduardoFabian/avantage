@@ -18,6 +18,14 @@
         <button class="btn-action-secondary" @click="openCreateColumnModal()">
           <span class="btn-icon">➕</span> Nueva Etapa
         </button>
+        <button
+          v-if="hasPermission('leads.manage_all')"
+          class="btn-action-secondary"
+          title="Asignar responsable, setter y closer a varios leads a la vez"
+          @click="showBulkTeamModal = true"
+        >
+          <span class="btn-icon">👥</span> Asignación masiva
+        </button>
         <button class="btn-action-secondary" @click="fetchAll" :disabled="isLoading" title="Actualizar datos">
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
@@ -947,6 +955,15 @@
       </div>
     </div>
     <MeetingModal v-model="showMeetingModal" :lead="meetingLead" @created="onMeetingCreated" />
+
+    <!-- Asignación masiva de responsable, setter y closer sobre lo que el
+         tablero muestra con sus filtros actuales. -->
+    <BulkLeadTeamModal
+      v-if="showBulkTeamModal"
+      :leads="boardLeads"
+      @close="showBulkTeamModal = false"
+      @updated="onBulkTeamUpdated"
+    />
   </main>
 </template>
 
@@ -956,6 +973,7 @@ import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
+import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
@@ -1556,6 +1574,20 @@ function scrollBoard(direction) {
  * para no perder la paginación ni el scroll de las columnas; la ficha abierta
  * suele ser el MISMO objeto, pero no siempre, así que se refresca aparte.
  */
+/*
+ * Asignación masiva. El lote sale de lo que el tablero muestra con sus filtros
+ * actuales, así que filtrar el tablero ES elegir el lote. Al terminar se
+ * recarga todo: cambian muchas fichas a la vez y, para quien no ve todos los
+ * leads, algunas pueden dejar de ser suyas.
+ */
+const showBulkTeamModal = ref(false);
+const boardLeads = computed(() => Object.values(filteredLeadsByColumn.value).flat());
+
+function onBulkTeamUpdated() {
+  showBulkTeamModal.value = false;
+  fetchAll();
+}
+
 function onLeadAssigned(updated) {
   const lead = leads.value.find((l) => l.id === updated.id);
   if (lead) Object.assign(lead, updated);
