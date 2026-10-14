@@ -302,12 +302,16 @@ export class ScheduledMeetingService {
     return withContactLabel(await db('scheduled_meetings')
       .leftJoin('leads', 'leads.id', 'scheduled_meetings.lead_id')
       .leftJoin('users as asesor', 'asesor.id', 'scheduled_meetings.advisor_user_id')
+      // Quién la cargó sale también acá y no solo en `listRange()`: leer UNA
+      // reunión y leerla dentro del mes no pueden devolver cosas distintas.
+      .leftJoin('users as autor', 'autor.id', 'scheduled_meetings.created_by')
       .select(
         'scheduled_meetings.*',
         'leads.full_name as lead_full_name',
         'leads.phone as lead_phone',
         'asesor.name as advisor_name',
-        'asesor.email as advisor_email'
+        'asesor.email as advisor_email',
+        'autor.name as created_by_name'
       )
       .where('scheduled_meetings.id', id));
   }

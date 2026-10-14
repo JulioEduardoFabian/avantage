@@ -152,8 +152,7 @@
               <span v-if="meeting.topic" class="calendar-meeting-topic">{{ meeting.topic }}</span>
               <span class="calendar-meeting-meta">
                 <i class="calendar-chip-dot" :style="{ background: avatarColor(meeting.advisor_name) }"></i>
-                {{ meeting.advisor_name || 'Sin asesor' }} ·
-                {{ meeting.source === 'manual' ? 'cargada a mano' : 'agendada por el bot' }}
+                {{ meeting.advisor_name || 'Sin asesor' }} · {{ originOf(meeting) }}
               </span>
               <span v-if="meeting.lead_phone" class="calendar-meeting-meta">📱 {{ meeting.lead_phone }}</span>
               <a
@@ -224,6 +223,7 @@
             :key="bloque.meeting.id"
             class="dayview-meeting"
             :style="bloque.style"
+            :title="originOf(bloque.meeting)"
           >
             <span class="dayview-meeting-bar" :style="{ background: avatarColor(bloque.meeting.advisor_name) }"></span>
             <div class="dayview-meeting-body">
@@ -578,6 +578,25 @@ function hourOf(value) {
  */
 function clientOf(meeting) {
   return meeting.contact_label || meeting.lead_topic || meeting.topic || 'Reunión';
+}
+
+/**
+ * De dónde salió la reunión. La manual dice **quién** la cargó
+ * (`created_by_name`, que ya viaja con cada fila): el asesor que figura al lado
+ * es a quien se le agendó, no quien la agendó, y con la agenda compartida —
+ * cualquiera del área comercial puede agendarle a cualquiera — esos dos casi
+ * nunca son la misma persona. Sin esto no había forma de saber a quién
+ * preguntarle por una cita que apareció en el calendario.
+ *
+ * Una reunión sin autor conocido (las anteriores a que se guardara, o las de un
+ * usuario ya dado de baja) dice "cargada a mano" a secas en vez de inventar un
+ * nombre.
+ */
+function originOf(meeting) {
+  if (meeting.source !== 'manual') return 'agendada por el bot';
+  return meeting.created_by_name
+    ? `cargada a mano por ${meeting.created_by_name}`
+    : 'cargada a mano';
 }
 
 function chipTitle(meeting) {

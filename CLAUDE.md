@@ -431,6 +431,13 @@ antes de tocar el arranque de producción.
   grilla mensual. Lee `scheduled_meetings`, que dejó de ser solo del bot — `wa_id` admite nulos (una
   reunión manual no tiene conversación detrás) y se guarda `created_by`, `attendee_email` y
   `source` (`bot` | `manual`), que es lo que después deja ver si está agendando el bot o el equipo.
+  Cada reunión dice **quién la cargó** y no solo a quién: `created_by` se guarda desde que existe
+  el alta manual, y la agenda lo muestra (`originOf()` en `CalendarView.vue`, "cargada a mano por
+  Lucía"). No es un adorno: el asesor que figura al lado es a quien se le agendó, y como la agenda
+  es del equipo —cualquiera del área comercial puede agendarle a cualquiera— casi nunca son la
+  misma persona, así que sin el autor no había a quién preguntarle por una cita que apareció sola.
+  Sin autor conocido (las anteriores a que se guardara, o las de alguien dado de baja) dice
+  "cargada a mano" a secas en vez de inventar un nombre.
   Agendar a mano (`scheduledMeetingService.bookManual()`, `POST /api/meetings`) crea el evento en el
   Google Calendar **del closer**; si él no tiene su cuenta conectada, lo crea en el de quien agenda
   y lo invita por correo, para que le llegue igual. Borrarla del panel no cancela el evento en
