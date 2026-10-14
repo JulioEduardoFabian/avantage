@@ -779,6 +779,14 @@
               <h3 class="lead-modal-name">{{ getLeadFullName(selectedLead) }}</h3>
               <p class="lead-modal-subtext">
                 Canal: <strong :class="getLeadChannelInfo(selectedLead).cssClass">{{ getLeadChannelInfo(selectedLead).icon }} {{ selectedLead.source || getLeadChannelInfo(selectedLead).label }}</strong>
+                <!-- Quién lo cargó a mano: el responsable comercial que figura
+                     abajo se asigna aparte y casi nunca es el que registró la
+                     ficha, así que sin esto no hay a quién preguntarle por lo
+                     que el lead trae escrito. Solo lo tienen las altas manuales;
+                     en las demás el canal ya dice de dónde salió. -->
+                <template v-if="selectedLead.created_by_name">
+                  · Cargado por <strong>{{ selectedLead.created_by_name }}</strong>
+                </template>
                 · Registrado: {{ formatDate(selectedLead.created_at) }}
               </p>
             </div>

@@ -562,6 +562,9 @@
               <div class="drawer-row"><span class="lbl">Provincia:</span> <span class="val">{{ detailLead.province || '—' }}</span></div>
               <div class="drawer-row"><span class="lbl">Dirección:</span> <span class="val">{{ detailLead.address || '—' }}</span></div>
               <div class="drawer-row"><span class="lbl">Canal:</span> <span class="val">{{ detailLead.source || '—' }}</span></div>
+              <!-- Solo las altas manuales tienen autor; en las demás el canal ya
+                   dice de dónde salió la ficha. -->
+              <div v-if="detailLead.created_by_name" class="drawer-row"><span class="lbl">Cargado por:</span> <span class="val">{{ detailLead.created_by_name }}</span></div>
             </div>
           </div>
 

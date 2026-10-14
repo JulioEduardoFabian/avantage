@@ -388,6 +388,14 @@ antes de tocar el arranque de producción.
   tablero y por eso lo vuelve a cargar de buena fe. De una ficha ajena viaja un **resumen**
   (`findDuplicates()`: nombre, celular, documento, etapa y de quién es) y nunca el lead, y `visible`
   dice si además la puede abrir, para no ofrecerle un enlace que `requireLeadVisible` le va a negar.
+  La ficha dice además **quién cargó el lead a mano** (`leads.created_by`, escrito solo por
+  `registerManualLead()`; viaja como `created_by_name` y se muestra al lado del canal en el modal
+  del Setter Funnel y en la ficha de la Base de Datos). No es lo mismo que el responsable comercial
+  que figura al lado: ese se asigna aparte y el que reparte puede cambiarlo, así que sin el autor
+  una ficha incompleta que apareció en el tablero no tiene a quién consultarle. Lo que entró por el
+  bot, por Meta o por el evaluador **no tiene autor** y ahí la ficha calla: el canal ya dice de
+  dónde salió, e inventar un nombre es peor que no decir nada. Es la misma columna y las mismas
+  razones que la de la reunión cargada a mano en `scheduled_meetings`.
   En pantalla el aviso sale **mientras se escribe** (`GET /api/leads/check-duplicate`, el composable
   `src/leadDuplicateCheck.js` y el componente `LeadDuplicateAlert.vue`, compartidos por las tres
   pantallas que piden esos dos datos): un error recién al apretar "Registrar" llega después de haber

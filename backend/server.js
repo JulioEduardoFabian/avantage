@@ -1932,7 +1932,7 @@ app.post('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.v
       return res.status(400).json({ error: 'El nombre completo y el número de celular son requeridos.' });
     }
 
-    const prospect = await leadService.registerManualLead(req.body, { viewer: req.user });
+    const prospect = await leadService.registerManualLead(req.body, { actor: req.user });
     console.log(`👤 [Prospectos] Nuevo prospecto registrado #${prospect.id} (${name})`);
     res.status(201).json({ prospect, lead: prospect, message: 'Prospecto registrado exitosamente.' });
   } catch (error) {

@@ -202,6 +202,7 @@ export class LeadService {
     province,
     address,
     assignedTo,
+    createdBy,
     source,
     status,
     metaLeadgenId,
@@ -244,6 +245,9 @@ export class LeadService {
       address: address || null,
       assigned_to: assignedUser ? assignedUser.name : assignedText,
       assigned_user_id: assignedUser ? assignedUser.id : null,
+      // Solo el alta manual trae autor: lo que entra por el bot, por Meta o por
+      // el evaluador no lo cargó nadie (ver la migración de `created_by`).
+      created_by: createdBy || null,
       source: source || 'Chatbot Web',
       status: status || 'nuevo',
       meta_leadgen_id: metaLeadgenId || null,
@@ -274,6 +278,7 @@ export class LeadService {
       province: data.province,
       address: data.address,
       assignedTo: data.assignedTo || data.assigned_to || 'Kevin',
+      createdBy: data.createdBy || null,
       source: data.source || 'Manual',
       status: data.status || 'nuevo',
       additionalNotes: data.additionalNotes || data.additional_notes || null,
@@ -367,15 +372,17 @@ export class LeadService {
    * la regla del módulo: el día que haya un tercer formulario de alta, el tope
    * viene puesto.
    *
-   * `viewer` es solo para el aviso: dice de cuál de las fichas repetidas la
-   * pantalla puede ofrecer un enlace y de cuál tiene que decir "no está en tu
-   * cartera". Lo que se rechaza no depende de quién mire — el duplicado que más
-   * daño hace es justamente el que esa persona no ve.
+   * `actor` es quien está cargando, y se usa para dos cosas distintas: queda
+   * escrito en `created_by` —la ficha dice a quién preguntarle por lo que se
+   * cargó a mano— y decide de cuál de las fichas repetidas la pantalla puede
+   * ofrecer un enlace y de cuál tiene que decir "no está en tu cartera". Lo que
+   * se RECHAZA no depende de quién mire: el duplicado que más daño hace es
+   * justamente el que esa persona no ve.
    */
-  async registerManualLead(data, { viewer = null } = {}) {
-    const duplicates = await this.findDuplicates({ phone: data.phone, dni: data.dni, viewer });
+  async registerManualLead(data, { actor = null } = {}) {
+    const duplicates = await this.findDuplicates({ phone: data.phone, dni: data.dni, viewer: actor });
     if (duplicates.length > 0) throw duplicateLeadError(duplicates);
-    return this.createProspect(data);
+    return this.createProspect({ ...data, createdBy: actor?.id || null });
   }
 
   /**
@@ -415,12 +422,16 @@ export class LeadService {
         // Quién lo pasó al funnel de ventas y quién lo cerró: los dos sellos se
         // leen por nombre desde la ficha y desde Comisiones.
         'setter.name as setter_name',
-        'closer.name as closer_name'
+        'closer.name as closer_name',
+        // Quién lo cargó a mano, para que la ficha diga a quién preguntarle.
+        // Solo lo tienen los leads del alta manual (ver `created_by`).
+        'autor.name as created_by_name'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
       .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
+      .leftJoin('users as autor', 'autor.id', 'leads.created_by')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
@@ -684,12 +695,14 @@ ${note}` : note;
         'asesor.name as assigned_user_name',
         'asesor.email as assigned_user_email',
         'setter.name as setter_name',
-        'closer.name as closer_name'
+        'closer.name as closer_name',
+        'autor.name as created_by_name'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
       .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
+      .leftJoin('users as autor', 'autor.id', 'leads.created_by')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
