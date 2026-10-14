@@ -457,6 +457,19 @@ antes de tocar el arranque de producción.
   (`BulkLeadTeamModal.vue`, botón en los dos tableros, `POST /api/leads/bulk-team`): el lote son los
   leads que el tablero muestra con sus filtros, y cada campo tiene tres estados — no cambiar, una
   persona o dejar vacío — porque un campo que no viaja no se toca.
+  Desde el **Funnel de Ventas el lote son los DOS tableros**: sus columnas más los leads que
+  todavía están en el Setter Funnel, agrupados por su etapa y pasados por los mismos filtros de la
+  barra (`setterGroups` en `LeadsView.vue`). Repartir es un solo trabajo, y hacerlo dos veces —una
+  por pantalla— es como se termina con la mitad del equipo sin leads; además el que reparte
+  (`leads.manage_all`) es el único que ve los dos tableros completos, así que es el único que puede
+  hacerlo de una sola vez. El modal acepta grupos de más de un tablero (`group.board`) y recién ahí
+  dibuja el selector «Tablero» y antepone su nombre a la etapa de cada fila —«Cita Agendada» existe
+  en los dos—; el Setter Funnel sigue abriendo el mismo modal con un solo tablero y no ve ninguna de
+  las dos cosas. Las etiquetas de las etapas del setter salen de `src/setterFunnelColumns.js`, que
+  es donde viven esas columnas (en `localStorage`, a diferencia de las de Ventas, que son
+  `funnel_columns`): con la lista copiada en la otra pantalla, una etapa renombrada se llamaría
+  distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
+  de desaparecer: un lead que no se lista no se puede repartir.
   Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para

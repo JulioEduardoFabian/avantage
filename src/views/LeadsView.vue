@@ -19,7 +19,7 @@
           v-if="hasPermission('leads.manage_all')"
           class="btn-action-secondary"
           title="Asignar responsable, setter y closer a varios leads a la vez"
-          @click="showBulkTeamModal = true"
+          @click="openBulkTeamModal()"
         >
           <span class="btn-icon">👥</span> Asignación masiva
         </button>
@@ -573,8 +573,10 @@
     <!-- Agendar una reunión sin salir del funnel: el mismo modal del Calendario. -->
     <MeetingModal v-model="showMeetingModal" :lead="meetingLead" @created="onMeetingCreated" />
 
-    <!-- Asignación masiva de responsable, setter y closer sobre lo que el
-         tablero muestra con sus filtros actuales. -->
+    <!-- Asignación masiva de responsable, setter y closer. El lote son los dos
+         tableros a la vez —este y el Setter Funnel— con los filtros actuales:
+         repartir es un solo trabajo y partirlo en dos pantallas es como se
+         termina con leads que no son de nadie. -->
     <BulkLeadTeamModal
       v-if="showBulkTeamModal"
       :groups="boardGroups"
@@ -1177,6 +1179,7 @@ import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
+import { loadSetterColumns } from '../setterFunnelColumns.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
 const DEFAULT_COLUMNS = [
@@ -1555,6 +1558,40 @@ const avgViabilityScore = computed(() => {
   return Math.round(sum / scored.length);
 });
 
+/**
+ * Los filtros de la barra (texto y viabilidad) aplicados a UN lead.
+ *
+ * Se escribe una vez porque lo usan dos cosas: las columnas del tablero y el
+ * lote de la asignación masiva, que además incluye los leads del Setter Funnel
+ * —los que este tablero no dibuja—. Dos copias de este filtro es como se llega
+ * a que el reparto muestre leads que la búsqueda ya había descartado.
+ */
+function matchesBoardFilters(lead) {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (query) {
+    const cleanId = query.replace(/^#/, '');
+    const matchId = String(lead.id || '').includes(cleanId);
+    const matchName = (lead.full_name || '').toLowerCase().includes(query);
+    const matchTopic = (lead.topic || '').toLowerCase().includes(query);
+    const matchEmail = (lead.email || '').toLowerCase().includes(query);
+    const matchPhone = (lead.phone || '').toLowerCase().includes(query);
+    const matchField = (lead.field_of_study || '').toLowerCase().includes(query);
+    const matchAcademic = (lead.academic_level || '').toLowerCase().includes(query);
+    const matchNotes = (lead.additional_notes || '').toLowerCase().includes(query);
+    const matchAssigned = (lead.assigned_to || '').toLowerCase().includes(query);
+    if (!matchId && !matchName && !matchTopic && !matchEmail && !matchPhone && !matchField && !matchAcademic && !matchNotes && !matchAssigned) return false;
+  }
+
+  if (selectedViabilityFilter.value !== 'all') {
+    const lvl = (lead.viability_level || '').toLowerCase();
+    if (selectedViabilityFilter.value === 'alta' && !lvl.includes('alta')) return false;
+    if (selectedViabilityFilter.value === 'media' && !lvl.includes('media')) return false;
+    if (selectedViabilityFilter.value === 'baja' && !lvl.includes('baja')) return false;
+  }
+
+  return true;
+}
+
 // Leads filtrados agrupados por columna
 const filteredLeadsByColumn = computed(() => {
   const grouped = {};
@@ -1562,31 +1599,8 @@ const filteredLeadsByColumn = computed(() => {
     grouped[col.key] = [];
   }
 
-  const query = searchQuery.value.trim().toLowerCase();
-
   for (const lead of visibleLeads.value) {
-    // Filtro por texto multicampo (incluyendo nombre completo, tema, email, celular, etc.)
-    if (query) {
-      const cleanId = query.replace(/^#/, '');
-      const matchId = String(lead.id || '').includes(cleanId);
-      const matchName = (lead.full_name || '').toLowerCase().includes(query);
-      const matchTopic = (lead.topic || '').toLowerCase().includes(query);
-      const matchEmail = (lead.email || '').toLowerCase().includes(query);
-      const matchPhone = (lead.phone || '').toLowerCase().includes(query);
-      const matchField = (lead.field_of_study || '').toLowerCase().includes(query);
-      const matchAcademic = (lead.academic_level || '').toLowerCase().includes(query);
-      const matchNotes = (lead.additional_notes || '').toLowerCase().includes(query);
-      const matchAssigned = (lead.assigned_to || '').toLowerCase().includes(query);
-      if (!matchId && !matchName && !matchTopic && !matchEmail && !matchPhone && !matchField && !matchAcademic && !matchNotes && !matchAssigned) continue;
-    }
-
-    // Filtro por nivel de viabilidad
-    if (selectedViabilityFilter.value !== 'all') {
-      const lvl = (lead.viability_level || '').toLowerCase();
-      if (selectedViabilityFilter.value === 'alta' && !lvl.includes('alta')) continue;
-      if (selectedViabilityFilter.value === 'media' && !lvl.includes('media')) continue;
-      if (selectedViabilityFilter.value === 'baja' && !lvl.includes('baja')) continue;
-    }
+    if (!matchesBoardFilters(lead)) continue;
 
     // Ubicar en columna correspondiente — un lead "graduado" del Setter
     // Funnel (cita_agendada) entra por la columna que le corresponda como
@@ -1933,11 +1947,60 @@ async function fetchAll() {
  * leads, algunas pueden dejar de ser suyas.
  */
 const showBulkTeamModal = ref(false);
-const boardGroups = computed(() => columns.value.map((col) => ({
-  key: col.key,
-  label: `${col.icon || ''} ${col.label}`.trim(),
-  leads: filteredLeadsByColumn.value[col.key] || []
-})));
+
+/* Las columnas del Setter Funnel se releen al abrir: se editan en la otra
+   pantalla y se guardan en `localStorage`, así que una etapa renombrada tiene
+   que verse acá sin recargar el panel. */
+function openBulkTeamModal() {
+  setterColumns.value = loadSetterColumns();
+  showBulkTeamModal.value = true;
+}
+const SALES_BOARD = { key: 'ventas', label: 'Funnel de Ventas' };
+const SETTER_BOARD = { key: 'setter', label: 'Setter Funnel' };
+
+/**
+ * Los leads que este tablero NO dibuja porque todavía están en el Setter
+ * Funnel, agrupados por su etapa y pasados por los mismos filtros de la barra.
+ *
+ * Van al lote de la asignación masiva aunque no se vean en el Kanban: repartir
+ * es un solo trabajo, y tener que hacerlo dos veces —una por pantalla— es como
+ * se termina con la mitad del equipo sin leads. Las etiquetas salen de las
+ * columnas que el Setter Funnel tiene configuradas (`loadSetterColumns()`), no
+ * de una lista propia, para que una etapa renombrada no se llame distinto en
+ * cada pantalla. Lo que no cae en ninguna columna conocida se agrupa aparte en
+ * vez de desaparecer: un lead que no se lista no se puede repartir.
+ */
+const setterColumns = ref(loadSetterColumns());
+
+const setterGroups = computed(() => {
+  const salesIds = new Set(visibleLeads.value.map((lead) => lead.id));
+  const pendientes = leads.value.filter((lead) => !salesIds.has(lead.id) && matchesBoardFilters(lead));
+  if (pendientes.length === 0) return [];
+
+  const grupos = setterColumns.value.map((col) => ({
+    key: `setter:${col.key}`,
+    label: `${col.icon || ''} ${col.label}`.trim(),
+    board: SETTER_BOARD,
+    leads: pendientes.filter((lead) => lead.status === col.key)
+  })).filter((grupo) => grupo.leads.length > 0);
+
+  const agrupados = new Set(grupos.flatMap((grupo) => grupo.leads.map((lead) => lead.id)));
+  const sueltos = pendientes.filter((lead) => !agrupados.has(lead.id));
+  if (sueltos.length > 0) {
+    grupos.push({ key: 'setter:__otras__', label: 'Otras etapas', board: SETTER_BOARD, leads: sueltos });
+  }
+  return grupos;
+});
+
+const boardGroups = computed(() => [
+  ...columns.value.map((col) => ({
+    key: col.key,
+    label: `${col.icon || ''} ${col.label}`.trim(),
+    board: SALES_BOARD,
+    leads: filteredLeadsByColumn.value[col.key] || []
+  })),
+  ...setterGroups.value
+]);
 
 function onBulkTeamUpdated() {
   showBulkTeamModal.value = false;

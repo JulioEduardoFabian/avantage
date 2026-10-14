@@ -996,70 +996,12 @@ import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
+import { DEFAULT_SETTER_COLUMNS, loadSetterColumns as readSetterColumns, saveSetterColumns } from '../setterFunnelColumns.js';
 
 /** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
 const MEDIA_BODY_PLACEHOLDER_RE = /^\[(Imagen|Video|Audio|Documento|Sticker)\]$/;
 
 // Etapas predeterminadas especializadas para Setter Funnel
-const DEFAULT_SETTER_COLUMNS = [
-  {
-    key: 'conversacion_abierta',
-    label: 'Conversación Abierta',
-    icon: '💬',
-    color: '#2C8C99',
-    final: false,
-    position: 0
-  },
-  {
-    key: 'calificando',
-    label: 'En Calificación',
-    icon: '🎯',
-    color: '#6F8125',
-    final: false,
-    position: 1
-  },
-  {
-    key: 'congelado',
-    label: 'Congelado',
-    icon: '🧊',
-    color: '#8D9199',
-    final: false,
-    position: 2
-  },
-  {
-    key: 'cita_agendada',
-    label: 'Cita Agendada',
-    icon: '📅',
-    color: '#C9922E',
-    final: false,
-    position: 3
-  },
-  {
-    key: 'transferido_closer',
-    label: 'Transferido a Closer',
-    icon: '🤝',
-    color: '#56624A',
-    final: false,
-    position: 4
-  },
-  {
-    key: 'ganado',
-    label: 'Ganado / Cerrado',
-    icon: '🏆',
-    color: '#2F7D5A',
-    final: true,
-    position: 5
-  },
-  {
-    key: 'descartado',
-    label: 'No Califica / Sin Resp.',
-    icon: '🚫',
-    color: '#B23A45',
-    final: false,
-    position: 6
-  }
-];
-
 const PRESET_EMOJIS = ['💬', '🎯', '📅', '🤝', '🏆', '🚫', '💚', '📘', '📸', '📞', '🆕', '📋', '⏳', '⭐', '⚡', '💰'];
 
 const PRESET_COLORS = [
@@ -1955,27 +1897,11 @@ function confirmResetColumns() {
 }
 
 function persistSetterColumns() {
-  try {
-    localStorage.setItem('setter_funnel_columns_v2', JSON.stringify(columns.value));
-  } catch (e) {
-    console.warn('No se pudo guardar columnas en localStorage:', e);
-  }
+  saveSetterColumns(columns.value);
 }
 
 function loadSetterColumns() {
-  try {
-    const saved = localStorage.getItem('setter_funnel_columns_v2');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        columns.value = parsed;
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn('Error al cargar columnas guardadas:', e);
-  }
-  columns.value = JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
+  columns.value = readSetterColumns();
 }
 
 /**
