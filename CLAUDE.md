@@ -470,6 +470,13 @@ antes de tocar el arranque de producción.
   `funnel_columns`): con la lista copiada en la otra pantalla, una etapa renombrada se llamaría
   distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
   de desaparecer: un lead que no se lista no se puede repartir.
+  En «Responsable» y «Setter» el desplegable lista **solo a los setters** (`isSetter()` en
+  `src/data/commercialTeam.js`, por el nombre del rol): el área comercial se define por permiso, y
+  por eso ahí aparecían también los administradores —que lo tienen por tenerlos todos, no porque
+  trabajen leads— y elegir uno por error deja el lote a nombre de alguien que no lo va a trabajar.
+  La palabra se busca suelta, así que «Setter Junior» entra solo. «Closer» sigue con el área
+  completa: ese es el otro oficio. El servidor no cambia —`bulkSetLeadTeam()` sigue aceptando a
+  cualquiera del área comercial—: esto acota lo que se OFRECE, no lo que es válido.
   Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para

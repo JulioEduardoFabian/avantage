@@ -65,11 +65,15 @@
             <span class="form-label">{{ field.label }}</span>
             <select v-model="choice[field.key]" class="form-select">
               <option :value="KEEP">No cambiar</option>
-              <option v-for="user in team" :key="user.id" :value="user.id">
+              <option v-for="user in optionsFor(field)" :key="user.id" :value="user.id">
                 {{ user.name }} — {{ user.role_name }}
               </option>
               <option :value="CLEAR">{{ field.clearLabel }}</option>
             </select>
+            <!-- Un desplegable con una sola opción no dice por qué está vacío. -->
+            <small v-if="field.onlySetters && optionsFor(field).length === 0" class="bulk-hint">
+              Nadie tiene el rol Setter todavía.
+            </small>
           </label>
         </div>
         <p v-if="teamError" class="bulk-error">⚠️ {{ teamError }}</p>
@@ -123,7 +127,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
-import { commercialTeam as team, loadCommercialTeam } from '../data/commercialTeam.js';
+import { commercialTeam as team, loadCommercialTeam, setterTeam } from '../data/commercialTeam.js';
 
 const props = defineProps({
   /**
@@ -187,11 +191,24 @@ const emit = defineEmits(['close', 'updated']);
  */
 const KEEP = '__keep__';
 const CLEAR = '__clear__';
+/*
+ * `onlySetters`: el trabajo del setter se reparte entre setters. En
+ * «Responsable» y «Setter» la lista son los usuarios con ese rol y no el área
+ * comercial entera, porque ahí aparecían también los administradores —que
+ * tienen el permiso por tenerlos todos, no porque trabajen leads— y elegir uno
+ * por error deja el lote a nombre de alguien que no lo va a trabajar. «Closer»
+ * sigue con el área completa: ese es el otro oficio.
+ */
 const FIELDS = [
-  { key: 'assigneeUserId', label: '🙋 Responsable', clearLabel: 'Dejar sin asignar' },
-  { key: 'setterUserId', label: '🎯 Setter', clearLabel: 'Dejar sin setter' },
+  { key: 'assigneeUserId', label: '🙋 Responsable', clearLabel: 'Dejar sin asignar', onlySetters: true },
+  { key: 'setterUserId', label: '🎯 Setter', clearLabel: 'Dejar sin setter', onlySetters: true },
   { key: 'closerUserId', label: '🤝 Closer', clearLabel: 'Dejar sin closer' }
 ];
+
+/** Los usuarios que puede elegir este campo. */
+function optionsFor(field) {
+  return field.onlySetters ? setterTeam.value : team.value;
+}
 
 const choice = reactive({ assigneeUserId: KEEP, setterUserId: KEEP, closerUserId: KEEP });
 const selected = ref(new Set());
@@ -361,6 +378,11 @@ onMounted(() => {
 .bulk-search {
   flex: 1;
   min-width: 180px;
+}
+
+.bulk-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 .bulk-count {
