@@ -69,6 +69,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261028000000_alter_tasks_add_deliverable_id.js` | Agrega `tasks.deliverable_id`: de qué entregable es cada tarea. Convierte un entregable en lo que de verdad es, un **paquete de trabajo** con su avance propio (hechas/total), y conecta las dos listas del proyecto —tareas y entregas— que hasta ahora no se hablaban. Es **opcional** (hay tareas internas que no corresponden a ninguna entrega) y va con ON DELETE SET NULL, no CASCADE: quitar un entregable del plan no puede borrar el trabajo ya registrado. |
 | `20261029000000_create_project_settings.js` | Crea `project_settings` (fila única): la configuración del módulo de Proyectos. Por ahora solo `notice_email`, el correo al que llega el aviso de "se creó un proyecto nuevo" — un proyecto nace casi siempre solo, al cerrarse una venta, así que nadie se enteraba hasta entrar a mirar. Mismo patrón y mismas razones que `deliverable_settings`: un solo destinatario y en la base, no en el `.env`, porque cambia cuando cambia quién ocupa el puesto. |
 | `20261030000000_alter_whatsapp_bot_sessions_add_paused_alert.js` | Agrega `whatsapp_bot_sessions.paused_alert_at`: cuándo se avisó por última vez de que un contacto escribió con el bot **pausado**. Con el bot apagado (alguien respondió a mano, o se mandó una plantilla de reactivación) esos mensajes solo quedaban en la bitácora interna y no le llegaban a nadie — el 01/10 así se quedó sin respuesta un lead que preguntó el precio dos veces. La marca va en la base y no en memoria porque el proceso se reinicia en cada despliegue y porque el aviso tiene que espaciarse aunque lleguen diez burbujas seguidas. |
+| `20261109000000_alter_leads_add_deal_cancelled.js` | Agrega `leads.deal_cancelled_at` / `deal_cancelled_by` / `deal_cancelled_reason`: la venta que se firmó y después **no llegó a concretarse**. Hasta ahora no había forma de decirlo, así que el cronograma de un cliente que se retractó se quedaba para siempre en Cobranzas y su saldo seguía contando como «por cobrar». Se marca el **cierre** y no cada cuota —el trato es del lead, y marcando fila por fila basta olvidar una para que el cliente reaparezca— y **no se toca `finance_income.estado`**: lo ya verificado entró de verdad y sigue en los libros (una devolución es un egreso del Libro Diario), y deshacerlo es borrar la marca, sin tener que recordar en qué estado estaba cada cuota. |
 
 ### Cronograma de pagos y entregables bloqueados
 
@@ -93,6 +94,15 @@ proyecto nunca estuvo bloqueado.
 Una cuota ya cobrada (`estado` distinto de `pendiente`, o con comprobantes subidos) queda
 bloqueada: no se puede borrar del cronograma ni cambiarle el monto, porque el asiento tiene que
 seguir cuadrando con el banco. La suma del plan nunca puede superar `leads.total_amount`.
+
+Cuando una venta firmada **no llega a concretarse** (el cliente se retracta), el cierre se marca
+con `leads.deal_cancelled_at` / `_by` / `_reason`. Se marca el CIERRE y no cada cuota: el trato es
+del lead —ahí viven el precio total y el cronograma—, así que la decisión se escribe una vez y no
+N; y `finance_income.estado` no se toca, de modo que lo ya verificado sigue contando en los libros
+(si hubo devolución, eso es un egreso del Libro Diario) y deshacerlo es borrar la marca, sin tener
+que recordar en qué estado estaba cada cuota. Quien lee la marca lo hace en cada consulta:
+Cobranzas excluye esos leads de la lista de a quién llamar y la pestaña INGRESOS saca lo que ya no
+va a entrar de «Por cobrar», mostrándolo aparte como «No concretado».
 
 El **cronograma de entregas** del contrato es otra cosa y por eso tiene su propia tabla,
 `contract_deliverables` (`contract_id`, `position`, `due_date`, `avance`): una entrega es un

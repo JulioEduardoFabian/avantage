@@ -1031,6 +1031,31 @@ app.patch('/api/finance/leads/:id/total-amount', requireAuth, requirePermission(
   }
 });
 
+/**
+ * Da por caído un cierre, o lo reactiva. Es la salida para la venta que se
+ * firmó y después se cayó: las cuotas se quedan (lo ya cobrado tiene que
+ * seguir en los libros) pero Cobranzas deja de perseguirlas y Finanzas deja de
+ * esperar ese saldo.
+ *
+ * Va bajo `finance.view` como el precio total: las dos son decisiones sobre el
+ * dinero de un cierre y se toman desde la misma fila de la misma pantalla.
+ */
+app.patch('/api/finance/leads/:id/deal-cancelled', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const cancelled = Boolean(req.body?.cancelled);
+    const settlement = await financeLedgerService.setDealCancelled(req.params.id, {
+      cancelled,
+      reason: req.body?.reason,
+      actorId: req.user.id
+    });
+    console.log(`\ud83d\udeab [Finanzas] Cierre del lead #${req.params.id} ${cancelled ? 'dado por caído' : 'reactivado'} por ${req.user.email || req.user.id}`);
+    res.json({ settlement });
+  } catch (error) {
+    console.error('\u274c Error al marcar el cierre como no concretado:', error);
+    res.status(400).json({ error: error.message || 'Error al marcar el cierre.' });
+  }
+});
+
 // --- Ingresos ---
 app.get('/api/finance/income', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {

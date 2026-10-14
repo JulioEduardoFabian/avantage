@@ -1,5 +1,5 @@
 <template>
-  <div class="deal-plan-card" :class="{ 'is-collapsed': collapsed }">
+  <div class="deal-plan-card" :class="{ 'is-collapsed': collapsed, 'is-cancelled': group.cancelled }">
     <!-- Main Header Bar -->
     <div class="deal-header-main">
       <!-- Toggle chevron -->
@@ -19,7 +19,13 @@
           <span class="deal-code-badge" title="Código de cliente">{{ group.code }}</span>
           <span v-if="group.leadDni" class="deal-dni-badge">DNI {{ group.leadDni }}</span>
           <span class="deal-cuotas-badge">{{ group.payments.length }} {{ group.payments.length === 1 ? 'cuota' : 'cuotas' }}</span>
-          <span v-if="blockingPayment" class="deal-gate-badge" title="La 1ra cuota no está verificada">
+          <!-- La insignia va primero y en rojo: con el cierre caído, todo lo
+               demás de la fila (el saldo, el bloqueo del proyecto) se lee de
+               otra manera. -->
+          <span v-if="group.cancelled" class="deal-cancelled-badge" title="Este cierre no llegó a concretarse">
+            🚫 No concretado
+          </span>
+          <span v-if="blockingPayment && !group.cancelled" class="deal-gate-badge" title="La 1ra cuota no está verificada">
             🔒 Proyecto bloqueado
           </span>
         </div>
@@ -101,7 +107,7 @@
       <!-- Action Button -->
       <div class="deal-actions-block">
         <button
-          v-if="group.leadId && !collapsed"
+          v-if="group.leadId && !collapsed && !group.cancelled"
           type="button"
           class="deal-add-btn"
           :class="{ 'is-open': isAdding }"
@@ -109,11 +115,75 @@
         >
           {{ isAdding ? "✕ Cancelar" : "+ Agregar cuota" }}
         </button>
+        <!-- Dar por caído un cierre es una decisión sobre plata que alguien
+             firmó: se pide el motivo en vez de resolverlo con un confirm(), y
+             se puede deshacer. -->
+        <button
+          v-if="group.leadId && !collapsed && !group.cancelled"
+          type="button"
+          class="deal-kill-btn"
+          :class="{ 'is-open': isKilling }"
+          title="El cliente no llegó a concretar: deja de esperarse este cobro"
+          @click="toggleKill"
+        >
+          {{ isKilling ? "✕ Cancelar" : "🚫 No se concretó" }}
+        </button>
+        <button
+          v-if="group.leadId && group.cancelled"
+          type="button"
+          class="deal-revive-btn"
+          :disabled="isSavingKill"
+          title="Volver a contar este cierre en Finanzas y en Cobranzas"
+          @click="reviveDeal"
+        >
+          {{ isSavingKill ? "…" : "↩ Reactivar" }}
+        </button>
       </div>
     </div>
 
+    <!-- Qué significa exactamente "no concretado": lo que se deja de esperar y
+         lo que sigue contando. Sin esto, quien lo ve no sabe si el sistema se
+         olvidó también del dinero que sí entró. -->
+    <div v-if="group.cancelled && !collapsed" class="deal-cancelled-banner">
+      <span class="banner-icon">🚫</span>
+      <span class="banner-text">
+        <strong>Este cierre no llegó a concretarse.</strong>
+        <template v-if="group.cancelledReason"> Motivo: {{ group.cancelledReason }}.</template>
+        <template v-if="cancelledWhen"> Marcado el {{ cancelledWhen }}</template>
+        <template v-if="group.cancelledBy"> por {{ group.cancelledBy }}</template>.
+        <br />
+        Ya no se espera cobrar <strong>S/ {{ formatAmount(unexpected) }}</strong>
+        y sale de Cobranzas.
+        <template v-if="Number(group.verificado) > 0">
+          Lo verificado (S/ {{ formatAmount(group.verificado) }}) sigue contando en Finanzas:
+          ese dinero entró de verdad.
+        </template>
+      </span>
+    </div>
+
+    <form v-if="isKilling" class="deal-kill-form" @submit.prevent="killDeal">
+      <label class="deal-field deal-kill-field">
+        <span>¿Por qué no se concretó? <em>(opcional, pero ayuda dentro de seis meses)</em></span>
+        <input
+          v-model="killReason"
+          type="text"
+          class="form-input"
+          maxlength="255"
+          placeholder="Se retractó, se fue con otra empresa, no respondió…"
+        />
+      </label>
+      <p class="deal-kill-hint">
+        Las cuotas no se borran: quedan como historia. Lo que cambia es que
+        <strong>deja de esperarse el cobro</strong> y el cliente sale de Cobranzas.
+        Se puede deshacer.
+      </p>
+      <button type="submit" class="btn-primary deal-submit-btn" :disabled="isSavingKill">
+        {{ isSavingKill ? "Guardando..." : "🚫 Sí, darlo por caído" }}
+      </button>
+    </form>
+
     <!-- Alert if initial payment blocks the project -->
-    <div v-if="blockingPayment && !collapsed" class="deal-blocker-banner">
+    <div v-if="blockingPayment && !collapsed && !group.cancelled" class="deal-blocker-banner">
       <span class="banner-icon">🔒</span>
       <span class="banner-text">
         El proyecto de este cliente sigue <strong>bloqueado</strong> hasta verificar la <strong>{{ blockingPayment.cuota }}</strong> cuota.
@@ -185,6 +255,7 @@
 import { computed, reactive, ref } from "vue";
 import { apiFetch } from "../../apiClient.js";
 import { formatAmount } from "./format.js";
+import { unexpectedAmount } from "./dealCancellation.js";
 import { BANCOS, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
 import LeadContactModal from "./LeadContactModal.vue";
 
@@ -198,6 +269,58 @@ const props = defineProps({
 const emit = defineEmits(["saved", "toggle"]);
 
 const errorMessage = ref("");
+
+/* --- Cierre que no llegó a concretarse ---------------------------------- */
+
+const isKilling = ref(false);
+const isSavingKill = ref(false);
+const killReason = ref("");
+
+/** Lo que ya no va a entrar. La resta vive en `dealCancellation.js`: la misma
+    cifra la usa la tira de totales de la pestaña. */
+const unexpected = computed(() => unexpectedAmount(props.group));
+
+const cancelledWhen = computed(() => {
+  const raw = props.group.cancelledAt;
+  if (!raw) return "";
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("es-PE", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
+});
+
+function toggleKill() {
+  isKilling.value = !isKilling.value;
+  killReason.value = "";
+  errorMessage.value = "";
+}
+
+async function setCancelled(cancelled, reason) {
+  isSavingKill.value = true;
+  errorMessage.value = "";
+  try {
+    const response = await apiFetch(`/api/finance/leads/${props.group.leadId}/deal-cancelled`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cancelled, reason }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "No se pudo guardar el cambio.");
+    isKilling.value = false;
+    emit("saved", {
+      message: cancelled
+        ? "Cierre dado por caído: sale de Cobranzas y deja de esperarse su cobro."
+        : "Cierre reactivado: vuelve a contar en Finanzas y en Cobranzas.",
+    });
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    isSavingKill.value = false;
+  }
+}
+
+const killDeal = () => setCancelled(true, killReason.value);
+const reviveDeal = () => setCancelled(false, null);
 const isAdding = ref(false);
 const isSaving = ref(false);
 const editingTotal = ref(false);
@@ -317,6 +440,96 @@ async function addPayment() {
 </script>
 
 <style scoped>
+/* Un cierre caído se lee de reojo: apagado y con el precio tachado. Sigue
+   pudiéndose abrir —las cuotas son historia y a veces hay que consultarlas—,
+   pero no compite por la atención con los cierres vivos. */
+.deal-plan-card.is-cancelled {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.deal-plan-card.is-cancelled .deal-client-name,
+.deal-plan-card.is-cancelled .deal-total-value {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.deal-plan-card.is-cancelled .deal-progress-bar { filter: grayscale(0.85); }
+
+.deal-cancelled-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid rgba(200, 85, 50, 0.5);
+  background: rgba(200, 85, 50, 0.12);
+  color: var(--accent-rose);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.deal-cancelled-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--accent-rose);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: rgba(200, 85, 50, 0.08);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-sub);
+}
+
+.deal-kill-btn,
+.deal-revive-btn {
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(200, 85, 50, 0.45);
+  background: transparent;
+  color: var(--accent-rose);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.deal-kill-btn:hover,
+.deal-revive-btn:hover { background: rgba(200, 85, 50, 0.1); }
+.deal-kill-btn.is-open { background: rgba(200, 85, 50, 0.14); }
+.deal-revive-btn { border-color: var(--border-strong); color: var(--text-sub); }
+.deal-revive-btn:hover { border-color: var(--primary); color: var(--primary); background: transparent; }
+.deal-revive-btn:disabled { opacity: 0.6; cursor: wait; }
+
+.deal-kill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.6rem;
+  padding: 0.75rem;
+  border: 1px dashed rgba(200, 85, 50, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(200, 85, 50, 0.05);
+}
+
+.deal-kill-field span { font-size: 0.78rem; color: var(--text-sub); }
+.deal-kill-field em { color: var(--text-muted); font-style: normal; }
+
+.deal-kill-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.deal-kill-form .deal-submit-btn { align-self: flex-start; }
+
 .deal-plan-card {
   display: flex;
   flex-direction: column;

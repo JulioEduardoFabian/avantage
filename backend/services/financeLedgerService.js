@@ -140,7 +140,7 @@ export class FinanceLedgerService {
    */
   async listLeadsDirectory() {
     const leads = await db('leads')
-      .select('id', 'dni', 'total_amount')
+      .select('id', 'dni', 'total_amount', 'deal_cancelled_at')
       .select(db.raw("COALESCE(NULLIF(full_name, ''), topic) as name"))
       .orderBy('name', 'asc');
 
@@ -158,7 +158,10 @@ export class FinanceLedgerService {
         ...lead,
         total_amount: total,
         registered_amount: registered,
-        balance_amount: total != null ? Math.round((total - registered) * 100) / 100 : null
+        balance_amount: total != null ? Math.round((total - registered) * 100) / 100 : null,
+        // Un cierre caído conserva su saldo (es historia), pero quien lo mira
+        // tiene que saber que ese saldo ya no se espera.
+        deal_cancelled: Boolean(lead.deal_cancelled_at)
       };
     });
   }
@@ -224,12 +227,18 @@ export class FinanceLedgerService {
     const rows = await db('finance_income')
       .leftJoin('leads', 'leads.id', 'finance_income.lead_id')
       .leftJoin('users', 'users.id', 'finance_income.created_by')
+      .leftJoin('users as cancelador', 'cancelador.id', 'leads.deal_cancelled_by')
       .select(
         'finance_income.*',
         db.raw("COALESCE(NULLIF(leads.full_name, ''), leads.topic) as lead_name"),
         'leads.dni as lead_dni',
         'leads.email as lead_email',
         'leads.phone as lead_phone',
+        // Viaja con cada cuota porque la pantalla agrupa por lead y necesita
+        // pintar el cierre caído sin pedir el directorio aparte.
+        'leads.deal_cancelled_at as lead_deal_cancelled_at',
+        'leads.deal_cancelled_reason as lead_deal_cancelled_reason',
+        'cancelador.name as lead_deal_cancelled_by_name',
         'users.name as created_by_name'
       )
       .orderBy('finance_income.fecha', 'desc')
@@ -356,9 +365,10 @@ export class FinanceLedgerService {
    * modal— y aquel es el directorio completo de Finanzas.
    */
   async getLeadSettlement(leadId) {
-    const empty = { total: null, registered: 0, remaining: null, installments: [] };
+    const empty = { total: null, registered: 0, remaining: null, installments: [], cancelled: false };
     if (!leadId) return empty;
-    const lead = await db('leads').where({ id: leadId }).select('total_amount').first();
+    const lead = await db('leads').where({ id: leadId })
+      .select('total_amount', 'deal_cancelled_at', 'deal_cancelled_reason').first();
     if (!lead) return empty;
 
     const rows = await db('finance_income')
@@ -373,6 +383,8 @@ export class FinanceLedgerService {
       total,
       registered,
       remaining: total != null ? Math.round((total - registered) * 100) / 100 : null,
+      cancelled: Boolean(lead.deal_cancelled_at),
+      cancelled_reason: lead.deal_cancelled_reason || null,
       installments: rows.map((row) => ({
         ...withIsoDates(row),
         monto: Number(row.monto),
@@ -391,6 +403,47 @@ export class FinanceLedgerService {
    */
   async ensureInitialPayment(leadId) {
     await this.#syncInitialPayment(leadId, { ensure: true });
+  }
+
+  /**
+   * Da por caído un cierre (o lo reactiva). Es lo que pasa cuando el cliente se
+   * arrepiente después de firmar: el cronograma queda ahí —es historia, y
+   * borrarlo se llevaría por delante lo que sí llegó a cobrarse— pero deja de
+   * contar como plata que se espera.
+   *
+   * Lo que cambia es UNA marca en el lead. Deliberadamente NO se tocan los
+   * estados de las cuotas:
+   *
+   *  - Lo ya `verificado` entró de verdad y tiene que seguir en los libros. Un
+   *    cierre caído no deshace un pago cobrado; si hubo devolución, eso es un
+   *    egreso del Libro Diario y se registra como tal.
+   *  - Deshacerlo es borrar la marca. Si se hubieran reescrito las cuotas,
+   *    reactivar exigiría acordarse de en qué estado estaba cada una.
+   *
+   * Quienes leen la marca lo hacen en cada consulta (Cobranzas la excluye de la
+   * lista de a quién llamar, Finanzas deja de esperar su saldo): el dato vive
+   * en un solo sitio y nadie guarda una copia derivada.
+   */
+  async setDealCancelled(leadId, { cancelled, reason = null, actorId = null } = {}) {
+    const lead = await db('leads').where({ id: leadId }).first();
+    if (!lead) throw new Error('Lead no encontrado.');
+
+    if (!cancelled) {
+      await db('leads').where({ id: leadId }).update({
+        deal_cancelled_at: null,
+        deal_cancelled_by: null,
+        deal_cancelled_reason: null
+      });
+      return this.getLeadSettlement(leadId);
+    }
+
+    const text = String(reason || '').trim();
+    await db('leads').where({ id: leadId }).update({
+      deal_cancelled_at: new Date(),
+      deal_cancelled_by: actorId || null,
+      deal_cancelled_reason: text ? text.slice(0, 255) : null
+    });
+    return this.getLeadSettlement(leadId);
   }
 
   /** El pago inicial ya registrado de un lead, si lo tiene (uno por lead). */

@@ -155,6 +155,21 @@ antes de tocar el arranque de producción.
   del `PUT /api/contracts/:id`, que imprime la tabla con el marcador `{{cronograma_pagos}}`) y desde
   Finanzas — `financeLedgerService.replaceScheduleForLead()` es el único camino, y rechaza quitar o
   cambiar el monto de una cuota ya cobrada, o pasarse de `leads.total_amount`.
+  Una venta firmada que **no llega a concretarse** (el cliente se retracta) se marca desde su propia
+  fila en INGRESOS: `leads.deal_cancelled_at` / `_by` / `_reason`,
+  `PATCH /api/finance/leads/:id/deal-cancelled` → `setDealCancelled()`. Se marca el **cierre** y no
+  cada cuota porque el trato es del lead —ahí viven el precio total y el cronograma—, así que la
+  decisión se escribe una vez: marcando fila por fila, basta olvidar una para que el cliente
+  reaparezca en Cobranzas. Y **no se toca `finance_income.estado`**: lo ya verificado entró de
+  verdad y sigue en los libros (una devolución es un egreso del Libro Diario, no un cobro que se
+  borra), y deshacerlo es borrar la marca en vez de tener que recordar en qué estado estaba cada
+  cuota. Los efectos se derivan en cada lectura, no se guardan: Cobranzas excluye esos leads
+  (`whereNull('leads.deal_cancelled_at')` en `collectionService.list()`, y `summary()` lo hereda
+  porque reusa `list()`) y la pestaña INGRESOS saca lo que ya no va a entrar de «Por cobrar» y lo
+  muestra aparte como «No concretado» — el precio pactado no se reescribe, que es historia. Esa
+  resta vive en `src/views/finance/dealCancellation.js` y no copiada en la tira de totales y en la
+  banda de la fila, que son los dos sitios que la dicen. El `getOverview()` de Finanzas no cambia:
+  ya contaba solo lo `verificado`.
   Como el dinero puede nacer por cualquiera de esos tres caminos, **el cierre de venta no da por
   hecho que la plata empieza en él**: el modal lee primero lo ya asentado
   (`getLeadSettlement()`, `GET /api/leads/:id/win-preview`), lo muestra cuota por cuota y propone

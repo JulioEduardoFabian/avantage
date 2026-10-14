@@ -96,6 +96,14 @@
                 <button type="button" class="lead-total-edit-btn" @click="startEditTotal">✎ editar precio total</button>
               </template>
             </div>
+            <!-- Avisar ANTES de que teclee el monto: una cuota nueva sobre un
+                 cierre caído se registra igual (a veces el cliente vuelve y se
+                 cobra algo), pero no lo reactiva, y descubrirlo después de
+                 guardar es peor. -->
+            <p v-if="selectedLead?.deal_cancelled" class="lead-cancelled-warning">
+              🚫 El cierre de este cliente está dado por caído. La cuota se registra igual,
+              pero el cierre no vuelve a contar hasta que lo reactives desde su fila.
+            </p>
           </div>
           <div class="form-group">
             <label class="form-label">Cuota</label>
@@ -232,10 +240,20 @@
         <div
           v-if="!bancoFilter"
           class="ledger-summary-item"
-          title="Lo que falta del precio total: cuotas pendientes más lo que ni siquiera se ha registrado"
+          title="Lo que falta del precio total: cuotas pendientes más lo que ni siquiera se ha registrado. No incluye los cierres dados por caídos"
         >
           <dt>Por cobrar</dt>
           <dd class="is-out">S/ {{ formatAmount(totals.porCobrar) }}</dd>
+        </div>
+        <!-- Solo aparece si hay algo descartado: un recuadro en cero todos los
+             días enseña a no mirarlo. -->
+        <div
+          v-if="!bancoFilter && totals.descartado > 0"
+          class="ledger-summary-item"
+          title="Cierres que no llegaron a concretarse: ese dinero ya no se espera y no entra en «Por cobrar»"
+        >
+          <dt>No concretado</dt>
+          <dd class="is-muted">S/ {{ formatAmount(totals.descartado) }}</dd>
         </div>
         <div class="ledger-summary-item">
           <dt>ITF</dt>
@@ -544,6 +562,7 @@ import { hasPermission } from "../../auth.js";
 import { isPdfReceipt, loadReceiptUrl } from "./receiptImage.js";
 import { openIncomeReceipt } from "./receiptDocument.js";
 import { dayOnly, formatAmount, formatDate } from "./format.js";
+import { agreedAmount, unexpectedAmount } from "./dealCancellation.js";
 import { BANCOS, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
 import { useLedgerTable } from "./useLedgerTable.js";
 import DealPlanHeader from "./DealPlanHeader.vue";
@@ -730,6 +749,13 @@ function groupByLead(payments) {
         leadName: row.lead_id ? (row.lead_name || `Lead #${row.lead_id}`) : "— Sin asociar —",
         leadDni: row.lead_dni || null,
         code: row.code,
+        // El cierre caído viaja con cada cuota (lo manda el join de
+        // `listIncome`), así que la marca se lee del propio lote en vez de
+        // cruzarse otra vez contra el directorio de leads.
+        cancelled: Boolean(row.lead_deal_cancelled_at),
+        cancelledAt: row.lead_deal_cancelled_at || null,
+        cancelledReason: row.lead_deal_cancelled_reason || null,
+        cancelledBy: row.lead_deal_cancelled_by_name || null,
         payments: [],
       };
       byKey.set(key, group);
@@ -807,21 +833,30 @@ const totals = computed(() => {
   let registrado = 0;
   let verificado = 0;
   let porVerificar = 0;
+  let descartado = 0;
   let itf = 0;
   for (const group of grouped.value) {
     // Un cierre sin precio total definido cuenta por lo que ya tiene registrado.
-    precioTotal += group.total ?? group.registered;
+    precioTotal += agreedAmount(group);
     registrado += group.registered;
     verificado += group.verificado;
     porVerificar += group.porVerificar;
     itf += group.itf;
+    /*
+     * Lo que un cierre caído ya no va a traer. Se cuenta aparte en vez de
+     * descontarse del precio total: el trato se pactó y esa cifra es historia,
+     * pero sumarla en "por cobrar" hace esperar una plata que nadie espera. El
+     * dinero que sí entró antes de que el cliente se cayera no se descarta.
+     */
+    if (group.cancelled) descartado += unexpectedAmount(group);
   }
   return {
     precioTotal,
     registrado,
     verificado,
     porVerificar,
-    porCobrar: Math.round((precioTotal - verificado - porVerificar) * 100) / 100,
+    descartado: Math.round(descartado * 100) / 100,
+    porCobrar: Math.round((precioTotal - verificado - porVerificar - descartado) * 100) / 100,
     itf,
   };
 });
