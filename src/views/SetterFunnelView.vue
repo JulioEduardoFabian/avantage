@@ -596,6 +596,13 @@
         <form @submit.prevent="saveNewLead" class="modal-body">
           <p v-if="leadFormError" class="info-box alert-box lead-form-error">{{ leadFormError }}</p>
 
+          <LeadDuplicateAlert
+            :duplicates="dupLeads"
+            :checking="dupChecking"
+            :openable-ids="openableDupIds"
+            @open="openDuplicateLead"
+          />
+
           <div class="lead-form-grid">
             <div class="form-group">
               <label class="form-label">Nombre completo *</label>
@@ -654,8 +661,8 @@
 
           <div class="modal-actions">
             <button type="button" class="btn-action-ghost" @click="showCreateLeadModal = false">Cancelar</button>
-            <button type="submit" class="btn-action-primary" :disabled="isSavingLead">
-              {{ isSavingLead ? 'Guardando...' : 'Registrar Lead' }}
+            <button type="submit" class="btn-action-primary" :disabled="isSavingLead || hasDupLeads">
+              {{ isSavingLead ? 'Guardando...' : hasDupLeads ? 'Ya está registrado' : 'Registrar Lead' }}
             </button>
           </div>
         </form>
@@ -975,6 +982,8 @@ import LeadNotes from '../components/LeadNotes.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
+import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
@@ -1773,6 +1782,40 @@ function saveNewColumn() {
   insertAtIndex.value = null;
 }
 
+/*
+ * Antes de cargar un lead a mano se pregunta si ese celular o ese DNI ya están
+ * en la base. El aviso sale mientras se escribe —un error recién al apretar
+ * "Registrar" llega después de haber tipeado la ficha entera— pero el tope de
+ * verdad lo pone el servidor, que responde 409 (ver `registerManualLead`): esta
+ * pantalla ve solo los leads de quien mira, y el duplicado que más daño hace es
+ * justamente el del lead que trabaja otra persona.
+ */
+const {
+  duplicates: dupLeads,
+  checking: dupChecking,
+  hasDuplicates: hasDupLeads,
+  schedule: scheduleDupCheck,
+  checkNow: checkDupNow,
+  setDuplicates: setDupLeads,
+  reset: resetDupCheck
+} = useLeadDuplicateCheck();
+
+/* Los duplicados que SÍ se pueden abrir desde este tablero: los que ya están
+   cargados en él. El resto se nombra pero no se ofrece abrir. */
+const openableDupIds = computed(() => leads.value.map((l) => l.id));
+
+watch(() => [leadForm.phone, leadForm.dni], () => {
+  if (!showCreateLeadModal.value) return;
+  scheduleDupCheck({ phone: leadForm.phone, dni: leadForm.dni });
+});
+
+function openDuplicateLead(dup) {
+  const lead = leads.value.find((l) => l.id === dup.id);
+  if (!lead) return;
+  showCreateLeadModal.value = false;
+  selectedLead.value = lead;
+}
+
 // Modal Nuevo Lead manual
 function openCreateLeadModal() {
   leadFormError.value = '';
@@ -1787,6 +1830,7 @@ function openCreateLeadModal() {
   leadForm.assignedTo = 'Kevin';
   leadForm.status = columns.value[0]?.key || 'conversacion_abierta';
   leadForm.additionalNotes = '';
+  resetDupCheck();
   showCreateLeadModal.value = true;
 }
 
@@ -1794,6 +1838,16 @@ async function saveNewLead() {
   leadFormError.value = '';
   if (!leadForm.fullName.trim() || !leadForm.phone.trim()) {
     leadFormError.value = 'El nombre completo y el celular son obligatorios.';
+    return;
+  }
+  /*
+   * Se vuelve a preguntar sin esperar el retardo: el dato pudo escribirse y
+   * guardarse en el mismo segundo, y así el aviso aparece antes de mandar un
+   * alta que el servidor va a rechazar igual.
+   */
+  const repetidos = await checkDupNow({ phone: leadForm.phone, dni: leadForm.dni });
+  if (repetidos.length) {
+    leadFormError.value = 'Ese contacto ya está registrado. Revisa las fichas de abajo.';
     return;
   }
   isSavingLead.value = true;
@@ -1817,6 +1871,13 @@ async function saveNewLead() {
       body: JSON.stringify(payload)
     });
     const data = await res.json();
+    if (res.status === 409) {
+      // El servidor es el que manda: el formulario pudo abrirse antes de que
+      // otra persona cargara ese contacto.
+      setDupLeads(data.duplicates || []);
+      leadFormError.value = data.error || 'Ese contacto ya está registrado.';
+      return;
+    }
     if (!res.ok) throw new Error(data.error || 'No se pudo registrar el lead.');
     showCreateLeadModal.value = false;
     await fetchAll();

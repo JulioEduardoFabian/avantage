@@ -221,6 +221,14 @@
 
         <!-- Formulario en 3 Columnas (Referencia 2) -->
         <form @submit.prevent="saveProspect" class="modal-body custom-scrollbar prospect-form-body">
+          <LeadDuplicateAlert
+            :duplicates="dupLeads"
+            :checking="dupChecking"
+            :openable-ids="openableDupIds"
+            :mode="isEditing ? 'edit' : 'create'"
+            @open="openDuplicateLead"
+          />
+
           <div class="prospect-three-columns-grid">
             
             <!-- ========================================== -->
@@ -497,8 +505,8 @@
             <button type="button" class="btn-footer-cancel" @click="showFormModal = false">
               ✕ Cancelar
             </button>
-            <button type="submit" class="btn-footer-submit" :disabled="isSubmitting">
-              {{ isSubmitting ? 'Guardando...' : isEditing ? '💾 ACTUALIZAR PROSPECTO' : '✓ REGISTRAR PROSPECTO' }}
+            <button type="submit" class="btn-footer-submit" :disabled="isSubmitting || hasDupLeads">
+              {{ isSubmitting ? 'Guardando...' : hasDupLeads ? '⚠ YA ESTÁ REGISTRADO' : isEditing ? '💾 ACTUALIZAR PROSPECTO' : '✓ REGISTRAR PROSPECTO' }}
             </button>
           </div>
         </form>
@@ -608,10 +616,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { careerNames } from '../data/careers.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
+import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 
 // Universidades representativas de Perú
 const PERU_UNIVERSITIES = [
@@ -657,6 +667,8 @@ const dateFilter = ref('');
 // Modales
 const showFormModal = ref(false);
 const isEditing = ref(false);
+/* La ficha tal como está guardada, para saber qué cambió de verdad al editar. */
+const editingLead = ref(null);
 const editingId = ref(null);
 const detailLead = ref(null);
 
@@ -742,16 +754,61 @@ async function fetchLeads() {
   }
 }
 
+/*
+ * El mismo tope de duplicados que el alta de los tableros: un celular o un DNI
+ * que ya está en la base se avisa mientras se escribe y el servidor lo rechaza
+ * al guardar (409), tanto al registrar como al editar la ficha — cambiarle el
+ * número a una para que coincida con otra es el mismo duplicado por otra
+ * puerta. `editingId` se excluye: nadie es duplicado de sí mismo.
+ */
+const {
+  duplicates: dupLeads,
+  checking: dupChecking,
+  hasDuplicates: hasDupLeads,
+  schedule: scheduleDupCheck,
+  checkNow: checkDupNow,
+  setDuplicates: setDupLeads,
+  reset: resetDupCheck
+} = useLeadDuplicateCheck();
+
+const openableDupIds = computed(() => leads.value.map((l) => l.id));
+
+watch(() => [formData.phone, formData.dni], () => {
+  if (!showFormModal.value) return;
+  scheduleDupCheck({ ...dupPayload(), excludeId: editingId.value });
+});
+
+/*
+ * Al registrar se pregunta por los dos datos; al editar, solo por el que cambió
+ * respecto de lo guardado (`editingLead`): una ficha que ya tenía un gemelo de
+ * antes quedaría con su propio formulario bloqueado, y no se podría ni
+ * corregirle el nombre.
+ */
+function dupPayload() {
+  if (!isEditing.value) return { phone: formData.phone, dni: formData.dni };
+  return changedIdentityFields(formData, editingLead.value);
+}
+
+function openDuplicateLead(dup) {
+  const lead = leads.value.find((l) => l.id === dup.id);
+  if (!lead) return;
+  showFormModal.value = false;
+  detailLead.value = lead;
+}
+
 function openCreateModal() {
   isEditing.value = false;
   editingId.value = null;
+  editingLead.value = null;
   resetForm();
+  resetDupCheck();
   showFormModal.value = true;
 }
 
 function openEditModal(lead) {
   isEditing.value = true;
   editingId.value = lead.id;
+  editingLead.value = lead;
   formData.fullName = lead.full_name || lead.topic || '';
   formData.phone = lead.phone || '';
   formData.email = lead.email || '';
@@ -768,6 +825,7 @@ function openEditModal(lead) {
   formData.address = lead.address || '';
   formData.source = lead.source || 'Chatbot Web';
   formData.additionalNotes = lead.additional_notes || '';
+  resetDupCheck();
   showFormModal.value = true;
 }
 
@@ -815,6 +873,11 @@ async function saveProspect() {
     return;
   }
 
+  // Sin esperar el retardo del tipeo: el dato pudo escribirse y guardarse en el
+  // mismo segundo, y el aviso tiene que estar antes de mandar el guardado.
+  const repetidos = await checkDupNow({ ...dupPayload(), excludeId: editingId.value });
+  if (repetidos.length) return;
+
   isSubmitting.value = true;
   try {
     const payload = {
@@ -852,6 +915,12 @@ async function saveProspect() {
     }
 
     const data = await res.json();
+    if (res.status === 409) {
+      // El servidor manda: la comprobación de mientras se escribía pudo quedar
+      // vieja (otra persona cargó ese contacto entre medio).
+      setDupLeads(data.duplicates || []);
+      return;
+    }
     if (!res.ok) throw new Error(data.error || 'Error al guardar el prospecto.');
 
     showFormModal.value = false;

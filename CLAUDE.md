@@ -367,6 +367,33 @@ antes de tocar el arranque de producción.
   recién creada, y una moneda al aire en cuanto las dos graduaban.
   `backend/scripts/diagnosticarLeadCampana.js` (solo lee) imprime todas las fichas de una persona,
   de dónde salió cada una, cuál elige Campañas y por qué.
+- **El alta manual tampoco carga a la misma persona dos veces.** El celular y el DNI son los dos
+  datos con los que se reconoce a alguien, así que el formulario de alta manual (modal del Setter
+  Funnel y ficha de la Base de Datos, los dos contra `POST /api/leads`) pregunta primero si ya hay
+  un lead con ese celular —últimos 9 dígitos, el mismo `phoneMatchKey` del bot— o con ese documento
+  (`dniMatchKey`: sin espacios, guiones, puntos ni barras, y admitiendo letras porque un carné de
+  extranjería las tiene). La regla es `duplicateReasons()` en `leadService.js` —la consulta solo
+  trae candidatos y esa función pura es la que decide— y el tope es
+  `registerManualLead()`, que es **otro método** que `createProspect()`: por ahí siguen entrando los
+  leads de Meta, donde un alta rechazada no se reintenta nunca y el lead se pierde en silencio (y el
+  webhook ya cruza por teléfono antes de llamar, ver `persistMetaLead`). La ruta responde **409** con
+  las fichas repetidas adjuntas.
+  Editar la ficha pasa por el mismo tope (`updateLead()`, también 409): cambiarle el número a una
+  para que coincida con otra es el mismo duplicado por otra puerta. Pero se miran **solo los campos
+  que de verdad cambian** y no el estado final de la ficha: en la base quedaron gemelos de antes, y
+  chequear el valor ya guardado haría imposible corregirle el nombre o el correo a uno de ellos — un
+  tope que impide arreglar justo lo que viene a evitar.
+  La pregunta se hace **sobre toda la tabla** y no sobre lo que el que carga puede ver: el duplicado
+  que más daño hace es justamente el del lead que trabaja otra persona, que no le aparece en su
+  tablero y por eso lo vuelve a cargar de buena fe. De una ficha ajena viaja un **resumen**
+  (`findDuplicates()`: nombre, celular, documento, etapa y de quién es) y nunca el lead, y `visible`
+  dice si además la puede abrir, para no ofrecerle un enlace que `requireLeadVisible` le va a negar.
+  En pantalla el aviso sale **mientras se escribe** (`GET /api/leads/check-duplicate`, el composable
+  `src/leadDuplicateCheck.js` y el componente `LeadDuplicateAlert.vue`, compartidos por las tres
+  pantallas que piden esos dos datos): un error recién al apretar "Registrar" llega después de haber
+  tipeado la ficha entera. Pero el aviso **no es la regla** — si la comprobación falla no se bloquea
+  el alta, y lo que impide el duplicado es el 409, que vale aunque el formulario estuviera abierto
+  desde antes de que otra persona cargara ese contacto.
 - En **Campañas**, "venta ganada" no es la cadena `'ganado'`: es lo que devuelve
   `loadWinningStatuses()` —el desenlace fijo más la clave de la columna que el equipo marcó como
   `final`, que se genera sola (`col_mtc2nwec_fij`)— **o** que el lead ya tenga un proyecto abierto

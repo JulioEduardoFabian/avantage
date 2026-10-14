@@ -697,10 +697,17 @@
               </label>
             </div>
             <p v-if="leadEditError" class="lead-edit-error">{{ leadEditError }}</p>
+            <LeadDuplicateAlert
+              :duplicates="dupLeads"
+              :checking="dupChecking"
+              :openable-ids="openableDupIds"
+              mode="edit"
+              @open="openDuplicateLead"
+            />
             <div class="lead-edit-actions">
               <button type="button" class="btn-action-ghost" @click="leadEdit = null">Cancelar</button>
-              <button type="submit" class="btn-action-primary" :disabled="leadEditSaving">
-                {{ leadEditSaving ? 'Guardando…' : 'Guardar datos' }}
+              <button type="submit" class="btn-action-primary" :disabled="leadEditSaving || hasDupLeads">
+                {{ leadEditSaving ? 'Guardando…' : hasDupLeads ? 'Dato repetido' : 'Guardar datos' }}
               </button>
             </div>
           </form>
@@ -1167,6 +1174,8 @@ import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
+import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
@@ -2117,10 +2126,50 @@ async function undoQuoteMove() {
   }
 }
 
+/*
+ * El celular y el DNI de la ficha son los dos datos con los que se reconoce a
+ * una persona, así que acá se hace la misma pregunta que en el alta manual:
+ * ¿este dato ya es de otra ficha? Editarlo para que coincida con otra deja a la
+ * misma persona cargada dos veces, igual que registrarla de nuevo, y el
+ * servidor lo rechaza con 409 (ver `updateLead`). Se excluye el propio lead:
+ * nadie es duplicado de sí mismo.
+ */
+const {
+  duplicates: dupLeads,
+  checking: dupChecking,
+  hasDuplicates: hasDupLeads,
+  schedule: scheduleDupCheck,
+  checkNow: checkDupNow,
+  setDuplicates: setDupLeads,
+  reset: resetDupCheck
+} = useLeadDuplicateCheck();
+
+const openableDupIds = computed(() => leads.value.map((l) => l.id));
+
+watch(() => [leadEdit.value?.phone, leadEdit.value?.dni], () => {
+  if (!leadEdit.value) return;
+  scheduleDupCheck({ ...dupPayload(), excludeId: selectedLead.value?.id });
+});
+
+/* Solo lo que cambió respecto de lo guardado: una ficha que ya tenía un gemelo
+   de antes no puede quedar con su propio formulario bloqueado. */
+function dupPayload() {
+  return changedIdentityFields(leadEdit.value, selectedLead.value);
+}
+
+function openDuplicateLead(dup) {
+  const lead = leads.value.find((l) => l.id === dup.id);
+  if (!lead) return;
+  leadEdit.value = null;
+  resetDupCheck();
+  selectedLead.value = lead;
+}
+
 /** Copia editable de los datos del lead: cancelar no debe tocar el tablero. */
 function startLeadEdit() {
   const lead = selectedLead.value;
   leadEditError.value = '';
+  resetDupCheck();
   leadEdit.value = {
     fullName: lead.full_name || '',
     dni: lead.dni || '',
@@ -2134,8 +2183,15 @@ function startLeadEdit() {
 }
 
 async function saveLeadEdit() {
-  leadEditSaving.value = true;
   leadEditError.value = '';
+  // Sin esperar el retardo del tipeo: el dato pudo escribirse y guardarse en el
+  // mismo segundo, y el aviso tiene que estar antes de mandar el guardado.
+  const repetidos = await checkDupNow({ ...dupPayload(), excludeId: selectedLead.value?.id });
+  if (repetidos.length) {
+    leadEditError.value = 'Ese celular o ese DNI ya son de otra ficha.';
+    return;
+  }
+  leadEditSaving.value = true;
   try {
     const response = await apiFetch(`/api/leads/${selectedLead.value.id}`, {
       method: 'PUT',
@@ -2143,6 +2199,13 @@ async function saveLeadEdit() {
       body: JSON.stringify(leadEdit.value)
     });
     const data = await response.json();
+    if (response.status === 409) {
+      // El servidor manda: la comprobación de mientras se escribía pudo quedar
+      // vieja (otra persona cargó ese contacto entre medio).
+      setDupLeads(data.duplicates || []);
+      leadEditError.value = data.error || 'Ese dato ya es de otra ficha.';
+      return;
+    }
     if (!response.ok) throw new Error(data.error || 'No se pudo guardar los datos.');
 
     // El lead abierto y el del tablero son objetos distintos: se actualizan

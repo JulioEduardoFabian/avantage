@@ -1914,7 +1914,15 @@ app.get('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.vi
 });
 
 /**
- * Registro manual de nuevo lead / prospecto desde el formulario de Base de Datos
+ * Registro manual de nuevo lead / prospecto (modal de los dos tableros y ficha
+ * de la Base de Datos).
+ *
+ * Responde 409 con las fichas que ya existen si el celular o el DNI ya están
+ * registrados: una persona es un lead, no uno por cada vez que se carga. El
+ * tope vive en `leadService.registerManualLead()` y acá solo se traduce a HTTP
+ * — la pantalla pregunta antes (`/api/leads/check-duplicate`) para avisar
+ * mientras se escribe, pero lo que manda es esto: la comprobación de la
+ * pantalla puede quedar vieja entre que se abre el formulario y se guarda.
  */
 app.post('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
@@ -1924,12 +1932,43 @@ app.post('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.v
       return res.status(400).json({ error: 'El nombre completo y el número de celular son requeridos.' });
     }
 
-    const prospect = await leadService.createProspect(req.body);
+    const prospect = await leadService.registerManualLead(req.body, { viewer: req.user });
     console.log(`👤 [Prospectos] Nuevo prospecto registrado #${prospect.id} (${name})`);
     res.status(201).json({ prospect, lead: prospect, message: 'Prospecto registrado exitosamente.' });
   } catch (error) {
+    if (error.code === 'DUPLICATE_LEAD') {
+      console.log(`🚫 [Prospectos] Alta duplicada rechazada (${error.duplicates.map((d) => `#${d.id}`).join(', ')})`);
+      return res.status(409).json({ error: error.message, duplicates: error.duplicates });
+    }
     console.error('❌ Error al registrar prospecto:', error);
     res.status(500).json({ error: 'Error al registrar el prospecto.', details: error.message });
+  }
+});
+
+/**
+ * ¿Este celular o este DNI ya están en la base?
+ *
+ * Es la misma pregunta que se le hace al guardar, para poder avisarla mientras
+ * se escribe el formulario: un error recién al apretar "Guardar" llega después
+ * de haber tipeado la ficha entera. Devuelve un resumen de cada ficha repetida
+ * (nombre, etapa, de quién es) y NO el lead, porque el duplicado suele ser de
+ * otra persona del equipo — ver `findDuplicates()`.
+ *
+ * Declarada ANTES de `/api/leads/:id`, que si no se queda con
+ * "check-duplicate" como id.
+ */
+app.get('/api/leads/check-duplicate', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const duplicates = await leadService.findDuplicates({
+      phone: req.query.phone || null,
+      dni: req.query.dni || null,
+      excludeId: Number(req.query.excludeId) || null,
+      viewer: req.user
+    });
+    res.json({ duplicates });
+  } catch (error) {
+    console.error('❌ Error al verificar duplicados de lead:', error);
+    res.status(500).json({ error: 'No se pudo verificar si el lead ya existe.', details: error.message });
   }
 });
 
@@ -2386,6 +2425,11 @@ app.put('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'sette
     console.log(`✏️ [Prospectos] Prospecto actualizado #${req.params.id}`);
     res.json({ lead: updated, message: 'Prospecto actualizado exitosamente.' });
   } catch (error) {
+    // Cambiarle el celular o el DNI a una ficha para que coincida con otra es
+    // el mismo duplicado por otra puerta, y se rechaza igual (ver `updateLead`).
+    if (error.code === 'DUPLICATE_LEAD') {
+      return res.status(409).json({ error: error.message, duplicates: error.duplicates });
+    }
     console.error('❌ Error al actualizar prospecto:', error);
     res.status(500).json({ error: 'Error al actualizar el prospecto.', details: error.message });
   }

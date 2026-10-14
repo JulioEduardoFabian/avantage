@@ -98,6 +98,79 @@ const LEAD_TEAM_COLUMNS = { setter: 'setter_user_id', closer: 'closer_user_id' }
 export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
 /**
+ * Caracteres con los que se compara un documento de identidad.
+ *
+ * Mismo problema que el teléfono: el DNI se carga "70123456", "70.123.456" o
+ * "70 123 456" según quién lo escriba, y comparar las cadenas tal cual deja
+ * entrar al mismo cliente dos veces. Se quitan los separadores que la gente usa
+ * de verdad (espacio, guion, punto, barra) y nada más — ni se exige que sean
+ * dígitos: un carné de extranjería o un pasaporte llevan letras y también se
+ * guardan en esta columna. Esta función y `DNI_MATCH_KEY_SQL` limpian lo mismo
+ * a propósito: son la misma regla en los dos lados de la consulta.
+ *
+ * Menos de 6 caracteres no identifica a nadie (es lo que hay escrito a medias
+ * mientras alguien tipea): ahí devuelve null y no se cruza con nada.
+ */
+export function dniMatchKey(dni) {
+  const clean = String(dni || '').replace(/[\s.\-/]/g, '').toUpperCase();
+  return clean.length < 6 ? null : clean;
+}
+
+/** Los mismos caracteres, calculados en SQL sobre la columna `dni`. */
+export const DNI_MATCH_KEY_SQL =
+  "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(leads.dni, ' ', ''), '-', ''), '.', ''), '/', ''))";
+
+/**
+ * Por qué el lead que ya existe es la misma persona que se está cargando:
+ * `'phone'`, `'dni'`, o los dos.
+ *
+ * Es la regla del duplicado escrita una vez y sin base de datos de por medio:
+ * la consulta solo trae candidatos y esta función es la que decide, así que el
+ * alta manual, la edición de la ficha y el aviso que se ve en pantalla no
+ * pueden discrepar sobre qué cuenta como repetido.
+ *
+ * Un campo vacío nunca es una coincidencia: dos leads sin DNI no son la misma
+ * persona, y si lo fueran igual no hay forma de saberlo.
+ */
+export function duplicateReasons(candidate, lead) {
+  const reasons = [];
+  const phoneKey = phoneMatchKey(candidate?.phone);
+  if (phoneKey && phoneKey === phoneMatchKey(lead?.phone)) reasons.push('phone');
+  const dniKey = dniMatchKey(candidate?.dni);
+  if (dniKey && dniKey === dniMatchKey(lead?.dni)) reasons.push('dni');
+  return reasons;
+}
+
+/**
+ * Lo que se le dice a quien está cargando el lead.
+ *
+ * Nombra el DATO repetido (el celular, el documento o los dos), a la persona
+ * que ya está en la base y de quién es su ficha: "ya existe un lead con estos
+ * datos" obliga a salir a buscarla para entender qué pasó, y mientras se busca
+ * es cuando se carga igual.
+ */
+export function duplicateMessage(duplicates) {
+  const lead = (duplicates || [])[0];
+  if (!lead) return 'Ya existe un lead registrado con estos datos.';
+  const reasons = lead.reasons || [];
+  const dato = reasons.includes('phone') && reasons.includes('dni')
+    ? 'ese celular y ese DNI'
+    : reasons.includes('dni') ? 'ese DNI' : 'ese celular';
+  const quien = lead.assigned_user_name ? `, a cargo de ${lead.assigned_user_name}` : '';
+  const nombre = lead.full_name || `El lead #${lead.id}`;
+  return `${nombre} ya está registrado con ${dato}${quien}. No se carga dos veces: abre su ficha y trabaja sobre ella.`;
+}
+
+/** El rechazo del alta duplicada, con las fichas que lo provocaron adjuntas
+ * para que la pantalla pueda mostrarlas (la ruta responde 409). */
+export function duplicateLeadError(duplicates) {
+  const error = new Error(duplicateMessage(duplicates));
+  error.code = 'DUPLICATE_LEAD';
+  error.duplicates = duplicates;
+  return error;
+}
+
+/**
  * Servicio de acceso a datos para los leads y prospectos (registro comercial de usuarios
  * del chatbot y prospectos capturados en la Base de Datos).
  */
@@ -212,6 +285,97 @@ export class LeadService {
       metaPlatform: data.metaPlatform,
       metaCreatedTime: data.metaCreatedTime
     });
+  }
+
+  /**
+   * Los leads que ya existen con este celular o este documento.
+   *
+   * Pregunta sobre TODA la tabla y no solo sobre lo que el que carga puede ver:
+   * el duplicado que más daño hace es justamente el del lead que trabaja otra
+   * persona — quien carga no lo tiene en su tablero, así que lo vuelve a cargar
+   * de buena fe y el contacto termina en dos funnels a la vez. Por eso de una
+   * ficha ajena viaja un RESUMEN y no el lead: nombre, celular, documento,
+   * etapa y de quién es, lo justo para entender que ya está cargado y a quién
+   * preguntarle. `visible` dice si además la puede abrir, para no ofrecerle un
+   * enlace que `requireLeadVisible` le va a negar.
+   *
+   * `excludeId` es el propio lead cuando se está editando su ficha: nadie es
+   * duplicado de sí mismo.
+   */
+  async findDuplicates({ phone, dni, excludeId = null, viewer = null } = {}) {
+    const phoneKey = phoneMatchKey(phone);
+    const dniKey = dniMatchKey(dni);
+    if (!phoneKey && !dniKey) return [];
+
+    const query = db('leads')
+      .select(
+        'leads.id',
+        'leads.full_name',
+        'leads.phone',
+        'leads.dni',
+        'leads.status',
+        'leads.source',
+        'leads.created_at',
+        'leads.sales_funnel_at',
+        'leads.assigned_to',
+        'leads.assigned_user_id',
+        'leads.setter_user_id',
+        'leads.closer_user_id',
+        'asesor.name as assigned_user_name'
+      )
+      .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
+      .where(function () {
+        if (phoneKey) this.orWhereRaw(`${PHONE_MATCH_KEY_SQL} = ?`, [phoneKey]);
+        if (dniKey) this.orWhereRaw(`${DNI_MATCH_KEY_SQL} = ?`, [dniKey]);
+      })
+      .orderBy('leads.created_at', 'desc')
+      .limit(5);
+    if (excludeId) query.whereNot('leads.id', excludeId);
+
+    const rows = await query;
+    // El alcance se resuelve UNA vez para todas las filas (lo mismo que hace
+    // `getLeadsVisibleTo`): son como máximo cinco, pero `visibilityFor()`
+    // consulta las etapas comerciales y no hay por qué preguntarlas cinco veces.
+    const salesStatuses = viewer ? (await this.visibilityFor(viewer)).salesStatuses : null;
+
+    return rows
+      .map((row) => ({ row, reasons: duplicateReasons({ phone, dni }, row) }))
+      .filter(({ reasons }) => reasons.length > 0)
+      .map(({ row, reasons }) => ({
+        id: row.id,
+        full_name: row.full_name,
+        phone: row.phone,
+        dni: row.dni,
+        status: row.status,
+        source: row.source,
+        created_at: row.created_at,
+        assigned_user_name: row.assigned_user_name || row.assigned_to || null,
+        reasons,
+        visible: viewer ? this.canView(row, viewer, salesStatuses) : false
+      }));
+  }
+
+  /**
+   * El alta MANUAL de un lead: el modal de los dos tableros y la ficha de la
+   * Base de Datos (`POST /api/leads`).
+   *
+   * Es un método aparte de `createProspect()` —por donde siguen entrando los
+   * leads de Meta— porque el tope de duplicados vale para la persona que carga
+   * a mano y no para el webhook: ahí un alta rechazada no se reintenta nunca y
+   * el lead se pierde en silencio (y Meta ya cruza por teléfono antes de
+   * llamar, ver `persistMetaLead`). Va en el servicio y no en la ruta porque es
+   * la regla del módulo: el día que haya un tercer formulario de alta, el tope
+   * viene puesto.
+   *
+   * `viewer` es solo para el aviso: dice de cuál de las fichas repetidas la
+   * pantalla puede ofrecer un enlace y de cuál tiene que decir "no está en tu
+   * cartera". Lo que se rechaza no depende de quién mire — el duplicado que más
+   * daño hace es justamente el que esa persona no ve.
+   */
+  async registerManualLead(data, { viewer = null } = {}) {
+    const duplicates = await this.findDuplicates({ phone: data.phone, dni: data.dni, viewer });
+    if (duplicates.length > 0) throw duplicateLeadError(duplicates);
+    return this.createProspect(data);
   }
 
   /**
@@ -810,6 +974,35 @@ ${note}` : note;
     if (data.viabilityLevel !== undefined) updatePayload.viability_level = data.viabilityLevel;
     if (data.additionalNotes !== undefined || data.additional_notes !== undefined) {
       updatePayload.additional_notes = data.additionalNotes !== undefined ? data.additionalNotes : data.additional_notes;
+    }
+
+    /*
+     * Editar la ficha tampoco puede dejar dos veces a la misma persona: si el
+     * celular o el documento cambian y el valor nuevo ya es de otro lead, el
+     * guardado se rechaza igual que el alta.
+     *
+     * Se miran solo los campos que DE VERDAD cambian, y no el estado final de
+     * la ficha: en la base quedaron gemelos de antes (los que abrían el
+     * evaluador público y el webhook de Meta, ver `esMejorLead` en
+     * campaignService.js), y chequear el valor que ya estaba guardado haría
+     * imposible corregirle el nombre o el correo a uno de ellos — un tope que
+     * impide arreglar justo el problema que viene a evitar.
+     */
+    if (updatePayload.phone !== undefined || updatePayload.dni !== undefined) {
+      const actual = await this.getLeadById(id);
+      const phoneChanged = updatePayload.phone !== undefined
+        && phoneMatchKey(updatePayload.phone) !== phoneMatchKey(actual?.phone);
+      const dniChanged = updatePayload.dni !== undefined
+        && dniMatchKey(updatePayload.dni) !== dniMatchKey(actual?.dni);
+      if (phoneChanged || dniChanged) {
+        const duplicates = await this.findDuplicates({
+          phone: phoneChanged ? updatePayload.phone : null,
+          dni: dniChanged ? updatePayload.dni : null,
+          excludeId: id,
+          viewer: actor
+        });
+        if (duplicates.length > 0) throw duplicateLeadError(duplicates);
+      }
     }
 
     if (Object.keys(updatePayload).length > 0) {
