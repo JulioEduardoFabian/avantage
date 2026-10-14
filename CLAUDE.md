@@ -232,6 +232,21 @@ antes de tocar el arranque de producción.
   desplazamiento horizontal. Unificarla con la densidad del resto del panel deshace justo lo que se
   pidió. Los nombres de estado que se ven en pantalla salen de `STATE_META` en la vista, no de
   `row.state_label` (el vocabulario del dominio): dentro de esa pantalla se habla un solo idioma.
+  Tiene **dos pestañas sobre los mismos datos**: «Por cliente» (la lista de siempre, que contesta
+  qué le falta a cada proyecto) y «Calendario» (un mes de lunes a domingo, que contesta qué toca
+  esta semana — la otra mitad del trabajo, que obligaba a abrir las tarjetas una por una para
+  descubrir las fechas). El calendario **no pide otra ruta ni calcula otro estado**: se arma sobre
+  `visibleProjects`, así que los recuadros de estado y la búsqueda filtran las dos vistas por igual
+  y los colores son los mismos de las tarjetas. Dos pantallas con dos criterios propios de "lo
+  urgente" es como se llega a que cada una diga un número distinto. Una entrega se ubica en su
+  **fecha pactada** (`due_date`) incluso ya entregada: el calendario es el plan, y ver cumplido el
+  día que se prometió es justo lo que se revisa. Tocar un día lo abre debajo con las mismas
+  tarjetas y el mismo botón de entregar, y los entregables **sin fecha** —que no caen en ningún
+  día y desaparecerían sin que nadie lo note— se listan al pie, que es donde se les pone fecha.
+  En el celular el mes se vuelve un mapa de números y puntos de color y el detalle se lee en el
+  día abierto: el nombre de una entrega no entra en una celda de 50 px, y apretarlo para que entre
+  deja texto cortado que no dice nada. La vista elegida se recuerda en `localStorage`
+  (`entregables.view`), entre `try` porque en una ventana privada el acceso lanza.
 - El **estado de un asiento del Libro Diario** (`finance_journal.estado`, `pagado`/`pendiente`) se
   cambia de un clic sobre su propia celda: la píldora de la tabla es un `<button>` y llama a
   `PATCH /api/finance/journal/:id/estado` → `updateJournalEstado()`. Va aparte del

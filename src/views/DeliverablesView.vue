@@ -88,6 +88,26 @@
       </div>
     </section>
 
+    <!-- Dos entradas a los mismos datos: por cliente (lista) o por día
+         (calendario). Los recuadros y la búsqueda de abajo valen para las dos,
+         así que lo que se filtra acá se filtra allá. -->
+    <nav class="dv-tabs" aria-label="Cómo ver los entregables">
+      <button
+        type="button"
+        class="dv-tab"
+        :class="{ 'is-on': isList }"
+        :aria-pressed="isList"
+        @click="setView('lista')"
+      >📋 Por cliente</button>
+      <button
+        type="button"
+        class="dv-tab"
+        :class="{ 'is-on': !isList }"
+        :aria-pressed="!isList"
+        @click="setView('calendario')"
+      >🗓 Calendario</button>
+    </nav>
+
     <!-- Resumen del día. Cuenta SIEMPRE todo el tablero, no lo filtrado, y al
          tocar un recuadro la lista de abajo se queda solo con esos. -->
     <section class="dv-summary" aria-label="Resumen de entregables">
@@ -140,7 +160,12 @@
       </button>
 
       <p class="dv-filter-count">
-        Viendo <strong>{{ visibleProjects.length }}</strong> de {{ overview.projects.length }} proyectos
+        <template v-if="isList">
+          Viendo <strong>{{ visibleProjects.length }}</strong> de {{ overview.projects.length }} proyectos
+        </template>
+        <template v-else>
+          Viendo <strong>{{ calendarItems.length }}</strong> de {{ overview.totals.deliverables }} entregables
+        </template>
       </p>
 
       <button v-if="hasFilters" type="button" class="dv-btn dv-btn-ghost dv-clear" @click="clearFilters">
@@ -148,185 +173,372 @@
       </button>
     </section>
 
-    <p v-if="isLoading && overview.projects.length === 0" class="dv-empty">Cargando entregables…</p>
+    <!-- La lista por cliente: el tablero de siempre. -->
+    <template v-if="isList">
+      <p v-if="isLoading && overview.projects.length === 0" class="dv-empty">Cargando entregables…</p>
 
-    <div v-else-if="visibleProjects.length === 0" class="dv-empty">
-      <template v-if="overview.projects.length === 0">
-        <p>Todavía no hay proyectos.</p>
-        <p class="dv-empty-sub">
-          Un proyecto nace cuando una venta se cierra en el
-          <router-link to="/admin/leads">Funnel de Ventas</router-link>.
-        </p>
-      </template>
-      <template v-else>
-        <p>Ningún entregable coincide con lo que estás buscando.</p>
-        <button type="button" class="dv-btn dv-btn-ghost" @click="clearFilters">✕ Quitar filtros</button>
-      </template>
-    </div>
-
-    <section v-for="project in visibleProjects" :key="project.project_id" class="dv-project">
-      <header class="dv-project-head">
-        <div class="dv-project-id">
-          <h3 class="dv-project-client">
-            {{ project.client_name || project.client_email || 'Cliente sin nombre' }}
-          </h3>
-          <router-link :to="`/admin/projects/${project.project_id}`" class="dv-project-topic">
-            {{ project.topic }}
-          </router-link>
-          <p v-if="project.university || project.field_of_study" class="dv-project-extra">
-            {{ [project.university, project.field_of_study].filter(Boolean).join(' · ') }}
+      <div v-else-if="visibleProjects.length === 0" class="dv-empty">
+        <template v-if="overview.projects.length === 0">
+          <p>Todavía no hay proyectos.</p>
+          <p class="dv-empty-sub">
+            Un proyecto nace cuando una venta se cierra en el
+            <router-link to="/admin/leads">Funnel de Ventas</router-link>.
           </p>
-        </div>
-        <div class="dv-project-meta">
-          <span
-            v-for="chip in projectStateChips(project)"
-            :key="chip.key"
-            class="dv-chip"
-            :class="`is-${chip.tone}`"
-          >{{ chip.icon }} {{ chip.value }} {{ chip.label }}</span>
-          <span class="dv-chip">Tareas {{ project.completed_tasks }}/{{ project.total_tasks }}</span>
-        </div>
-      </header>
-
-      <p v-if="project.is_locked" class="dv-note is-warn">
-        🔒 Este proyecto está esperando que Finanzas confirme el primer pago
-        <template v-if="project.initial_payment_code">({{ project.initial_payment_code }})</template>.
-      </p>
-
-      <div v-if="sortedRows(project).length > 0" class="dv-list">
-        <article
-          v-for="row in sortedRows(project)"
-          :key="row.id"
-          class="dv-item"
-          :class="[`is-${rowTone(row)}`, { 'is-open': openMoreId === row.id }]"
-        >
-          <div class="dv-item-head">
-            <h4 class="dv-item-title">{{ row.title }}</h4>
-            <div class="dv-item-tags">
-              <!-- "Fuera de fecha" va como marca aparte y no reemplazando al
-                   estado: son dos cosas distintas (en qué va la entrega, y si
-                   llegó tarde) y juntarlas escondía una de las dos. -->
-              <span v-if="row.is_overdue" class="dv-state is-bad">⚠️ Fuera de fecha</span>
-              <span class="dv-state" :class="`is-${stateTone(row.state)}`">
-                {{ stateIcon(row.state) }} {{ stateLabel(row.state) }}
-              </span>
-            </div>
-          </div>
-
-          <p class="dv-item-todo" :class="`is-${rowTone(row)}`">{{ todoSentence(row) }}</p>
-
-          <p v-if="row.description" class="dv-item-desc">{{ row.description }}</p>
-
-          <dl class="dv-facts">
-            <div class="dv-fact" :class="{ 'is-bad': row.is_overdue }">
-              <dt>📅 Fecha pactada</dt>
-              <dd>{{ dueText(row) }}</dd>
-            </div>
-            <div v-if="row.income_id" class="dv-fact" :class="{ 'is-bad': row.payment_overdue }">
-              <dt>💰 Pago</dt>
-              <dd>
-                {{ paymentLabel(row) }} · cuota {{ row.income_cuota }} ({{ row.income_code }})
-                <template v-if="row.payment_overdue"> · la cuota ya venció</template>
-              </dd>
-            </div>
-            <div v-else class="dv-fact">
-              <dt>💰 Pago</dt>
-              <dd>Este entregable no depende de ninguna cuota.</dd>
-            </div>
-            <div v-if="row.status === 'entregado'" class="dv-fact">
-              <dt>📤 Se entregó</dt>
-              <dd>
-                el {{ formatDate(row.delivered_at) }} · {{ channelLabel(row.delivery_channel) }}
-                <template v-if="row.delivered_by_name"> · lo registró {{ row.delivered_by_name }}</template>
-              </dd>
-            </div>
-            <div v-if="row.notes" class="dv-fact">
-              <dt>📝 Nota</dt>
-              <dd>{{ row.notes }}</dd>
-            </div>
-          </dl>
-
-          <button
-            v-if="row.has_attachment"
-            type="button"
-            class="dv-file-btn"
-            @click="downloadAttachment(row)"
-          >📎 Descargar {{ row.attachment_original_name }}</button>
-
-          <!-- Cuota sin pagar: no hay botón que apretar. El aviso ocupa su
-               lugar y dice de quién depende, para que no parezca una falla ni
-               haya que preguntar. La regla también está en el backend
-               (`blocksDelivery`): acá solo se pinta lo que él decidió. -->
-          <p v-if="row.delivery_blocked" class="dv-locked">
-            🔒 <strong>Todavía no se puede entregar.</strong>
-            {{ row.delivery_blocked_reason }}
-            Cuando Finanzas registre el pago, el botón aparece solo.
-          </p>
-
-          <div class="dv-item-actions">
-            <button
-              v-if="row.status !== 'entregado' && !row.delivery_blocked"
-              type="button"
-              class="dv-btn dv-btn-primary"
-              @click="openDeliverModal(project, row)"
-            >✓ Marcar como entregado</button>
-
-            <button
-              type="button"
-              class="dv-btn dv-btn-ghost dv-more"
-              :aria-expanded="openMoreId === row.id"
-              @click="toggleMore(row.id)"
-            >{{ openMoreId === row.id ? '✕ Cerrar opciones' : '⋯ Más opciones' }}</button>
-          </div>
-
-          <!-- Editar, deshacer y eliminar viven acá adentro a propósito: son lo
-               que no se hace todos los días, y tenerlas sueltas al lado del
-               botón principal era pedir un toque equivocado en el celular. -->
-          <div v-if="openMoreId === row.id" class="dv-more-panel">
-            <button type="button" class="dv-btn dv-btn-ghost" @click="openEditModal(project, row)">
-              ✎ Editar nombre, fecha o cuota
-            </button>
-            <button
-              v-if="row.status === 'entregado'"
-              type="button"
-              class="dv-btn dv-btn-ghost"
-              :disabled="busyId === row.id"
-              @click="undeliver(row)"
-            >↩ No estaba entregado (deshacer)</button>
-            <button
-              type="button"
-              class="dv-btn dv-btn-danger"
-              :disabled="busyId === row.id"
-              @click="removeDeliverable(row)"
-            >🗑 Eliminar este entregable</button>
-          </div>
-        </article>
+        </template>
+        <template v-else>
+          <p>Ningún entregable coincide con lo que estás buscando.</p>
+          <button type="button" class="dv-btn dv-btn-ghost" @click="clearFilters">✕ Quitar filtros</button>
+        </template>
       </div>
 
-      <p v-else-if="project.deliverables.length === 0" class="dv-note">
-        Este proyecto todavía no tiene entregables. Agrega el primero con el botón de abajo.
-      </p>
-      <p v-else class="dv-note">
-        Ninguno de sus {{ project.deliverables.length }} entregables está en «{{ stateLabel(stateFilter) }}».
-      </p>
+      <section v-for="project in visibleProjects" :key="project.project_id" class="dv-project">
+        <header class="dv-project-head">
+          <div class="dv-project-id">
+            <h3 class="dv-project-client">
+              {{ project.client_name || project.client_email || 'Cliente sin nombre' }}
+            </h3>
+            <router-link :to="`/admin/projects/${project.project_id}`" class="dv-project-topic">
+              {{ project.topic }}
+            </router-link>
+            <p v-if="project.university || project.field_of_study" class="dv-project-extra">
+              {{ [project.university, project.field_of_study].filter(Boolean).join(' · ') }}
+            </p>
+          </div>
+          <div class="dv-project-meta">
+            <span
+              v-for="chip in projectStateChips(project)"
+              :key="chip.key"
+              class="dv-chip"
+              :class="`is-${chip.tone}`"
+            >{{ chip.icon }} {{ chip.value }} {{ chip.label }}</span>
+            <span class="dv-chip">Tareas {{ project.completed_tasks }}/{{ project.total_tasks }}</span>
+          </div>
+        </header>
 
-      <div class="dv-project-actions">
-        <button type="button" class="dv-btn dv-btn-ghost" @click="openCreateModal(project)">
-          ➕ Agregar entregable
+        <p v-if="project.is_locked" class="dv-note is-warn">
+          🔒 Este proyecto está esperando que Finanzas confirme el primer pago
+          <template v-if="project.initial_payment_code">({{ project.initial_payment_code }})</template>.
+        </p>
+
+        <div v-if="sortedRows(project).length > 0" class="dv-list">
+          <article
+            v-for="row in sortedRows(project)"
+            :key="row.id"
+            class="dv-item"
+            :class="[`is-${rowTone(row)}`, { 'is-open': openMoreId === row.id }]"
+          >
+            <div class="dv-item-head">
+              <h4 class="dv-item-title">{{ row.title }}</h4>
+              <div class="dv-item-tags">
+                <!-- "Fuera de fecha" va como marca aparte y no reemplazando al
+                     estado: son dos cosas distintas (en qué va la entrega, y si
+                     llegó tarde) y juntarlas escondía una de las dos. -->
+                <span v-if="row.is_overdue" class="dv-state is-bad">⚠️ Fuera de fecha</span>
+                <span class="dv-state" :class="`is-${stateTone(row.state)}`">
+                  {{ stateIcon(row.state) }} {{ stateLabel(row.state) }}
+                </span>
+              </div>
+            </div>
+
+            <p class="dv-item-todo" :class="`is-${rowTone(row)}`">{{ todoSentence(row) }}</p>
+
+            <p v-if="row.description" class="dv-item-desc">{{ row.description }}</p>
+
+            <dl class="dv-facts">
+              <div class="dv-fact" :class="{ 'is-bad': row.is_overdue }">
+                <dt>📅 Fecha pactada</dt>
+                <dd>{{ dueText(row) }}</dd>
+              </div>
+              <div v-if="row.income_id" class="dv-fact" :class="{ 'is-bad': row.payment_overdue }">
+                <dt>💰 Pago</dt>
+                <dd>
+                  {{ paymentLabel(row) }} · cuota {{ row.income_cuota }} ({{ row.income_code }})
+                  <template v-if="row.payment_overdue"> · la cuota ya venció</template>
+                </dd>
+              </div>
+              <div v-else class="dv-fact">
+                <dt>💰 Pago</dt>
+                <dd>Este entregable no depende de ninguna cuota.</dd>
+              </div>
+              <div v-if="row.status === 'entregado'" class="dv-fact">
+                <dt>📤 Se entregó</dt>
+                <dd>
+                  el {{ formatDate(row.delivered_at) }} · {{ channelLabel(row.delivery_channel) }}
+                  <template v-if="row.delivered_by_name"> · lo registró {{ row.delivered_by_name }}</template>
+                </dd>
+              </div>
+              <div v-if="row.notes" class="dv-fact">
+                <dt>📝 Nota</dt>
+                <dd>{{ row.notes }}</dd>
+              </div>
+            </dl>
+
+            <button
+              v-if="row.has_attachment"
+              type="button"
+              class="dv-file-btn"
+              @click="downloadAttachment(row)"
+            >📎 Descargar {{ row.attachment_original_name }}</button>
+
+            <!-- Cuota sin pagar: no hay botón que apretar. El aviso ocupa su
+                 lugar y dice de quién depende, para que no parezca una falla ni
+                 haya que preguntar. La regla también está en el backend
+                 (`blocksDelivery`): acá solo se pinta lo que él decidió. -->
+            <p v-if="row.delivery_blocked" class="dv-locked">
+              🔒 <strong>Todavía no se puede entregar.</strong>
+              {{ row.delivery_blocked_reason }}
+              Cuando Finanzas registre el pago, el botón aparece solo.
+            </p>
+
+            <div class="dv-item-actions">
+              <button
+                v-if="row.status !== 'entregado' && !row.delivery_blocked"
+                type="button"
+                class="dv-btn dv-btn-primary"
+                @click="openDeliverModal(project, row)"
+              >✓ Marcar como entregado</button>
+
+              <button
+                type="button"
+                class="dv-btn dv-btn-ghost dv-more"
+                :aria-expanded="openMoreId === row.id"
+                @click="toggleMore(row.id)"
+              >{{ openMoreId === row.id ? '✕ Cerrar opciones' : '⋯ Más opciones' }}</button>
+            </div>
+
+            <!-- Editar, deshacer y eliminar viven acá adentro a propósito: son lo
+                 que no se hace todos los días, y tenerlas sueltas al lado del
+                 botón principal era pedir un toque equivocado en el celular. -->
+            <div v-if="openMoreId === row.id" class="dv-more-panel">
+              <button type="button" class="dv-btn dv-btn-ghost" @click="openEditModal(project, row)">
+                ✎ Editar nombre, fecha o cuota
+              </button>
+              <button
+                v-if="row.status === 'entregado'"
+                type="button"
+                class="dv-btn dv-btn-ghost"
+                :disabled="busyId === row.id"
+                @click="undeliver(row)"
+              >↩ No estaba entregado (deshacer)</button>
+              <button
+                type="button"
+                class="dv-btn dv-btn-danger"
+                :disabled="busyId === row.id"
+                @click="removeDeliverable(row)"
+              >🗑 Eliminar este entregable</button>
+            </div>
+          </article>
+        </div>
+
+        <p v-else-if="project.deliverables.length === 0" class="dv-note">
+          Este proyecto todavía no tiene entregables. Agrega el primero con el botón de abajo.
+        </p>
+        <p v-else class="dv-note">
+          Ninguno de sus {{ project.deliverables.length }} entregables está en «{{ stateLabel(stateFilter) }}».
+        </p>
+
+        <div class="dv-project-actions">
+          <button type="button" class="dv-btn dv-btn-ghost" @click="openCreateModal(project)">
+            ➕ Agregar entregable
+          </button>
+          <!-- Lo que ya está escrito en el contrato no se vuelve a teclear. Copia,
+               no lectura en vivo: un contrato emitido no cambia porque alguien
+               reprograme una entrega. -->
+          <button
+            v-if="project.contract_plan_available > 0"
+            type="button"
+            class="dv-btn dv-btn-ghost"
+            :disabled="busyId === `import-${project.project_id}`"
+            @click="importFromContract(project)"
+          >
+            📄 Traer los {{ project.contract_plan_available }} del contrato
+          </button>
+        </div>
+      </section>
+    </template>
+
+    <section v-else class="dv-cal" aria-label="Calendario de entregas">
+      <!-- CALENDARIO
+           La lista contesta "¿qué le falta a este cliente?"; el calendario
+           contesta la otra mitad del trabajo: "¿qué me toca esta semana?". Son
+           los MISMOS datos y los MISMOS filtros de arriba — no hay una segunda
+           consulta ni un segundo criterio de estado —, solo cambia por dónde se
+           entra: por cliente o por día. -->
+      <header class="dv-cal-bar">
+        <button type="button" class="dv-btn dv-btn-ghost dv-cal-nav" @click="shiftMonth(-1)">
+          ‹ <span class="dv-cal-navword">Mes anterior</span>
         </button>
-        <!-- Lo que ya está escrito en el contrato no se vuelve a teclear. Copia,
-             no lectura en vivo: un contrato emitido no cambia porque alguien
-             reprograme una entrega. -->
+        <div class="dv-cal-title">
+          <h3 class="dv-cal-month">{{ monthLabel }}</h3>
+          <p class="dv-cal-sub">{{ monthSummary }}</p>
+        </div>
+        <button type="button" class="dv-btn dv-btn-ghost dv-cal-nav" @click="shiftMonth(1)">
+          <span class="dv-cal-navword">Mes siguiente</span> ›
+        </button>
         <button
-          v-if="project.contract_plan_available > 0"
           type="button"
           class="dv-btn dv-btn-ghost"
-          :disabled="busyId === `import-${project.project_id}`"
-          @click="importFromContract(project)"
+          :disabled="isCurrentMonth"
+          @click="goToday"
+        >📍 Volver a hoy</button>
+      </header>
+
+      <!-- Los colores del calendario son los mismos de las tarjetas y de los
+           recuadros de arriba. La leyenda está porque un color sin nombre
+           obliga a adivinar, y esta pantalla no se adivina. -->
+      <ul class="dv-cal-legend">
+        <li v-for="key in CAL_LEGEND" :key="key" class="dv-cal-legend-item">
+          <span class="dv-cal-dot" :class="`is-${stateTone(key)}`" aria-hidden="true"></span>
+          {{ stateIcon(key) }} {{ stateLabel(key) }}
+        </li>
+      </ul>
+
+      <div class="dv-cal-grid">
+        <span v-for="day in WEEKDAYS" :key="day" class="dv-cal-weekday">{{ day }}</span>
+
+        <button
+          v-for="cell in monthCells"
+          :key="cell.iso"
+          type="button"
+          class="dv-cal-day"
+          :class="{
+            'is-out': !cell.inMonth,
+            'is-today': cell.isToday,
+            'is-picked': cell.iso === selectedDay,
+            'is-late': cell.overdue > 0,
+            'is-empty': cell.items.length === 0
+          }"
+          :aria-pressed="cell.iso === selectedDay"
+          :aria-label="`${longDate(cell.iso)}: ${cell.items.length === 0 ? 'sin entregas' : plural(cell.items.length, 'entrega', 'entregas')}`"
+          @click="pickDay(cell.iso)"
         >
-          📄 Traer los {{ project.contract_plan_available }} del contrato
+          <span class="dv-cal-daynum">
+            {{ cell.day }}
+            <span v-if="cell.isToday" class="dv-cal-todaytag">hoy</span>
+          </span>
+
+          <!-- En pantalla ancha cada entrega se lee por su nombre; en el
+               celular una celda de 50 px no aguanta texto, así que las mismas
+               entregas se resumen en puntos de color y el detalle se lee
+               abajo. Es la misma regla de "en el celular la tabla se vuelve
+               tarjetas": no se achica, se cambia de forma. -->
+          <span class="dv-cal-chips">
+            <span
+              v-for="item in cell.items.slice(0, 3)"
+              :key="item.row.id"
+              class="dv-cal-chip"
+              :class="`is-${rowTone(item.row)}`"
+            >{{ item.row.title }}</span>
+            <span v-if="cell.items.length > 3" class="dv-cal-more">
+              +{{ cell.items.length - 3 }} más
+            </span>
+          </span>
+
+          <span v-if="cell.items.length > 0" class="dv-cal-dots" aria-hidden="true">
+            <span
+              v-for="item in cell.items.slice(0, 4)"
+              :key="item.row.id"
+              class="dv-cal-dot"
+              :class="`is-${rowTone(item.row)}`"
+            ></span>
+            <span v-if="cell.items.length > 4" class="dv-cal-dotmore">+{{ cell.items.length - 4 }}</span>
+          </span>
         </button>
       </div>
+
+      <!-- El día elegido, abierto debajo del mes: con los mismos botones de la
+           lista, para que no haya que cambiar de pestaña para registrar la
+           entrega que se acaba de ver en el calendario. -->
+      <section class="dv-cal-detail" aria-live="polite">
+        <template v-if="selectedDay">
+          <header class="dv-cal-detail-head">
+            <h4 class="dv-cal-detail-title">{{ capitalize(longDate(selectedDay)) }}</h4>
+            <p class="dv-cal-detail-count">{{ dayCountText }}</p>
+          </header>
+
+          <p v-if="selectedDayItems.length === 0" class="dv-note">
+            Ese día no hay nada pactado.
+          </p>
+
+          <article
+            v-for="item in selectedDayItems"
+            :key="item.row.id"
+            class="dv-cal-card"
+            :class="`is-${rowTone(item.row)}`"
+          >
+            <div class="dv-cal-card-head">
+              <h5 class="dv-cal-card-title">{{ item.row.title }}</h5>
+              <div class="dv-item-tags">
+                <span v-if="item.row.is_overdue" class="dv-state is-bad">⚠️ Fuera de fecha</span>
+                <span class="dv-state" :class="`is-${stateTone(item.row.state)}`">
+                  {{ stateIcon(item.row.state) }} {{ stateLabel(item.row.state) }}
+                </span>
+              </div>
+            </div>
+
+            <p class="dv-cal-card-client">
+              👤 {{ item.project.client_name || item.project.client_email || 'Cliente sin nombre' }}
+              ·
+              <router-link :to="`/admin/projects/${item.project.project_id}`" class="dv-cal-card-link">
+                {{ item.project.topic }}
+              </router-link>
+            </p>
+
+            <p class="dv-item-todo" :class="`is-${rowTone(item.row)}`">{{ todoSentence(item.row) }}</p>
+
+            <p v-if="item.row.income_id" class="dv-cal-card-pay">
+              💰 {{ paymentLabel(item.row) }} · cuota {{ item.row.income_cuota }} ({{ item.row.income_code }})
+            </p>
+
+            <p v-if="item.row.delivery_blocked" class="dv-locked">
+              🔒 <strong>Todavía no se puede entregar.</strong>
+              {{ item.row.delivery_blocked_reason }}
+              Cuando Finanzas registre el pago, el botón aparece solo.
+            </p>
+
+            <div class="dv-item-actions">
+              <button
+                v-if="item.row.status !== 'entregado' && !item.row.delivery_blocked"
+                type="button"
+                class="dv-btn dv-btn-primary"
+                @click="openDeliverModal(item.project, item.row)"
+              >✓ Marcar como entregado</button>
+              <button
+                type="button"
+                class="dv-btn dv-btn-ghost"
+                @click="openEditModal(item.project, item.row)"
+              >✎ Cambiar la fecha</button>
+            </div>
+          </article>
+        </template>
+
+        <p v-else class="dv-note">Toca un día del calendario para ver qué se entrega.</p>
+      </section>
+
+      <!-- Un entregable sin fecha no cae en ningún día y desaparecería del
+           calendario sin que nadie lo note. Va al pie, contado: es justo el
+           que hay que fechar. -->
+      <section v-if="undatedItems.length > 0" class="dv-cal-undated">
+        <h4 class="dv-cal-undated-title">
+          🗓 {{ plural(undatedItems.length, 'entregable sin fecha', 'entregables sin fecha') }}
+        </h4>
+        <p class="dv-help">
+          No aparecen en ningún día del calendario. Ponles la fecha que acordaste con el cliente.
+        </p>
+        <button
+          v-for="item in undatedItems"
+          :key="item.row.id"
+          type="button"
+          class="dv-cal-undated-item"
+          @click="openEditModal(item.project, item.row)"
+        >
+          <span class="dv-cal-undated-name">{{ item.row.title }}</span>
+          <span class="dv-cal-undated-client">
+            {{ item.project.client_name || item.project.topic }}
+          </span>
+          <span class="dv-cal-undated-cta">✎ Ponerle fecha</span>
+        </button>
+      </section>
     </section>
 
     <!-- Alta / edición del plan -->
@@ -1033,7 +1245,190 @@ async function downloadAttachment(row) {
   }
 }
 
+
+// ----------------------------------------------------------- CALENDARIO
+
+/**
+ * Dos formas de leer lo mismo. La lista está ordenada por cliente y contesta
+ * "¿qué le falta a este proyecto?"; el calendario está ordenado por día y
+ * contesta "¿qué me toca esta semana?", que es la otra mitad del trabajo de
+ * quien entrega y la que obligaba a abrir una por una las tarjetas para
+ * descubrir las fechas.
+ *
+ * Comparten datos y filtros a propósito: el calendario se arma sobre
+ * `visibleProjects`, así que el recuadro de estado y la búsqueda de arriba
+ * valen en las dos vistas. Dos pantallas con dos criterios distintos de "lo
+ * urgente" es como se llega a que cada una diga un número diferente.
+ */
+const VIEW_KEY = 'entregables.view';
+const view = ref('lista');
+const isList = computed(() => view.value === 'lista');
+
+/**
+ * La vista elegida se recuerda en este navegador: quien trabaja por calendario
+ * lo hace todos los días y volver a la lista en cada entrada es una pulsación
+ * de impuesto. Entre `try` porque en una ventana privada el acceso tira.
+ */
+function restoreView() {
+  try {
+    const saved = localStorage.getItem(VIEW_KEY);
+    if (saved === 'lista' || saved === 'calendario') view.value = saved;
+  } catch {
+    // Sin almacenamiento se abre en la lista, que es el valor por defecto.
+  }
+}
+
+function setView(next) {
+  view.value = next;
+  try {
+    localStorage.setItem(VIEW_KEY, next);
+  } catch {
+    // Que no se pueda recordar no impide cambiar de vista ahora.
+  }
+}
+
+const WEEKDAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+/** Los cuatro estados que se pintan; "fuera de fecha" es el borde rojo, no un color propio. */
+const CAL_LEGEND = ['por_entregar', 'pendiente', 'sin_cobrar', 'entregado'];
+
+const calendarMonth = ref(todayIso().slice(0, 7));
+const selectedDay = ref(todayIso());
+
+/**
+ * Las entregas que entran al calendario son las que ya pasaron los filtros de
+ * arriba, cada una con su proyecto al lado: las tarjetas del día necesitan el
+ * cliente y el proyecto, que viven un nivel más arriba de la fila.
+ */
+const calendarItems = computed(() => {
+  const out = [];
+  for (const project of visibleProjects.value) {
+    for (const row of rowsFor(project)) out.push({ row, project });
+  }
+  return out;
+});
+
+/**
+ * El día que ancla una entrega en el calendario es la FECHA PACTADA, también
+ * cuando ya se entregó: el calendario es el plan, y ver cumplido el día que se
+ * prometió es justo lo que se mira al revisar el mes.
+ */
+const itemsByDay = computed(() => {
+  const map = new Map();
+  for (const item of calendarItems.value) {
+    const day = item.row.due_date;
+    if (!day) continue;
+    if (!map.has(day)) map.set(day, []);
+    map.get(day).push(item);
+  }
+  // Dentro de un día, el mismo orden de la lista: lo que hay que hacer, arriba.
+  for (const list of map.values()) {
+    list.sort((a, b) => rowWeight(a.row) - rowWeight(b.row));
+  }
+  return map;
+});
+
+const undatedItems = computed(() => calendarItems.value.filter((item) => !item.row.due_date));
+
+/**
+ * Las celdas del mes, de lunes a domingo y sin filas de relleno: se calculan
+ * solo las semanas que el mes realmente ocupa. La aritmética va en UTC porque
+ * acá las fechas son días de calendario, no instantes — con la hora local, un
+ * mes de Lima empieza el día anterior.
+ */
+const monthCells = computed(() => {
+  const [year, month] = calendarMonth.value.split('-').map(Number);
+  const firstDow = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const start = Date.UTC(year, month - 1, 1 - firstDow);
+  const cells = [];
+  const today = todayIso();
+
+  for (let i = 0; i < Math.ceil((firstDow + daysInMonth) / 7) * 7; i += 1) {
+    const date = new Date(start + i * 86400000);
+    const iso = date.toISOString().slice(0, 10);
+    const items = itemsByDay.value.get(iso) || [];
+    cells.push({
+      iso,
+      day: date.getUTCDate(),
+      inMonth: iso.slice(0, 7) === calendarMonth.value,
+      isToday: iso === today,
+      items,
+      overdue: items.filter((item) => item.row.is_overdue).length
+    });
+  }
+  return cells;
+});
+
+const monthLabel = computed(() => {
+  const [year, month] = calendarMonth.value.split('-').map(Number);
+  return capitalize(new Intl.DateTimeFormat('es-PE', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    .format(new Date(Date.UTC(year, month - 1, 1))));
+});
+
+/** Una línea con lo que trae el mes, para no tener que contar los puntos. */
+const monthSummary = computed(() => {
+  const items = monthCells.value.filter((cell) => cell.inMonth).flatMap((cell) => cell.items);
+  if (items.length === 0) return 'Sin entregas pactadas este mes.';
+  const late = items.filter((item) => item.row.is_overdue).length;
+  const done = items.filter((item) => item.row.status === 'entregado').length;
+  const parts = [plural(items.length, 'entrega pactada', 'entregas pactadas')];
+  if (late > 0) parts.push(`⚠️ ${late} fuera de fecha`);
+  if (done > 0) parts.push(`✅ ${done} ya ${done === 1 ? 'entregada' : 'entregadas'}`);
+  return parts.join(' · ');
+});
+
+const isCurrentMonth = computed(() => calendarMonth.value === todayIso().slice(0, 7));
+
+const selectedDayItems = computed(() => itemsByDay.value.get(selectedDay.value) || []);
+
+const dayCountText = computed(() => {
+  const total = selectedDayItems.value.length;
+  if (total === 0) return 'Nada pactado para este día';
+  return plural(total, 'entrega pactada', 'entregas pactadas');
+});
+
+function pickDay(iso) {
+  selectedDay.value = iso;
+  // Tocar un día de otro mes salta a ese mes: si no, se elige un día que la
+  // cuadrícula deja de mostrar un segundo después.
+  if (iso.slice(0, 7) !== calendarMonth.value) calendarMonth.value = iso.slice(0, 7);
+}
+
+/**
+ * Al cambiar de mes se elige solo el primer día que tiene algo: un panel vacío
+ * debajo de un mes lleno parece una pantalla rota. Si el mes no tiene nada, no
+ * se elige nada y el panel lo dice.
+ */
+function shiftMonth(delta) {
+  const [year, month] = calendarMonth.value.split('-').map(Number);
+  const moved = new Date(Date.UTC(year, month - 1 + delta, 1));
+  calendarMonth.value = moved.toISOString().slice(0, 7);
+  selectedDay.value = defaultDayOfMonth();
+}
+
+function goToday() {
+  calendarMonth.value = todayIso().slice(0, 7);
+  selectedDay.value = todayIso();
+}
+
+function defaultDayOfMonth() {
+  if (isCurrentMonth.value) return todayIso();
+  return monthCells.value.find((cell) => cell.inMonth && cell.items.length > 0)?.iso || '';
+}
+
+/** "jueves 15 de octubre de 2026", leído desde el texto ISO (sin corrimiento de huso). */
+function longDate(iso) {
+  const [year, month, day] = String(iso || '').slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  return new Intl.DateTimeFormat('es-PE', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC'
+  }).format(new Date(Date.UTC(year, month - 1, day)));
+}
+
+const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : '');
+
 onMounted(() => {
+  restoreView();
   fetchOverview();
   // La configuración se lee aunque el panel esté plegado: el encabezado muestra
   // la dirección guardada, y ahí es donde se comprueba de un vistazo.
@@ -1744,6 +2139,345 @@ textarea.dv-input { min-height: 80px; resize: vertical; }
 
 .dv-sheet-actions .dv-btn { flex: 1 1 auto; }
 
+
+/* --- Pestañas: lista o calendario --------------------------------------- */
+
+/* Dos botones grandes y con palabras, no dos textos subrayados: es la misma
+   escala de toque que el resto de la pantalla. */
+.dv-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  padding: 0.3rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.dv-tab {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 48px;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-sub);
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.dv-tab:hover:not(.is-on) { background: var(--bg-card-hover); color: var(--text-main); }
+.dv-tab:focus-visible { outline: 3px solid var(--border-glow); outline-offset: 2px; }
+
+.dv-tab.is-on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #FFFFFF;
+}
+
+/* --- Calendario ---------------------------------------------------------- */
+
+.dv-cal-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.dv-cal-nav { position: relative; }
+
+.dv-cal-title {
+  flex: 1 1 220px;
+  text-align: center;
+  min-width: 0;
+}
+
+.dv-cal-month {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 1.3rem;
+  color: var(--text-main);
+}
+
+.dv-cal-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-sub);
+}
+
+.dv-cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.1rem;
+  list-style: none;
+  margin: 0 0 0.9rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  font-size: 0.85rem;
+  color: var(--text-sub);
+}
+
+.dv-cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.dv-cal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--border-strong);
+}
+
+.dv-cal-dot.is-ok { background: var(--accent-emerald); }
+.dv-cal-dot.is-warn { background: var(--accent-amber); }
+.dv-cal-dot.is-bad { background: var(--accent-rose); }
+.dv-cal-dot.is-neutral { background: var(--text-muted); }
+
+.dv-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dv-cal-weekday {
+  padding: 0.35rem 0;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Cada día es un botón entero: toda la celda es zona de toque, no solo el
+   número. En el celular una celda de 50 px no admite otra cosa. */
+.dv-cal-day {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-height: 112px;
+  padding: 0.4rem 0.4rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dv-cal-day:hover { border-color: var(--primary); background: var(--bg-card-hover); }
+.dv-cal-day:focus-visible { outline: 3px solid var(--border-glow); outline-offset: 2px; }
+
+/* Los días del mes vecino siguen ahí (una entrega del 1 se ve desde el 31) pero
+   apagados, para que no compitan con el mes que se está mirando. */
+.dv-cal-day.is-out { opacity: 0.45; background: var(--surface-1); }
+.dv-cal-day.is-empty { background: var(--surface-1); }
+
+.dv-cal-day.is-today {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.dv-cal-day.is-picked {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--border-glow);
+  background: var(--bg-card-hover);
+}
+
+/* Un día con algo vencido se marca en el propio calendario: es el que hay que
+   mirar antes de planificar lo que viene. */
+.dv-cal-day.is-late { border-left: 4px solid var(--accent-rose); }
+
+.dv-cal-daynum {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.3rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-sub);
+}
+
+.dv-cal-day.is-today .dv-cal-daynum { color: var(--primary); }
+
+.dv-cal-todaytag {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.35rem;
+  border-radius: 9999px;
+  background: var(--primary);
+  color: #FFFFFF;
+}
+
+.dv-cal-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dv-cal-chip {
+  display: block;
+  padding: 0.2rem 0.35rem;
+  border-left: 3px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface-1);
+  font-size: 0.74rem;
+  line-height: 1.25;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dv-cal-chip.is-ok { border-left-color: var(--accent-emerald); background: rgba(46, 125, 70, 0.08); }
+.dv-cal-chip.is-warn { border-left-color: var(--accent-amber); background: rgba(222, 117, 75, 0.09); }
+.dv-cal-chip.is-bad { border-left-color: var(--accent-rose); background: rgba(200, 85, 50, 0.09); }
+
+.dv-cal-more {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* Los puntos son la versión de celular de los mismos chips. */
+.dv-cal-dots { display: none; gap: 3px; align-items: center; flex-wrap: wrap; }
+.dv-cal-dotmore { font-size: 0.6rem; color: var(--text-muted); }
+
+/* --- El día abierto ------------------------------------------------------ */
+
+.dv-cal-detail {
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 2px solid var(--border-color);
+}
+
+.dv-cal-detail-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.8rem;
+  margin-bottom: 0.8rem;
+}
+
+.dv-cal-detail-title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 1.15rem;
+  color: var(--text-main);
+}
+
+.dv-cal-detail-count {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-sub);
+}
+
+.dv-cal-card {
+  border: 1px solid var(--border-color);
+  border-left: 5px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.7rem;
+}
+
+.dv-cal-card.is-ok { border-left-color: var(--accent-emerald); }
+.dv-cal-card.is-warn { border-left-color: var(--accent-amber); }
+.dv-cal-card.is-bad { border-left-color: var(--accent-rose); }
+.dv-cal-card.is-neutral { border-left-color: var(--border-strong); }
+
+.dv-cal-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+}
+
+.dv-cal-card-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.dv-cal-card-client {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-sub);
+}
+
+.dv-cal-card-link { color: var(--primary); text-decoration: none; }
+.dv-cal-card-link:hover { text-decoration: underline; }
+
+.dv-cal-card-pay {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-sub);
+}
+
+/* --- Sin fecha ----------------------------------------------------------- */
+
+.dv-cal-undated {
+  margin-top: 1.3rem;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.dv-cal-undated-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.dv-cal-undated-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.75rem;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dv-cal-undated-item:hover { border-color: var(--primary); background: var(--bg-card-hover); }
+.dv-cal-undated-item:focus-visible { outline: 3px solid var(--border-glow); outline-offset: 2px; }
+
+.dv-cal-undated-name { font-weight: 600; }
+.dv-cal-undated-client { flex: 1 1 auto; color: var(--text-muted); font-size: 0.88rem; }
+.dv-cal-undated-cta { color: var(--primary); font-weight: 600; font-size: 0.88rem; }
+
 /* --- Pantallas chicas ---------------------------------------------------- */
 
 @media (max-width: 860px) {
@@ -1791,6 +2525,27 @@ textarea.dv-input { min-height: 80px; resize: vertical; }
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
   .dv-sheet-actions { flex-direction: column-reverse; }
+
+  /* El mes pasa a ser un mapa: número y puntos de color. El nombre de cada
+     entrega no entra en una celda de un celular, y apretarlo para que entre
+     deja una columna de texto cortado que no dice nada; se lee abajo, en el
+     día abierto. */
+  .dv-cal-grid { gap: 4px; }
+  .dv-cal-day { min-height: 62px; padding: 0.3rem 0.25rem; align-items: center; gap: 0.2rem; }
+  .dv-cal-daynum { justify-content: center; font-size: 0.85rem; }
+  .dv-cal-todaytag { display: none; }
+  .dv-cal-day.is-today .dv-cal-daynum { text-decoration: underline; }
+  .dv-cal-chips { display: none; }
+  .dv-cal-dots { display: flex; justify-content: center; }
+  .dv-cal-weekday { font-size: 0.68rem; }
+
+  .dv-cal-bar .dv-btn { flex: 1 1 auto; }
+  /* Las flechas se quedan con el símbolo: el nombre del mes ya dice dónde
+     estamos, y dos botones anchos con texto empujan el "Volver a hoy" fuera. */
+  .dv-cal-bar .dv-cal-nav { flex: 0 0 auto; min-width: 48px; padding: 0.6rem; }
+  .dv-cal-navword { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .dv-cal-title { flex: 1 1 100%; order: -1; }
+  .dv-cal-card-head { flex-direction: column; }
 }
 
 @media (max-width: 380px) {
