@@ -9,6 +9,7 @@ import { EmailService } from './services/emailService.js';
 import { LeadService } from './services/leadService.js';
 import { FunnelColumnService } from './services/funnelColumnService.js';
 import { CareerCatalogService } from './services/careerCatalogService.js';
+import { LeadRoutingService } from './services/leadRoutingService.js';
 import { ProjectService } from './services/projectService.js';
 import { TaskService } from './services/taskService.js';
 import { TaskTemplateService } from './services/taskTemplateService.js';
@@ -155,6 +156,7 @@ const metaAdsService = new MetaAdsService();
 const tiktokAdsService = new TikTokAdsService();
 const campaignExportService = new CampaignExportService({ campaignService });
 const userService = new UserService();
+const leadRoutingService = new LeadRoutingService({ userService });
 const roleService = new RoleService();
 const projectUpdateService = new ProjectUpdateService();
 // Entregables: no tiene tablas propias, cruza las cuotas de Finanzas con los
@@ -3339,6 +3341,61 @@ app.delete('/api/funnel-columns/:key', requireAuth, requireAnyPermission('leads.
   } catch (error) {
     console.error('❌ Error al eliminar la columna:', error);
     res.status(500).json({ error: 'Error al eliminar la columna del funnel.', details: error.message });
+  }
+});
+
+// =====================================================================
+// REPARTO AUTOMÁTICO DE LEADS (/api/lead-routing)
+// =====================================================================
+// Quién recibe los leads que entran solos y en qué proporción. Por ahora solo
+// se configura: ningún alta de leads lo lee todavía (ver leadRoutingService.js).
+function sendRoutingError(res, error, context) {
+  if (error.status) return res.status(error.status).json({ error: error.message });
+  console.error(`❌ Error al ${context}:`, error);
+  return res.status(500).json({ error: `Error al ${context}.`, details: error.message });
+}
+
+app.get('/api/lead-routing', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    res.json(await leadRoutingService.getConfig());
+  } catch (error) {
+    sendRoutingError(res, error, 'obtener la configuración del reparto');
+  }
+});
+
+app.post('/api/lead-routing/members', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    res.status(201).json(await leadRoutingService.addMember(req.body?.userId, req.body?.weight ?? 1));
+  } catch (error) {
+    sendRoutingError(res, error, 'sumar a la persona al reparto');
+  }
+});
+
+// Va antes de `/members/:id`: Express resuelve por orden y `:id` la taparía.
+app.patch('/api/lead-routing/members/reorder', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    if (!ids) return res.status(400).json({ error: 'Falta el orden (ids).' });
+    res.json(await leadRoutingService.reorderMembers(ids));
+  } catch (error) {
+    sendRoutingError(res, error, 'reordenar el reparto');
+  }
+});
+
+app.patch('/api/lead-routing/members/:id', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    const { weight, active } = req.body || {};
+    res.json(await leadRoutingService.updateMember(Number(req.params.id), { weight, active }));
+  } catch (error) {
+    sendRoutingError(res, error, 'actualizar a la persona del reparto');
+  }
+});
+
+app.delete('/api/lead-routing/members/:id', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    res.json(await leadRoutingService.removeMember(Number(req.params.id)));
+  } catch (error) {
+    sendRoutingError(res, error, 'quitar a la persona del reparto');
   }
 });
 

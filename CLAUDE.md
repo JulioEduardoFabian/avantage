@@ -481,6 +481,26 @@ antes de tocar el arranque de producción.
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para
   recorrer el tablero de cada persona y **no abre leads** — filtra lo que el servidor ya mandó.
+- El **reparto automático de leads** (`/admin/reparto`, `LeadRoutingView.vue`, permiso
+  `leads.routing`, `leadRoutingService.js`) decide quién recibe los leads que entran solos (bot,
+  formularios de Meta, evaluador) y en qué proporción. **Por ahora es solo configuración: ningún alta
+  de leads lo lee** — la pantalla lo dice con la banda "Vista previa" (`lead_routing_pools.enabled`
+  nace en falso). Cada persona tiene un **peso** (`lead_routing_members.weight`): de cada vuelta
+  (la suma de los pesos) le tocan tantos leads como su peso, así que "5 a la setter por cada 1 al
+  closer" es peso 5 y peso 1, y con más gente se suman filas sin tocar código. El algoritmo es el
+  reparto ponderado **suave** (`backend/services/leadRouting.js`, con su espejo `src/leadRouting.js`
+  para la vista previa y un test que verifica que digan lo mismo): intercala (S S S C S S) en vez de
+  mandar ráfagas, y su estado (`current_weight`) se guarda para seguir donde quedó. Cada cambio en
+  la pantalla pone la vuelta en cero, así la secuencia que se ve es la que va a salir. Se saltea a
+  quien está en pausa o dejó de ser del área comercial; sin nadie elegible el lead queda sin
+  responsable, como hoy. La pantalla avisa si alguien del reparto **no tiene `setter.view`**: los
+  leads automáticos nacen en el Setter Funnel, y el rol Closer tal como viene no lo ve.
+  Existe `lead_routing_pools` aunque hoy haya un solo grupo para que repartir distinto por origen
+  (campaña, universidad) sea agregar reglas y no migrar miembros. Al activarlo, el enganche va en
+  `leadService.createLead()` —el punto común de los caminos automáticos— y solo para leads
+  **nuevos**: los que se cuelgan de una ficha existente por teléfono siguen con quien la tenía, y el
+  alta manual no pasa por ahí. La elección tiene que leer y escribir `current_weight` en una
+  transacción con bloqueo de fila: dos webhooks simultáneos sin eso le dan el lead a la misma persona.
 - El módulo de **Calendario** (`/admin/calendario`, `CalendarView.vue`, permiso `calendar.view`) es
   la agenda del closer: las reuniones que agendó el bot por WhatsApp y las cargadas a mano, en una
   grilla mensual. Lee `scheduled_meetings`, que dejó de ser solo del bot — `wa_id` admite nulos (una

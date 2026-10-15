@@ -9,6 +9,7 @@ import ProjectDetailView from '../views/ProjectDetailView.vue';
 import DeliverablesView from '../views/DeliverablesView.vue';
 import RolesView from '../views/RolesView.vue';
 import CareersView from '../views/CareersView.vue';
+import LeadRoutingView from '../views/LeadRoutingView.vue';
 import MetaWebhookTestView from '../views/MetaWebhookTestView.vue';
 import SocialInteractionsView from '../views/SocialInteractionsView.vue';
 import WhatsAppView from '../views/WhatsAppView.vue';
@@ -50,6 +51,7 @@ const router = createRouter({
     { path: '/admin/entregables', name: 'deliverables', component: DeliverablesView, meta: { requiresAuth: true, permission: 'deliverables.view' } },
     { path: '/admin/roles', name: 'roles', component: RolesView, meta: { requiresAuth: true, permission: 'roles.manage' } },
     { path: '/admin/carreras', name: 'careers', component: CareersView, meta: { requiresAuth: true, permission: 'careers.manage' } },
+    { path: '/admin/reparto', name: 'lead-routing', component: LeadRoutingView, meta: { requiresAuth: true, permission: 'leads.routing' } },
     { path: '/admin/webhooks', name: 'webhooks', component: MetaWebhookTestView, meta: { requiresAuth: true, permission: 'webhooks.view' } },
     { path: '/admin/social', name: 'social', component: SocialInteractionsView, meta: { requiresAuth: true, permission: 'social.view' } },
     { path: '/admin/instagram', name: 'instagram', component: InstagramInteractionsView, meta: { requiresAuth: true, permission: 'instagram.view' } },
