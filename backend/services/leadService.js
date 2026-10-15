@@ -10,6 +10,7 @@ import {
   loadWinningStatuses
 } from './salesFunnelStage.js';
 import { CommissionService } from './commissionService.js';
+import { LeadRoutingService } from './leadRoutingService.js';
 
 /**
  * Dígitos con los que se compara un teléfono.
@@ -246,10 +247,11 @@ export function duplicateLeadError(duplicates) {
  * del chatbot y prospectos capturados en la Base de Datos).
  */
 export class LeadService {
-  constructor({ stageChangeService, userService, commissionService } = {}) {
+  constructor({ stageChangeService, userService, commissionService, routingService } = {}) {
     this.stageChanges = stageChangeService || new LeadStageChangeService();
     this.users = userService || new UserService();
     this.commissions = commissionService || new CommissionService();
+    this.routing = routingService || new LeadRoutingService({ userService: this.users });
   }
 
   async createLead({
@@ -282,17 +284,44 @@ export class LeadService {
     metaAdsetId,
     metaCampaignId,
     metaPlatform,
-    metaCreatedTime
+    metaCreatedTime,
+    autoRoute = true
   }) {
     /*
-     * Si el responsable llega como texto y nombra a alguien del área comercial
-     * (el alta manual lo elige de la lista del equipo), el lead nace ya
-     * enlazado a esa cuenta. El valor por defecto —"Kevin", de cuando el campo
-     * era texto libre— no corresponde a ninguna cuenta mientras nadie se llame
-     * así en el panel: queda como nombre y el tablero lo muestra igual.
+     * El reparto automático (`/admin/reparto`) va primero y le gana al texto:
+     * cuando está corriendo —o sea, cuando el bot está apagado— es ÉL quien
+     * decide de quién es el lead, y por eso pisa el valor por defecto "Kevin",
+     * que es un resto de cuando el campo era texto libre y hoy además nombra a
+     * una persona real del panel. Respetarlo haría que todos los leads de Meta
+     * y del evaluador siguieran cayéndole a Kevin con el reparto encendido.
+     *
+     * `autoRoute` viene en `true` a propósito: los caminos automáticos son los
+     * que hay que repartir y son los que se van a seguir agregando, así que el
+     * que tiene que acordarse de algo es el alta MANUAL, que es una sola
+     * (`registerManualLead()`) y se desvía poniéndolo en `false`. Al revés —que
+     * cada camino automático tenga que pedirlo— el cuarto que aparezca se
+     * olvida y nadie se entera, porque un lead sin repartir no falla: solo
+     * queda sin dueño.
+     *
+     * Un fallo del reparto NO puede tumbar el alta: un lead sin responsable se
+     * arregla asignándolo a mano, y un lead que no se guardó se perdió.
+     */
+    let assignedUser = null;
+    if (autoRoute) {
+      try {
+        assignedUser = await this.routing.pickAssignee();
+      } catch (error) {
+        console.error('❌ Error al repartir el lead automáticamente (queda sin responsable):', error.message);
+      }
+    }
+
+    /*
+     * Sin reparto (o sin nadie elegible), lo de siempre: si el responsable
+     * llega como texto y nombra a alguien del área comercial (el alta manual lo
+     * elige de la lista del equipo), el lead nace ya enlazado a esa cuenta.
      */
     const assignedText = assignedTo || 'Kevin';
-    const assignedUser = await this.users.findCommercialByName(assignedText);
+    if (!assignedUser) assignedUser = await this.users.findCommercialByName(assignedText);
 
     const [id] = await db('leads').insert({
       topic: topic || 'Asesoría de Tesis',
@@ -359,7 +388,10 @@ export class LeadService {
       metaAdsetId: data.metaAdsetId,
       metaCampaignId: data.metaCampaignId,
       metaPlatform: data.metaPlatform,
-      metaCreatedTime: data.metaCreatedTime
+      metaCreatedTime: data.metaCreatedTime,
+      // Por acá entran los leads de Meta, que SÍ se reparten; el alta manual
+      // entra por `registerManualLead()`, que lo pone en `false`.
+      autoRoute: data.autoRoute !== false
     });
   }
 
@@ -508,7 +540,13 @@ export class LeadService {
   async registerManualLead(data, { actor = null } = {}) {
     const duplicates = await this.findDuplicates({ phone: data.phone, dni: data.dni, viewer: actor });
     if (duplicates.length > 0) throw duplicateLeadError(duplicates);
-    return this.createProspect({ ...data, createdBy: actor?.id || null });
+    /*
+     * El alta manual NO pasa por el reparto automático. Quien carga la ficha
+     * suele estar cargando SU lead (lo consiguió, se lo pasaron por fuera), y
+     * mandárselo a otro del grupo es quitárselo; además el formulario ya tiene
+     * su propio campo de responsable, que es el que manda acá.
+     */
+    return this.createProspect({ ...data, createdBy: actor?.id || null, autoRoute: false });
   }
 
   /**

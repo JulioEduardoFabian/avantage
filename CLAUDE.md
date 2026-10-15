@@ -481,11 +481,28 @@ antes de tocar el arranque de producción.
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para
   recorrer el tablero de cada persona y **no abre leads** — filtra lo que el servidor ya mandó.
+- El **interruptor global del bot** (`whatsapp_bot_settings.bot_enabled`, botón en la barra de
+  `/admin/whatsapp`, `GET`/`PATCH /api/whatsapp/bot/global`) decide **quién atiende**: Avan o el
+  equipo. Es otra cosa que la pausa por contacto (`whatsapp_bot_sessions.bot_enabled`, que se pone
+  sola en cuanto alguien responde a mano). Leerlo es `whatsapp.view`; cambiarlo, `bot.manage`.
+  Con el bot **apagado** no sale un solo mensaje: el freno está al tope de `handleIncomingMessage()`
+  —antes incluso que "estoy en sala de espera", que es la excepción a cualquier otra pausa— y en los
+  dos barridos que le hablan al lead (`checkStaleConversations`, `sendMeetingReminders`). Se vuelve
+  ahí y no en `send()` para no dejar rastro: ni buffer encolado (se procesaría al reencenderlo,
+  contestando un mensaje de hace horas), ni sesión creada, ni llamada al LLM; y los barridos RESERVAN
+  la fila antes de mandar, así que dejarlos correr contra un envío que falla gasta el único
+  recordatorio que a ese lead le tocaba. `send()` igual lanza `BOT_DISABLED` como red de último
+  momento, porque "ningún camino llega hasta acá" dura hasta el próximo camino que alguien agregue.
+  Los barridos **no marcan** lo que no mandaron, así que al encender el bot el recordatorio sale.
 - El **reparto automático de leads** (`/admin/reparto`, `LeadRoutingView.vue`, permiso
   `leads.routing`, `leadRoutingService.js`) decide quién recibe los leads que entran solos (bot,
-  formularios de Meta, evaluador) y en qué proporción. **Por ahora es solo configuración: ningún alta
-  de leads lo lee** — la pantalla lo dice con la banda "Vista previa" (`lead_routing_pools.enabled`
-  nace en falso). Cada persona tiene un **peso** (`lead_routing_members.weight`): de cada vuelta
+  formularios de Meta, evaluador) y en qué proporción. **Corre exactamente cuando el bot está
+  apagado** (`leadRoutingService.isActive()`): mientras Avan atiende, él califica y agenda, y
+  repartir a la vez pondría a una persona a trabajar en paralelo la misma conversación. No hay un
+  interruptor propio del reparto y `lead_routing_pools.enabled` dejó de decidir nada (queda para el
+  día que haya más de un grupo): con dos interruptores, la combinación "bot apagado + reparto
+  apagado" deja los leads sin responsable Y sin bot — ni los ve nadie ni los contesta nadie, que es
+  el peor estado posible. Cada persona tiene un **peso** (`lead_routing_members.weight`): de cada vuelta
   (la suma de los pesos) le tocan tantos leads como su peso, así que "5 a la setter por cada 1 al
   closer" es peso 5 y peso 1, y con más gente se suman filas sin tocar código. El algoritmo es el
   reparto ponderado **suave** (`backend/services/leadRouting.js`, con su espejo `src/leadRouting.js`
@@ -496,11 +513,41 @@ antes de tocar el arranque de producción.
   responsable, como hoy. La pantalla avisa si alguien del reparto **no tiene `setter.view`**: los
   leads automáticos nacen en el Setter Funnel, y el rol Closer tal como viene no lo ve.
   Existe `lead_routing_pools` aunque hoy haya un solo grupo para que repartir distinto por origen
-  (campaña, universidad) sea agregar reglas y no migrar miembros. Al activarlo, el enganche va en
+  (campaña, universidad) sea agregar reglas y no migrar miembros. El enganche está en
   `leadService.createLead()` —el punto común de los caminos automáticos— y solo para leads
-  **nuevos**: los que se cuelgan de una ficha existente por teléfono siguen con quien la tenía, y el
-  alta manual no pasa por ahí. La elección tiene que leer y escribir `current_weight` en una
-  transacción con bloqueo de fila: dos webhooks simultáneos sin eso le dan el lead a la misma persona.
+  **nuevos**: los que se cuelgan de una ficha existente por teléfono siguen con quien la tenía. El
+  parámetro es `autoRoute` y viene en **`true`**: el que tiene que acordarse de algo es el alta
+  MANUAL, que es una sola (`registerManualLead()`) y lo pone en `false`; al revés, el cuarto camino
+  automático que aparezca se olvidaría y nadie se enteraría, porque un lead sin repartir no falla,
+  solo queda sin dueño. El reparto **le gana al texto** `assignedTo`, incluido el valor por defecto
+  "Kevin" (un resto de cuando el campo era libre, que hoy además nombra a una persona real):
+  respetarlo haría que todos los leads de Meta y del evaluador siguieran cayéndole a él.
+  `pickAssignee()` lee y escribe `current_weight` en una transacción con `forUpdate`: dos webhooks
+  simultáneos sin eso le dan el lead a la misma persona y la proporción configurada deja de
+  cumplirse. La pregunta de quién sigue siendo del área comercial se resuelve ANTES de abrir la
+  transacción, para no alargar el bloqueo en el camino por el que entra cada lead. Un fallo del
+  reparto nunca tumba el alta: un lead sin responsable se asigna a mano, uno que no se guardó se
+  perdió.
+- **Al lead se le responde desde su propia ficha** (`LeadConversation.vue`, el panel lateral del
+  modal en los dos tableros). Era el bloque que estaba copiado en `SetterFunnelView` y `LeadsView` y
+  ahora es un componente, porque pasó a tener estado de verdad: cuadro de respuesta, ventana de 24 h,
+  autor de cada mensaje y la pausa de Avan. Pide `/api/leads/:id/whatsapp` (GET hilo, POST responder,
+  `PATCH .../bot` para devolverle la conversación a Avan, y `.../media/:messageId` para los adjuntos)
+  y **no** las rutas de la bandeja: aquellas exigen `whatsapp.view`, que son TODAS las conversaciones
+  de todo el mundo, y el setter no la tiene — hasta ahora el panel le respondía 403 y la conversación
+  se veía vacía sin decir por qué. Estas van con `requireAnyPermission('leads.view','setter.view')` +
+  `requireLeadVisible`, la misma regla de "cada quien ve sus leads", y la ruta del adjunto comprueba
+  además que el mensaje sea de ESA conversación y no solo que exista.
+  El `wa_id` **no** se toma de `lead.phone` tal cual: se resuelve con `resolveWaIdForPhone()`
+  (exacto y después los últimos 9 dígitos, el mismo criterio que `findByPhone`), porque la ficha y el
+  webhook escriben el número distinto — el hilo salía vacío para los leads de Meta, y ahora que desde
+  ahí se ENVÍA, el mensaje se iría a un identificador que no existe.
+  `whatsapp_messages.sent_by` guarda **quién** mandó cada saliente (nulo = Avan, o un eco de la app
+  de WhatsApp Business): todo lo saliente se pintaba como "Avan" porque era verdad, y desde que
+  responde gente el hilo es una mezcla — sin eso no se sabe si al lead ya le contestaron. El hilo
+  lleva además **separador por día** ("Hoy", "Ayer", la fecha): solo con la hora, "10:50" puede ser de
+  hace un minuto o de hace tres semanas, y de eso depende si corresponde contestar o presentarse de
+  nuevo. El sondeo de 12 s **no arrastra la vista** si el operador subió a releer (`stuckToBottom`).
 - El módulo de **Calendario** (`/admin/calendario`, `CalendarView.vue`, permiso `calendar.view`) es
   la agenda del closer: las reuniones que agendó el bot por WhatsApp y las cargadas a mano, en una
   grilla mensual. Lee `scheduled_meetings`, que dejó de ser solo del bot — `wa_id` admite nulos (una

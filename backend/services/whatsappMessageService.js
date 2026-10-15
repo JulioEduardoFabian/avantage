@@ -41,6 +41,13 @@ function phoneKey(value) {
   return digits.slice(-9);
 }
 
+/**
+ * La mitad en SQL de `phoneKey`: los últimos 9 dígitos de un `wa_id`, sin los
+ * separadores con los que la gente escribe un número. Las dos limpian lo mismo
+ * a propósito — son la misma regla en los dos lados de la comparación.
+ */
+const WA_ID_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(wa_id, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
+
 /** Fecha de hoy ("YYYY-MM-DD") en el calendario de Lima, sin importar la zona horaria del servidor. */
 function limaTodayIso() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -340,8 +347,13 @@ export class WhatsappMessageService {
    * exige el campo "recipient" en su lugar, con el BSUID completo.
    * https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids/
    */
-  async sendTextMessage(waId, body) {
-    if (WHATSAPP_PROVIDER === 'ycloud') return this.sendTextMessageViaYCloud(waId, body);
+  /**
+   * `sentBy` es el id del usuario del panel que escribió el mensaje, y queda
+   * guardado en la fila. Viene sin valor cuando escribe el bot, que es el otro
+   * caso: en el hilo, `sent_by` nulo se lee como "lo mandó Avan".
+   */
+  async sendTextMessage(waId, body, { sentBy = null } = {}) {
+    if (WHATSAPP_PROVIDER === 'ycloud') return this.sendTextMessageViaYCloud(waId, body, { sentBy });
 
     const phoneNumberId = process.env.META_WHATSAPP_PHONE_NUMBER_ID;
     const accessToken = process.env.META_WHATSAPP_ACCESS_TOKEN || process.env.META_PAGE_ACCESS_TOKEN;
@@ -390,6 +402,7 @@ export class WhatsappMessageService {
       body,
       direction: 'outbound',
       status: 'sent',
+      sent_by: sentBy || null,
       raw_payload: JSON.stringify(data)
     });
 
@@ -400,7 +413,7 @@ export class WhatsappMessageService {
    * Envía un mensaje de texto libre vía la API de YCloud (WHATSAPP_PROVIDER=ycloud).
    * https://docs.ycloud.com/reference/whatsapp-message-sending-guide
    */
-  async sendTextMessageViaYCloud(waId, body) {
+  async sendTextMessageViaYCloud(waId, body, { sentBy = null } = {}) {
     const apiKey = process.env.YCLOUD_API_KEY;
     const from = process.env.YCLOUD_WHATSAPP_FROM;
     if (!apiKey) throw new Error('YCLOUD_API_KEY no está configurado en el servidor.');
@@ -455,6 +468,7 @@ export class WhatsappMessageService {
       body,
       direction: 'outbound',
       status: 'sent',
+      sent_by: sentBy || null,
       raw_payload: JSON.stringify(data)
     });
 
@@ -882,9 +896,54 @@ export class WhatsappMessageService {
    * — solo para no arrastrarle al LLM el contexto de una conversación previa
    * ya reiniciada desde el panel.
    */
+  /**
+   * El `wa_id` real de la conversación de un lead, a partir del teléfono que
+   * tiene guardado en su ficha.
+   *
+   * Hace falta porque los dos datos no se escriben igual: el bot guarda el
+   * `wa_id` crudo del webhook ("51987654321") y la ficha puede tener lo que
+   * escribió la persona en un formulario de Meta o lo que cargó alguien a mano
+   * ("+51 987 654 321"). La ficha del lead venía usando `lead.phone` tal cual
+   * como `wa_id`, así que para esos leads el hilo salía vacío aunque la
+   * conversación existiera — y ahora que desde ahí se RESPONDE, el mensaje se
+   * iría a un identificador que no es el del contacto.
+   *
+   * Primero la coincidencia exacta y después los últimos 9 dígitos, el mismo
+   * `phoneKey` con el que ya se cruzan los leads en el buscador de la bandeja.
+   * Devuelve `null` si ese contacto no tiene ni un mensaje: no hay hilo todavía.
+   */
+  async resolveWaIdForPhone(phone) {
+    const raw = String(phone || '').trim();
+    if (!raw) return null;
+
+    const exact = await db('whatsapp_messages').where({ wa_id: raw }).first('wa_id');
+    if (exact) return exact.wa_id;
+
+    const key = phoneKey(raw);
+    if (!key) return null;
+
+    // Se compara por sufijo en SQL y se queda con la conversación más reciente:
+    // si un mismo número quedó guardado con dos formatos distintos, la que
+    // importa es en la que se está escribiendo ahora. Los separadores que se
+    // limpian son los mismos que `PHONE_MATCH_KEY_SQL` en `leadService`, y las
+    // comillas son simples a propósito: con el modo ANSI_QUOTES de MySQL, unas
+    // dobles se leerían como nombres de columna y la consulta reventaría.
+    const match = await db('whatsapp_messages')
+      .whereRaw(`${WA_ID_MATCH_KEY_SQL} = ?`, [key])
+      .orderBy('received_at', 'desc')
+      .first('wa_id');
+    return match?.wa_id || null;
+  }
+
   async getThread(waId, { limit = 200, since = null } = {}) {
-    let query = db('whatsapp_messages').where({ wa_id: waId });
-    if (since) query = query.where('received_at', '>=', since);
+    // El nombre del autor viaja resuelto (`sent_by_name`) y no se deduce en la
+    // pantalla: quien lee el hilo desde la ficha de un lead no tiene la lista
+    // de usuarios cargada, y el que escribió puede ya no estar en el panel.
+    let query = db('whatsapp_messages')
+      .leftJoin('users as autor', 'autor.id', 'whatsapp_messages.sent_by')
+      .where('whatsapp_messages.wa_id', waId)
+      .select('whatsapp_messages.*', 'autor.name as sent_by_name');
+    if (since) query = query.where('whatsapp_messages.received_at', '>=', since);
 
     // Se piden los ÚLTIMOS `limit` mensajes y recién después se ordenan
     // ascendente para pintarlos. Con `orderBy('asc').limit()` se devolvían los
@@ -892,7 +951,12 @@ export class WhatsappMessageService {
     // llegaba nunca al panel por más que se refrescara. El desempate por `id`
     // tampoco es opcional — varias burbujas caen en el mismo segundo y sin él
     // el orden entre ellas cambiaba de un sondeo a otro.
-    const rows = await query.orderBy('received_at', 'desc').orderBy('id', 'desc').limit(limit);
+    // Las dos columnas van calificadas: con el join a `users`, un `id` suelto
+    // es ambiguo para MySQL y la consulta ni siquiera corre.
+    const rows = await query
+      .orderBy('whatsapp_messages.received_at', 'desc')
+      .orderBy('whatsapp_messages.id', 'desc')
+      .limit(limit);
     return rows.reverse();
   }
 

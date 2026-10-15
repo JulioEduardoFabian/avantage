@@ -12,6 +12,26 @@
       </div>
 
       <div class="header-actions">
+        <!-- Interruptor GLOBAL de Avan. Va primero y se ve distinto del resto
+             porque no es una preferencia de pantalla como "Auto: ON": cambia
+             cómo se atiende a todos los leads que entren desde ahora. -->
+        <button
+          v-if="canManageBot"
+          class="bot-switch"
+          :class="botGlobalEnabled ? 'is-on' : 'is-off'"
+          :disabled="botGlobalLoading"
+          :title="botGlobalEnabled
+            ? 'Avan está atendiendo. Apágalo para que los leads nuevos se repartan entre el equipo.'
+            : 'Avan está apagado. Los leads nuevos se reparten según el módulo de Reparto de leads.'"
+          @click="toggleGlobalBot"
+        >
+          <span class="bot-switch-dot" aria-hidden="true"></span>
+          <span class="bot-switch-text">
+            <strong>{{ botGlobalEnabled ? 'Bot encendido' : 'Bot apagado' }}</strong>
+            <small>{{ botGlobalLoading ? 'Guardando…' : (botGlobalEnabled ? 'Avan atiende y agenda' : 'Atiende el equipo · se reparten los leads') }}</small>
+          </span>
+        </button>
+
         <button class="btn-action-secondary" @click="fetchAll()" :disabled="isLoading" title="Actualizar ahora">
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
@@ -54,6 +74,18 @@
         </div>
       </div>
     </header>
+
+    <!-- Con el bot apagado la pantalla tiene que decirlo en todo momento: si no,
+         una conversación sin respuesta se lee como una falla del bot en vez de
+         como el estado que alguien eligió. -->
+    <p v-if="canSeeBotState && !botGlobalEnabled" class="info-box bot-off-box">
+      🔕 <strong>Avan está apagado.</strong>
+      No le responde a nadie y los leads nuevos de WhatsApp, Meta y el evaluador
+      se asignan según el <router-link to="/admin/reparto">Reparto de leads</router-link>,
+      para que aparezcan en el Setter Funnel de su responsable.
+      <span v-if="botRoutingNames.length"> Ahora mismo reciben: <strong>{{ botRoutingNames.join(', ') }}</strong>.</span>
+      <span v-else-if="botRoutingChecked"> <strong>No hay nadie en el reparto</strong>, así que los leads van a quedar sin responsable.</span>
+    </p>
 
     <p v-if="errorMessage" class="info-box alert-box">⚠️ {{ errorMessage }}</p>
     <p v-if="resetMessage" class="info-box success-box">✅ {{ resetMessage }}</p>
@@ -555,6 +587,7 @@
 import { nextTick, onMounted, onUnmounted, computed, ref, reactive, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
+import { hasPermission } from '../auth.js';
 import { Form } from 'lucide-vue-next';
 
 const conversations = ref([]);
@@ -572,6 +605,67 @@ const isLoading = ref(false);
 const errorMessage = ref('');
 const resetMessage = ref('');
 const autoRefresh = ref(true);
+
+/*
+ * Interruptor GLOBAL de Avan.
+ *
+ * Es otra cosa que pausar el bot en UNA conversación (lo que ya hacía el botón
+ * de cada hilo, y lo que pasa solo en cuanto alguien responde a mano): esto
+ * decide si el bot atiende o si atiende el equipo. Y de la misma decisión
+ * cuelga el reparto automático de leads, que corre exactamente cuando el bot
+ * está apagado — por eso al cambiarlo se traen también los nombres de quienes
+ * van a recibir: apagar el bot sin nadie en el reparto deja a los leads sin
+ * responsable, y eso hay que verlo en el momento, no descubrirlo al día
+ * siguiente con el tablero vacío.
+ *
+ * Verlo lo puede quien ve esta pantalla; cambiarlo exige `bot.manage`.
+ */
+const canSeeBotState = hasPermission('whatsapp.view');
+const canManageBot = hasPermission('bot.manage');
+const botGlobalEnabled = ref(true);
+const botGlobalLoading = ref(false);
+const botRoutingNames = ref([]);
+const botRoutingChecked = ref(false);
+
+async function loadGlobalBotState() {
+  if (!canSeeBotState) return;
+  try {
+    const response = await apiFetch('/api/whatsapp/bot/global');
+    const data = await response.json();
+    if (response.ok) botGlobalEnabled.value = !!data.enabled;
+  } catch (err) {
+    console.warn('No se pudo leer el interruptor global del bot:', err);
+  }
+}
+
+async function toggleGlobalBot() {
+  if (botGlobalLoading.value) return;
+  const next = !botGlobalEnabled.value;
+  if (!next && !window.confirm(
+    'Vas a APAGAR a Avan para todas las conversaciones.\n\n'
+    + 'Deja de responder y de agendar, y los leads nuevos pasan a repartirse '
+    + 'entre el equipo según el módulo de Reparto de leads.\n\n'
+    + '¿Continuar?'
+  )) return;
+
+  botGlobalLoading.value = true;
+  errorMessage.value = '';
+  try {
+    const response = await apiFetch('/api/whatsapp/bot/global', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: next })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo cambiar el estado del bot.');
+    botGlobalEnabled.value = !!data.enabled;
+    botRoutingNames.value = data.routing?.members || [];
+    botRoutingChecked.value = !!data.routing;
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    botGlobalLoading.value = false;
+  }
+}
 
 const selectedWaId = ref(null);
 const thread = ref([]);
@@ -1402,6 +1496,7 @@ onMounted(() => {
   if (requestedWaId) selectConversation(requestedWaId);
 
   fetchAll();
+  loadGlobalBotState();
   window.addEventListener('keydown', onActivityKeydown);
   pollHandle = setInterval(() => {
     if (!autoRefresh.value) return;
@@ -1461,6 +1556,73 @@ onUnmounted(() => {
   gap: 0.6rem;
   flex-wrap: wrap;
 }
+
+/* ---- Interruptor global de Avan ----
+   Deliberadamente NO usa `.btn-action-secondary`: al lado de "Actualizar" y
+   "Auto: ON" se leería como una preferencia de pantalla más, y es la única
+   cosa de esta barra que cambia cómo se atiende a los leads. El punto de
+   color dice el estado de un vistazo y el renglón de abajo dice la
+   consecuencia, que es lo que de verdad hay que decidir. */
+.bot-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  border-radius: 10px;
+  padding: 0.42rem 0.95rem;
+  cursor: pointer;
+  font-family: var(--font-heading);
+  text-align: left;
+  border: 1px solid transparent;
+  background: var(--surface-2);
+  color: var(--text-main);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.bot-switch.is-on {
+  border-color: rgba(46, 125, 70, 0.45);
+  background: rgba(46, 125, 70, 0.12);
+}
+
+.bot-switch.is-off {
+  border-color: rgba(200, 85, 50, 0.45);
+  background: rgba(200, 85, 50, 0.12);
+}
+
+.bot-switch:hover:not(:disabled) { filter: brightness(1.05); }
+.bot-switch:disabled { opacity: 0.6; cursor: default; }
+
+.bot-switch-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.bot-switch.is-on .bot-switch-dot {
+  background: var(--accent-emerald, #2F7D5A);
+  box-shadow: 0 0 0 3px rgba(46, 125, 70, 0.22);
+}
+
+.bot-switch.is-off .bot-switch-dot {
+  background: var(--accent-rose, #B23A45);
+  box-shadow: 0 0 0 3px rgba(200, 85, 50, 0.22);
+}
+
+.bot-switch-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.bot-switch-text strong { font-size: 0.84rem; font-weight: 700; }
+.bot-switch-text small { font-size: 0.68rem; color: var(--text-muted); }
+
+.bot-off-box {
+  border-color: rgba(200, 85, 50, 0.4);
+  line-height: 1.5;
+}
+
+.bot-off-box a { color: inherit; font-weight: 700; }
 
 .btn-action-secondary {
   background: var(--surface-2);

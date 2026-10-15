@@ -806,7 +806,7 @@
                 :class="{ 'is-active': showBotChat }"
                 @click="toggleBotChat"
               >
-                💬 {{ showBotChat ? 'Ocultar conversación' : 'Ver conversación con el bot' }} ({{ selectedLead.phone }})
+                💬 {{ showBotChat ? 'Ocultar conversación' : 'Conversación / Responder' }} ({{ selectedLead.phone }})
               </button>
               <a
                 v-if="selectedLead.email"
@@ -920,45 +920,10 @@
           <LeadNotes :lead-id="selectedLead.id" />
          </div>
 
-          <!-- Panel lateral: conversación con el bot de WhatsApp (Avan) -->
-          <aside v-if="showBotChat" class="bot-chat-panel">
-            <header class="bot-chat-head">
-              <span>💬 Conversación con Avan</span>
-              <button type="button" class="bot-chat-refresh" :disabled="botChatLoading" @click="loadBotChat()">
-                {{ botChatLoading ? '…' : '⟳' }}
-              </button>
-            </header>
-            <div ref="botChatScrollEl" class="bot-chat-scroll custom-scrollbar">
-              <p v-if="botChatError" class="bot-chat-empty">⚠️ {{ botChatError }}</p>
-              <p v-else-if="botChatLoading && !botChatMessages.length" class="bot-chat-empty">Cargando conversación…</p>
-              <p v-else-if="!botChatMessages.length" class="bot-chat-empty">Sin mensajes registrados con este contacto.</p>
-              <div
-                v-for="msg in botChatMessages"
-                :key="msg.id"
-                class="bot-bubble"
-                :class="msg.direction === 'outbound' ? 'outbound' : 'inbound'"
-              >
-                <img
-                  v-if="msg.message_type === 'image' && botChatMediaUrls[msg.id]"
-                  :src="botChatMediaUrls[msg.id]"
-                  alt="Imagen enviada por WhatsApp"
-                  class="bot-bubble-image"
-                />
-                <a
-                  v-else-if="msg.media_filename && botChatMediaUrls[msg.id]"
-                  :href="botChatMediaUrls[msg.id]"
-                  target="_blank"
-                  rel="noopener"
-                  class="bot-bubble-attachment-link"
-                >📎 Ver adjunto</a>
-                <span v-if="msg.message_type === 'audio' && msg.body && msg.body !== '[Audio]'" class="bot-bubble-audio-tag" title="Transcrito automáticamente de una nota de voz">🎤 Audio transcrito</span>
-                <p v-if="msg.body && !(msg.media_filename && MEDIA_BODY_PLACEHOLDER_RE.test(msg.body))" class="bot-bubble-text">{{ msg.body }}</p>
-                <span class="bot-bubble-time">
-                  {{ msg.direction === 'outbound' ? 'Avan' : 'Contacto' }} · {{ formatClock(msg.received_at) }}
-                </span>
-              </div>
-            </div>
-          </aside>
+          <!-- Panel lateral: la conversación de WhatsApp del lead, para leerla
+               y para responderle sin salir de la ficha. El componente es el
+               mismo que usa el Funnel de Ventas. -->
+          <LeadConversation v-if="showBotChat" :lead="selectedLead" class="lead-chat-side" />
         </div>
 
         <div class="modal-footer">
@@ -983,10 +948,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
-import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
+import LeadConversation from '../components/LeadConversation.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
@@ -997,9 +962,6 @@ import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
 import { DEFAULT_SETTER_COLUMNS, loadSetterColumns as readSetterColumns, saveSetterColumns } from '../setterFunnelColumns.js';
-
-/** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
-const MEDIA_BODY_PLACEHOLDER_RE = /^\[(Imagen|Video|Audio|Documento|Sticker)\]$/;
 
 // Etapas predeterminadas especializadas para Setter Funnel
 const PRESET_EMOJIS = ['💬', '🎯', '📅', '🤝', '🏆', '🚫', '💚', '📘', '📸', '📞', '🆕', '📋', '⏳', '⭐', '⚡', '💰'];
@@ -1047,14 +1009,10 @@ function onMeetingCreated(data) {
   setTimeout(() => { meetingNotice.value = ''; }, 8000);
 }
 
-// Conversación con el bot de WhatsApp (Avan) dentro de la ficha del lead
+// Conversación de WhatsApp del lead dentro de su ficha. El panel entero vive
+// en `LeadConversation.vue` (hilo, adjuntos, sondeo y cuadro de respuesta);
+// acá solo queda si está desplegado o no.
 const showBotChat = ref(false);
-const botChatMessages = ref([]);
-const botChatMediaUrls = reactive({});
-const botChatLoading = ref(false);
-const botChatError = ref('');
-const botChatScrollEl = ref(null);
-let botChatTimer = null;
 const isLoading = ref(false);
 const loadError = ref('');
 const draggedLead = ref(null);
@@ -1987,85 +1945,14 @@ function formatCardDate(dateStr) {
   });
 }
 
-function formatClock(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
-}
-
-/**
- * Trae el hilo completo (contacto + Avan) del lead seleccionado desde la
- * tabla `whatsapp_messages`. El `phone` del lead ES el wa_id del contacto.
- */
-function releaseBotChatMedia(keepIds) {
-  for (const key of Object.keys(botChatMediaUrls)) {
-    if (keepIds.has(Number(key))) continue;
-    URL.revokeObjectURL(botChatMediaUrls[key]);
-    delete botChatMediaUrls[key];
-  }
-}
-
-async function hydrateBotChatMedia(messages) {
-  const withMedia = messages.filter((m) => m.media_filename);
-  releaseBotChatMedia(new Set(withMedia.map((m) => m.id)));
-  for (const msg of withMedia) {
-    if (botChatMediaUrls[msg.id]) continue;
-    const url = await loadApiImage(`/api/whatsapp/messages/${msg.id}/media`);
-    if (url) botChatMediaUrls[msg.id] = url;
-  }
-}
-
-async function loadBotChat() {
-  const waId = selectedLead.value?.phone;
-  if (!waId) return;
-  botChatLoading.value = true;
-  botChatError.value = '';
-  try {
-    const response = await apiFetch(`/api/whatsapp/conversations/${encodeURIComponent(waId)}/messages`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo obtener la conversación.');
-    botChatMessages.value = data.messages || [];
-    await hydrateBotChatMedia(botChatMessages.value);
-    await nextTick();
-    if (botChatScrollEl.value) botChatScrollEl.value.scrollTop = botChatScrollEl.value.scrollHeight;
-  } catch (err) {
-    botChatError.value = err.message;
-  } finally {
-    botChatLoading.value = false;
-  }
-}
-
-function stopBotChatPolling() {
-  if (botChatTimer) {
-    clearInterval(botChatTimer);
-    botChatTimer = null;
-  }
-}
-
 function toggleBotChat() {
   showBotChat.value = !showBotChat.value;
-  if (showBotChat.value) {
-    loadBotChat();
-    stopBotChatPolling();
-    botChatTimer = setInterval(loadBotChat, 12000);
-  } else {
-    stopBotChatPolling();
-  }
 }
 
-// Al cambiar de lead (o cerrar la ficha) se colapsa y limpia el panel.
+// Al cambiar de lead (o cerrar la ficha) el panel se colapsa. Lo que había que
+// limpiar —hilo, adjuntos, sondeo— lo desmonta `LeadConversation` solo.
 watch(selectedLead, () => {
   showBotChat.value = false;
-  botChatMessages.value = [];
-  botChatError.value = '';
-  releaseBotChatMedia(new Set());
-  stopBotChatPolling();
-});
-
-onBeforeUnmount(() => {
-  stopBotChatPolling();
-  releaseBotChatMedia(new Set());
 });
 
 onMounted(() => {
@@ -3375,130 +3262,21 @@ button.setter-btn {
   flex: 1 1 0;
 }
 
-.bot-chat-panel {
-  flex: 0 0 360px;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-1);
-  border: 1px solid var(--border-color);
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.bot-chat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.7rem 0.9rem;
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: var(--text-main);
-  background: var(--surface-2, var(--surface-1));
-  border-bottom: 1px solid var(--border-color);
-}
-
-.bot-chat-refresh {
-  background: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  border-radius: 8px;
-  width: 26px;
-  height: 26px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
-}
-
-.bot-chat-refresh:hover:not(:disabled) {
-  color: var(--text-main);
-}
-
-.bot-chat-scroll {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 62vh;
-  background:
-    radial-gradient(circle at 20% 10%, rgba(47, 125, 90, 0.06), transparent 60%);
-}
-
-.bot-chat-empty {
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  text-align: center;
-  margin: auto;
-}
-
-.bot-bubble {
-  max-width: 85%;
-  padding: 0.5rem 0.7rem;
-  border-radius: 12px;
-  font-size: 0.83rem;
-  line-height: 1.4;
-  word-break: break-word;
-}
-
-.bot-bubble.inbound {
-  align-self: flex-start;
-  background: var(--bg-card-solid);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  border-bottom-left-radius: 4px;
-}
-
-.bot-bubble.outbound {
-  align-self: flex-end;
-  background: #2F7D5A;
-  color: #fff;
-  border-bottom-right-radius: 4px;
-}
-
-.bot-bubble-text {
-  margin: 0;
-  white-space: pre-wrap;
-}
-
-.bot-bubble-image {
-  display: block;
-  max-width: 100%;
-  max-height: 18rem;
-  border-radius: 0.5rem;
-  margin-bottom: 0.25rem;
-}
-
-.bot-bubble-attachment-link {
-  display: inline-block;
-  color: inherit;
-  text-decoration: underline;
-  margin-bottom: 0.25rem;
-}
-
-.bot-bubble-audio-tag {
-  display: block;
-  font-size: 0.65rem;
-  opacity: 0.65;
-  margin-bottom: 0.15rem;
-}
-
-.bot-bubble-time {
-  display: block;
-  margin-top: 0.2rem;
-  font-size: 0.66rem;
-  opacity: 0.7;
+/* El panel de conversación (y su propio responsive) vive en
+   `LeadConversation.vue`; acá solo se le reserva el ancho de la columna. */
+.lead-chat-side {
+  flex: 0 0 380px;
+  min-width: 0;
+  max-height: 72vh;
 }
 
 @media (max-width: 900px) {
   .modal-body-split {
     flex-direction: column !important;
   }
-  .bot-chat-panel {
+  .lead-chat-side {
     flex-basis: auto;
-  }
-  .bot-chat-scroll {
-    max-height: 40vh;
+    max-height: none;
   }
 }
 

@@ -2157,6 +2157,134 @@ app.get('/api/leads/:id/stage-history', requireAuth, requireAnyPermission('leads
   }
 });
 
+// =====================================================================
+// CONVERSACIÓN DE WHATSAPP DE UN LEAD (/api/leads/:id/whatsapp)
+// =====================================================================
+/*
+ * El mismo hilo que la bandeja de WhatsApp, pero entrando por el LEAD: es lo
+ * que la ficha de los dos tableros necesita para leer y para responder.
+ *
+ * Son rutas propias y no las de `/api/whatsapp/conversations/:waId` por el
+ * permiso. Aquellas piden `whatsapp.view`, que es la bandeja entera —todas las
+ * conversaciones de todo el mundo—, y el setter no la tiene: hasta ahora el
+ * panel de la ficha le respondía 403 y la conversación se veía vacía sin
+ * explicación. Acá el alcance es otro y mucho más chico: `requireLeadVisible`
+ * deja pasar únicamente la conversación de un lead que esa persona ya puede
+ * abrir, que es la misma regla de "cada quien ve sus leads".
+ *
+ * El `wa_id` NO se toma de `lead.phone` tal cual: se resuelve
+ * (`resolveWaIdForPhone`), porque la ficha y el webhook escriben el número
+ * distinto. Mandar un mensaje a un identificador mal formado no da error
+ * visible, simplemente no llega.
+ */
+async function leadWaId(lead) {
+  return whatsappMessageService.resolveWaIdForPhone(lead.phone);
+}
+
+app.get('/api/leads/:id/whatsapp', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const waId = await leadWaId(req.lead);
+    if (!waId) return res.json({ waId: null, messages: [], windowOpen: false, botPaused: false });
+
+    const [messages, windowOpen, session] = await Promise.all([
+      whatsappMessageService.getThread(waId, { limit: 200 }),
+      whatsappMessageService.isCustomerWindowOpen(waId),
+      whatsappBotService.getSession(waId)
+    ]);
+
+    // `windowOpen` y `botPaused` viajan con el hilo para que el cuadro de
+    // respuesta sepa dibujarse: fuera de las 24 h de WhatsApp el texto libre
+    // no se puede mandar, y decirlo ANTES de que alguien escriba el mensaje es
+    // la diferencia entre un aviso y un mensaje perdido.
+    res.json({
+      waId,
+      messages,
+      windowOpen,
+      botPaused: session ? !session.bot_enabled : false
+    });
+  } catch (error) {
+    console.error('❌ Error al obtener la conversación del lead:', error);
+    res.status(500).json({ error: 'Error al obtener la conversación.', details: error.message });
+  }
+});
+
+app.post('/api/leads/:id/whatsapp', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const body = (req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'El mensaje no puede estar vacío.' });
+
+    const waId = await leadWaId(req.lead);
+    if (!waId) {
+      return res.status(409).json({
+        error: 'Este lead todavía no tiene ninguna conversación de WhatsApp abierta, así que no hay hilo al que responder.'
+      });
+    }
+
+    const message = await whatsappMessageService.sendTextMessage(waId, body, { sentBy: req.user.id });
+
+    // Mismo efecto que responder desde la bandeja: el bot se pausa para ese
+    // contacto (si no, le escribe por encima a la persona que acaba de
+    // contestar) y se borra la marca de "urgente", que ya está atendida.
+    await whatsappBotService.setBotEnabled(waId, false);
+    await whatsappMessageService.clearHandoffMark(waId);
+
+    res.status(201).json({ message });
+  } catch (error) {
+    console.error('❌ Error al responderle al lead por WhatsApp:', error);
+    res.status(502).json({ error: 'No se pudo enviar el mensaje de WhatsApp.', details: error.message });
+  }
+});
+
+/**
+ * Vuelve a encender (o apaga) Avan para la conversación de ESTE lead.
+ *
+ * Responder desde la ficha pausa el bot para ese contacto, que es lo correcto
+ * mientras hay una persona escribiendo. Pero sin esta ruta, devolvérselo al
+ * bot obligaba a entrar a la bandeja de WhatsApp — que es justo la pantalla
+ * que el setter no tiene. Quedaba un camino de ida: cualquiera podía apagar el
+ * bot de un lead sin poder volver a encenderlo.
+ *
+ * No toca el interruptor GLOBAL (`/api/whatsapp/bot/global`, con `bot.manage`):
+ * esto es un contacto, aquello es cómo se atiende a todos.
+ */
+app.patch('/api/leads/:id/whatsapp/bot', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Falta "enabled" (true o false).' });
+    }
+    const waId = await leadWaId(req.lead);
+    if (!waId) return res.status(409).json({ error: 'Este lead todavía no tiene una conversación de WhatsApp.' });
+
+    await whatsappBotService.setBotEnabled(waId, req.body.enabled);
+    res.json({ botPaused: !req.body.enabled });
+  } catch (error) {
+    console.error('❌ Error al cambiar el bot de la conversación del lead:', error);
+    res.status(500).json({ error: 'Error al cambiar el estado del bot.', details: error.message });
+  }
+});
+
+/**
+ * El adjunto de un mensaje del hilo de ESTE lead. Verifica que el mensaje sea
+ * de su conversación y no solo que exista: sin esa comprobación, cualquiera
+ * con un lead propio podría pedir el adjunto de la conversación de otro
+ * pasando un id cualquiera, que es la misma puerta de atrás que
+ * `requireLeadVisible` cierra en el resto del módulo.
+ */
+app.get('/api/leads/:id/whatsapp/media/:messageId', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const waId = await leadWaId(req.lead);
+    const message = await whatsappMessageService.getById(req.params.messageId);
+    if (!waId || !message || !message.media_filename || message.wa_id !== waId) return res.status(404).end();
+
+    res.type(message.media_mime_type || 'application/octet-stream');
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.sendFile(path.join(whatsappMediaDir, message.media_filename));
+  } catch (error) {
+    console.error('❌ Error al servir el adjunto de la conversación del lead:', error);
+    res.status(404).end();
+  }
+});
+
 app.delete('/api/lead-notes/:noteId', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     await leadNoteService.remove(req.params.noteId, {
@@ -3005,7 +3133,7 @@ app.post('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermi
     if (!body) {
       return res.status(400).json({ error: 'El mensaje no puede estar vacío.' });
     }
-    const message = await whatsappMessageService.sendTextMessage(req.params.waId, body);
+    const message = await whatsappMessageService.sendTextMessage(req.params.waId, body, { sentBy: req.user.id });
 
     // Si un asesor responde manualmente, se pausa Avan para esa
     // conversación (evita que el bot automático interrumpa a un humano
@@ -3095,6 +3223,52 @@ app.post('/api/whatsapp/conversations/:waId/bot/force-book', requireAuth, requir
   } catch (error) {
     console.error('❌ Error al forzar el agendamiento manual:', error);
     res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * Interruptor GLOBAL de Avan: encendido atiende el bot, apagado atiende el
+ * equipo y los leads que entran solos se reparten según `/admin/reparto`.
+ *
+ * Es otra cosa que `PATCH /api/whatsapp/conversations/:waId/bot`, que pausa el
+ * bot para UN contacto. Y va con otro permiso: leer el estado lo puede quien
+ * ve la pantalla de WhatsApp (si no, el botón no sabría cómo dibujarse), pero
+ * cambiarlo es `bot.manage` — apagar el bot cambia cómo se atiende a todos los
+ * leads que entren desde ese momento.
+ */
+app.get('/api/whatsapp/bot/global', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
+  try {
+    res.json({ enabled: await whatsappBotSettingsService.isBotEnabled() });
+  } catch (error) {
+    console.error('❌ Error al obtener el interruptor global del bot:', error);
+    res.status(500).json({ error: 'Error al obtener el estado del bot.', details: error.message });
+  }
+});
+
+app.patch('/api/whatsapp/bot/global', requireAuth, requirePermission('bot.manage'), async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Falta "enabled" (true o false).' });
+    }
+    const enabled = await whatsappBotSettingsService.setBotEnabled(req.body.enabled);
+
+    // La pantalla necesita las dos mitades de la decisión para poder decir qué
+    // pasa ahora: con el bot apagado, a quién le van a llegar los leads.
+    let routing = null;
+    try {
+      const config = await leadRoutingService.getConfig();
+      routing = {
+        active: config.pool.active,
+        members: config.members.filter((m) => m.active && m.eligible).map((m) => m.name)
+      };
+    } catch (error) {
+      console.error('❌ No se pudo leer el reparto tras cambiar el interruptor del bot:', error.message);
+    }
+
+    res.json({ enabled, routing });
+  } catch (error) {
+    console.error('❌ Error al cambiar el interruptor global del bot:', error);
+    res.status(500).json({ error: 'Error al cambiar el estado del bot.', details: error.message });
   }
 });
 
@@ -3261,6 +3435,17 @@ app.post('/api/whatsapp/bot-test/simulate', requireAuth, requirePermission('bot.
     if (!waId || !text) {
       return res.status(400).json({ error: 'waId y text son obligatorios.' });
     }
+    // Con el bot apagado el simulador no simula nada: `handleIncomingMessage`
+    // vuelve en la primera línea. Se dice acá en vez de devolver un "listo" que
+    // no pasó nada — si no, quien prueba ve el mensaje guardado, ninguna
+    // respuesta, y lo interpreta como que el bot se rompió.
+    if (!(await whatsappBotSettingsService.isBotEnabled())) {
+      await whatsappMessageService.createSimulatedInbound(waId, text);
+      return res.status(409).json({
+        error: 'El bot está apagado para todas las conversaciones, así que no va a responder. Enciéndelo desde la barra de WhatsApp para probar el flujo.'
+      });
+    }
+
     await whatsappMessageService.createSimulatedInbound(waId, text);
     await whatsappBotService.handleIncomingMessage(waId, text);
     res.json({ success: true });

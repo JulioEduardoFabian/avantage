@@ -1,21 +1,45 @@
 import { db } from '../db/connection.js';
 import { UserService } from './userService.js';
+import { WhatsappBotSettingsService } from './whatsappBotSettingsService.js';
+import { pickNext } from './leadRouting.js';
 
 /**
  * Configuración del reparto automático de leads (`/admin/reparto`).
  *
- * Por ahora es SOLO la configuración: quién está en el grupo, con qué peso y
- * si está en pausa. Ningún camino de alta de leads la lee todavía — el día que
- * se active, el enganche va en `leadService.createLead()` (el punto por el que
- * pasan el bot, Meta y el evaluador) y usa `pickNext()` de `leadRouting.js`.
+ * Quién está en el grupo, con qué peso, si está en pausa — y `pickAssignee()`,
+ * que es lo que de verdad elige. El enganche está en `leadService.createLead()`,
+ * el punto por el que pasan los tres caminos automáticos (el bot, los
+ * formularios de Meta y el evaluador).
+ *
+ * **El reparto corre exactamente cuando el bot está apagado** (`isActive()`).
+ * No hay un segundo interruptor propio: ver la migración
+ * `20261112000000_alter_whatsapp_bot_settings_add_global_switch.js`. Mientras
+ * Avan atiende, él es el que califica y agenda, y repartir a la vez pondría a
+ * una persona a trabajar en paralelo la misma conversación.
  *
  * Cada cambio vuelve a poner en cero los `current_weight`: la vuelta del
  * reparto arranca de nuevo con el equipo nuevo, y así la vista previa de la
  * pantalla es exactamente la secuencia que va a salir.
  */
 export class LeadRoutingService {
-  constructor({ userService = new UserService() } = {}) {
+  constructor({ userService = new UserService(), botSettingsService = new WhatsappBotSettingsService() } = {}) {
     this.users = userService;
+    this.botSettings = botSettingsService;
+  }
+
+  /**
+   * ¿El reparto está repartiendo ahora mismo? Sí exactamente cuando el bot
+   * está apagado.
+   *
+   * Es una función y no una columna para que no haya dos verdades: con un
+   * `lead_routing_pools.enabled` propio, apagar el bot y olvidarse de activar
+   * el reparto deja a los leads sin responsable Y sin bot — ni los ve nadie ni
+   * los contesta nadie. Esa columna sigue existiendo para el día que haya más
+   * de un grupo (repartir distinto por campaña o por universidad), donde sí
+   * tiene sentido prender y apagar cada grupo por separado.
+   */
+  async isActive() {
+    return !(await this.botSettings.isBotEnabled());
   }
 
   async #defaultPool() {
@@ -80,10 +104,70 @@ export class LeadRoutingService {
     const candidates = team.filter((user) => !inPool.has(user.id));
 
     return {
-      pool: { id: pool.id, name: pool.name, enabled: Boolean(pool.enabled) },
+      // `active` es lo que la pantalla muestra en la banda de arriba, y sale
+      // del interruptor del bot y no de `pool.enabled` (ver `isActive()`).
+      pool: { id: pool.id, name: pool.name, active: await this.isActive() },
       members,
       candidates
     };
+  }
+
+  /**
+   * A quién le toca el próximo lead. Devuelve la fila de `users` elegida, o
+   * `null` si el reparto no está corriendo o no quedó nadie elegible (y ahí el
+   * lead nace sin responsable, igual que hoy).
+   *
+   * Todo el peso de esta función está en la transacción: lee los
+   * `current_weight`, elige y los vuelve a escribir **bajo bloqueo de fila**
+   * (`forUpdate`). Sin eso, dos mensajes de WhatsApp que entran en el mismo
+   * instante leen el mismo estado, eligen a la misma persona y le escriben el
+   * mismo peso — el otro lead no es que se reparta mal, es que desaparece de
+   * la cuenta y la proporción configurada deja de cumplirse.
+   *
+   * La pregunta de quién sigue siendo del área comercial se resuelve ANTES de
+   * abrir la transacción: son varias consultas (permisos efectivos de cada
+   * uno) y tenerlas dentro alargaría el bloqueo justo en el camino por el que
+   * entra cada lead.
+   */
+  async pickAssignee() {
+    if (!(await this.isActive())) return null;
+
+    const pool = await this.#defaultPool();
+    const team = await this.users.listCommercialTeam();
+    const commercialIds = new Set(team.map((user) => user.id));
+
+    const chosenUserId = await db.transaction(async (trx) => {
+      const rows = await trx('lead_routing_members')
+        .where({ pool_id: pool.id })
+        .orderBy('position', 'asc')
+        .orderBy('id', 'asc')
+        .forUpdate();
+
+      const members = rows.map((row) => ({
+        id: row.id,
+        user_id: row.user_id,
+        weight: Number(row.weight),
+        active: Boolean(row.active),
+        current_weight: Number(row.current_weight) || 0,
+        eligible: commercialIds.has(row.user_id)
+      }));
+
+      const { chosen, weights } = pickNext(members);
+      if (!chosen) return null;
+
+      // Se guardan los pesos de TODOS y no solo el del elegido: el reparto
+      // ponderado suave es un estado conjunto — el turno del próximo depende
+      // de cuánto acumularon los que esta vez no salieron.
+      for (const member of members) {
+        const next = weights.get(member.id);
+        if (next === member.current_weight) continue;
+        await trx('lead_routing_members').where({ id: member.id }).update({ current_weight: next });
+      }
+      return chosen.user_id;
+    });
+
+    if (!chosenUserId) return null;
+    return this.users.findCommercialMember(chosenUserId);
   }
 
   async addMember(userId, weight = 1) {

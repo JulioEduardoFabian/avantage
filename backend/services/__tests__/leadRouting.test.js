@@ -46,3 +46,24 @@ test('la vista previa de la pantalla dice lo mismo que el servidor', () => {
   const equipo = [SETTER, { id: 3, weight: 3, active: true, current_weight: 0 }, CLOSER];
   assert.deepEqual(espejo.simulateRouting(equipo, 50), simulateRouting(equipo, 50));
 });
+
+/* ------------------------------------------------------------------ */
+
+/*
+ * El reparto corre exactamente cuando el bot está apagado, y eso es una
+ * decisión de diseño que conviene dejar clavada: la tentación de agregarle al
+ * reparto un interruptor propio vuelve cada vez que alguien lee la tabla y ve
+ * `lead_routing_pools.enabled`. Con dos interruptores, la combinación "bot
+ * apagado + reparto apagado" deja los leads sin responsable y sin respuesta:
+ * no los ve nadie en su tablero y no los contesta nadie.
+ */
+test('el reparto está activo exactamente cuando el bot global está apagado', async () => {
+  const { LeadRoutingService } = await import('../leadRoutingService.js');
+  const conBot = (enabled) => new LeadRoutingService({
+    userService: {},
+    botSettingsService: { isBotEnabled: async () => enabled }
+  });
+
+  assert.equal(await conBot(false).isActive(), true, 'bot apagado → reparte');
+  assert.equal(await conBot(true).isActive(), false, 'bot encendido → no reparte');
+});

@@ -37,8 +37,12 @@ test('justo en las 24 h está cerrada (el límite no se incluye)', () => {
 
 /* ------------------------------------------------------------------ */
 
-/** Bot con lo mínimo para ejercitar `send()`, sin base de datos ni red. */
-function botWithWindow(windowOpen) {
+/**
+ * Bot con lo mínimo para ejercitar `send()`, sin base de datos ni red.
+ * `globallyEnabled` es el interruptor global de Avan, que `send()` consulta
+ * antes que la ventana: encendido por defecto, que es como está en producción.
+ */
+function botWithWindow(windowOpen, { globallyEnabled = true } = {}) {
   const sent = [];
   const bot = new WhatsappBotService({
     whatsappMessageService: {
@@ -46,10 +50,23 @@ function botWithWindow(windowOpen) {
       sendTextMessage: async (waId, text) => { sent.push({ waId, text }); },
       sendTypingIndicator: async () => {}
     },
-    settingsService: { get: async () => ({ message_gap_seconds: 0, typing_indicator_enabled: false }) }
+    settingsService: {
+      get: async () => ({ message_gap_seconds: 0, typing_indicator_enabled: false }),
+      isBotEnabled: async () => globallyEnabled
+    }
   });
   return { bot, sent };
 }
+
+test('con el bot apagado globalmente no sale ni una respuesta a un mensaje recién llegado', async () => {
+  // La ventana está ABIERTA y el envío no es proactivo: lo único que lo frena
+  // es el interruptor global. Es la red de último momento de `send()` — los
+  // caminos que hablan ya vuelven antes, pero si alguno se agrega después, el
+  // lead no puede recibir un mensaje del bot que el equipo acaba de apagar.
+  const { bot, sent } = botWithWindow(true, { globallyEnabled: false });
+  await assert.rejects(() => bot.send('51999', 'hola'), (error) => error.code === 'BOT_DISABLED');
+  assert.equal(sent.length, 0);
+});
 
 test('un envío proactivo con la ventana cerrada no se manda: falla con WINDOW_CLOSED', async () => {
   const { bot, sent } = botWithWindow(false);

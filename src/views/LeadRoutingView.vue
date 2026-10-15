@@ -12,13 +12,22 @@
       </div>
     </header>
 
-    <section class="rt-status" :class="{ 'is-live': pool?.enabled }">
-      <span class="rt-status-pill">{{ pool?.enabled ? 'Activo' : 'Vista previa' }}</span>
+    <!-- El reparto no tiene interruptor propio: corre exactamente cuando el bot
+         de WhatsApp está apagado. La banda dice cuál de los dos estados es el
+         de ahora y dónde se cambia, porque el botón está en otra pantalla. -->
+    <section class="rt-status" :class="{ 'is-live': pool?.active }">
+      <span class="rt-status-pill">{{ pool?.active ? 'Repartiendo' : 'En espera' }}</span>
       <p class="rt-status-text">
-        <template v-if="pool?.enabled">Los leads nuevos se están repartiendo con esta configuración.</template>
+        <template v-if="pool?.active">
+          <strong>Avan está apagado, así que esto ya está repartiendo.</strong>
+          Cada lead nuevo del bot, de un formulario de Meta o del evaluador se le asigna
+          a quien le toque y aparece en su Setter Funnel.
+        </template>
         <template v-else>
-          <strong>Todavía no reparte.</strong> Los leads siguen entrando como hoy, sin responsable. Lo que
-          armes acá es exactamente lo que se va a aplicar cuando se active.
+          <strong>Avan está encendido, así que todavía no reparte.</strong>
+          Mientras el bot atiende, él califica y agenda, y los leads entran como hoy.
+          Esto empieza a aplicarse —tal cual está armado acá— en cuanto se apague el bot
+          desde <router-link to="/admin/whatsapp">WhatsApp</router-link>.
         </template>
       </p>
     </section>
@@ -154,13 +163,15 @@
         </section>
 
         <section class="rt-card rt-howto">
-          <h3 class="rt-card-title">Cómo se va a usar</h3>
+          <h3 class="rt-card-title">Cómo funciona</h3>
           <ol class="rt-steps">
-            <li>Entra un lead por el <strong>bot de WhatsApp</strong>, un <strong>formulario de Meta</strong> o el <strong>evaluador de tesis</strong>.</li>
+            <li>El reparto corre <strong>solo con el bot apagado</strong>. Con Avan encendido él atiende y agenda, y esto queda en espera.</li>
+            <li>Entra un lead por <strong>WhatsApp</strong>, un <strong>formulario de Meta</strong> o el <strong>evaluador de tesis</strong>.</li>
             <li>Si esa persona ya estaba registrada (mismo celular), <strong>sigue con quien la tenía</strong>: no se vuelve a repartir.</li>
             <li>Si es nueva, se le asigna a quien sigue en la vuelta y aparece como <strong>responsable</strong> en su tarjeta, igual que si la hubiera asignado el jefe comercial.</li>
             <li>Quien está <strong>en pausa</strong> o dejó de ser del área comercial se saltea, y los demás se reparten su parte.</li>
             <li>Los leads que se cargan <strong>a mano</strong> no pasan por acá, y reasignar desde la tarjeta sigue funcionando igual.</li>
+            <li>Al lead se le responde desde su propia ficha, en el panel de conversación del Setter Funnel.</li>
           </ol>
           <p class="rt-card-note">
             Cada cambio en esta pantalla hace empezar la vuelta de nuevo, así lo que ves arriba es exactamente lo que va a salir.

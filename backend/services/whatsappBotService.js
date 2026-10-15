@@ -1644,6 +1644,24 @@ export class WhatsappBotService {
     this.logActivity({ type: 'reset', waId });
   }
 
+  /**
+   * ¿Avan está encendido para TODO el mundo?
+   *
+   * Es distinto de `session.bot_enabled`, que es por contacto y se apaga solo
+   * en cuanto una persona responde a mano. Este es el interruptor del panel de
+   * WhatsApp: apagado, el bot no manda un solo mensaje a nadie y el equipo
+   * atiende — y los leads que entran solos se reparten según `/admin/reparto`
+   * (ver la migración del interruptor y `leadRoutingService.isActive()`).
+   *
+   * No se cachea: la pregunta es una lectura de una fila por mensaje entrante
+   * y una por barrido, y un caché con TTL significa que apretar "Apagar bot"
+   * no apaga nada hasta que venza — que es exactamente el momento en que
+   * alguien lo aprieta con apuro.
+   */
+  async isGloballyEnabled() {
+    return this.settingsService.isBotEnabled();
+  }
+
   async setBotEnabled(waId, enabled) {
     const existing = await this.getSession(waId);
     if (existing) {
@@ -1822,6 +1840,25 @@ export class WhatsappBotService {
    * comportamiento de spam.
    */
   async send(waId, text, { requireOpenWindow = false } = {}) {
+    // Red de último momento del interruptor global. Los caminos que hablan ya
+    // están frenados arriba (handleIncomingMessage y los dos barridos vuelven
+    // antes de tocar nada), así que esto no debería dispararse nunca; está
+    // porque "nunca" dura hasta el próximo camino que alguien agregue, y el
+    // costo de equivocarse es que un lead reciba un mensaje del bot justo
+    // después de que el equipo lo apagó.
+    //
+    // Lanza en vez de devolver en silencio: quien llama suele actualizar la
+    // sesión dando por hecho que el mensaje salió (marca el recordatorio como
+    // mandado, avanza el paso del agendamiento). Un no-op dejaría la sesión
+    // diciendo que habló cuando no habló, que se arregla mucho peor que un
+    // error. `WINDOW_CLOSED`, el otro freno de esta función, ya se maneja así.
+    if (!(await this.isGloballyEnabled())) {
+      const error = new Error('El bot está apagado para todas las conversaciones.');
+      error.code = 'BOT_DISABLED';
+      this.logActivity({ type: 'send_skipped_bot_off', waId, text });
+      throw error;
+    }
+
     // WhatsApp solo acepta texto libre dentro de las 24 h siguientes al último
     // mensaje del contacto. Una respuesta a un mensaje que acaba de llegar
     // siempre está dentro, así que el chequeo solo se exige en los envíos que
@@ -1980,6 +2017,28 @@ export class WhatsappBotService {
   }
 
   async handleIncomingMessage(waId, text, messageId = null) {
+    // El interruptor global va ANTES que todo, incluso antes de "estoy en sala
+    // de espera" —que es la excepción a cualquier otra pausa— porque esto no es
+    // una pausa: es el equipo diciendo que de ahora en más atiende una persona.
+    // Con el bot apagado no hay reunión que el bot haya agendado esperando a
+    // nadie, y un acuse automático contradiría al asesor que está escribiendo
+    // en ese mismo hilo.
+    //
+    // Se vuelve ACÁ y no más abajo para no dejar rastro: ni buffer encolado
+    // (que se procesaría al volver a encenderlo, contestando a un mensaje de
+    // hace horas), ni sesión creada, ni llamada al LLM. El mensaje ya quedó
+    // guardado y el lead ya está creado y repartido — eso pasa en
+    // `whatsappWebhookService` antes de llegar hasta acá.
+    if (!(await this.isGloballyEnabled())) {
+      this.logActivity({
+        type: 'skipped',
+        waId,
+        text,
+        reason: 'El bot está apagado para todas las conversaciones. El lead queda en el Setter Funnel de su responsable para que lo atienda una persona.'
+      });
+      return;
+    }
+
     // Se guarda el id del mensaje entrante para poder mostrar el indicador de
     // "escribiendo..." de WhatsApp (que se envía referenciando ese id) antes
     // de cada respuesta del bot.
@@ -5352,6 +5411,13 @@ ${numberedList(fullSlotLabels(offer))}
    * la cita se agenda para hoy o mañana y en el medio no recibía nada.
    */
   async sendMeetingReminders() {
+    // Con el bot apagado tampoco recuerda reuniones. Es el mismo criterio que
+    // el de más abajo para un contacto que ya tomó un asesor ("el recordatorio
+    // lo manda él"), aplicado a todos: lo que cambió es quién atiende, y el
+    // recordatorio es parte de atender. Y como ahí, NO se marca como enviado,
+    // así que si el bot vuelve a encenderse antes de la reunión el recordatorio
+    // sale igual.
+    if (!(await this.isGloballyEnabled())) return;
     if (!this.scheduledMeetingService) return;
 
     const pending = await this.scheduledMeetingService.getPendingReminders({
@@ -5492,6 +5558,14 @@ ${numberedList(fullSlotLabels(offer))}
    * ese contacto (no vuelve a insistir solo).
    */
   async checkStaleConversations() {
+    // Con el bot apagado el barrido ni siquiera corre. No alcanza con que
+    // `send()` frene el envío: este bucle RESERVA la fila antes de mandar
+    // (marca `nudge_sent_at`, congela sesiones, consume el cupo de
+    // recordatorios del barrido), así que dejarlo correr contra un envío que
+    // falla gasta el único recordatorio que a ese lead le tocaba — y al
+    // encender el bot otra vez, ya no se lo manda nadie.
+    if (!(await this.isGloballyEnabled())) return;
+
     const now = Date.now();
 
     const awaitingReply = await db('whatsapp_bot_sessions')
