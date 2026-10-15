@@ -6,6 +6,7 @@
         <h2 class="ov-title">Visión General de Tesorería</h2>
         <p class="ov-subtitle">
           Consolidado en tiempo real de ingresos confirmados y asientos del libro diario en soles.
+          Los saldos son de todas las cuentas; el rango de meses solo recorta la gráfica de evolución.
         </p>
       </div>
 
@@ -52,7 +53,7 @@
           <span class="kpi-cur">S/</span> {{ fmt(data.totals.ingresos) }}
         </div>
         <div class="kpi-card-footer">
-          <span class="kpi-hint">Cobrado y verificado en cuentas</span>
+          <span class="kpi-hint">Todo lo cobrado y verificado en cuentas</span>
         </div>
       </div>
 
@@ -68,7 +69,7 @@
           <span class="kpi-cur">S/</span> {{ fmt(data.totals.egresos) }}
         </div>
         <div class="kpi-card-footer">
-          <span class="kpi-hint">Pagos operativos y gastos del período</span>
+          <span class="kpi-hint">Pagos operativos y gastos acumulados</span>
         </div>
       </div>
 
@@ -90,7 +91,7 @@
           <span class="kpi-cur">S/</span> {{ fmt(data.totals.balance) }}
         </div>
         <div class="kpi-card-footer">
-          <span class="kpi-hint">Margen operativo disponible</span>
+          <span class="kpi-hint">Saldo acumulado de todas las cuentas</span>
         </div>
       </div>
 
@@ -99,7 +100,7 @@
         <div class="kpi-card-top">
           <span class="kpi-card-label">Total Transacciones</span>
           <span class="kpi-pill kpi-pill-purple">
-            {{ months }}m período
+            Histórico
           </span>
         </div>
         <div class="kpi-card-value">
@@ -138,7 +139,7 @@
         <div class="ov-section-header">
           <div>
             <h3 class="ov-section-title">Flujo de Fondos (Ingresos vs Egresos)</h3>
-            <p class="ov-section-sub">Evolución mensual consolidada</p>
+            <p class="ov-section-sub">Evolución de los últimos {{ months }} meses</p>
           </div>
 
           <div class="ov-chart-controls">
@@ -363,7 +364,7 @@
         <div class="ov-section-header">
           <div>
             <h3 class="ov-section-title">Cuentas Bancarias & Caja</h3>
-            <p class="ov-section-sub">Disponibilidad de fondos por entidad</p>
+            <p class="ov-section-sub">Saldo acumulado por entidad, sin recorte de fechas</p>
           </div>
           <span class="wallet-badge">{{ BANCOS.length }} Cuentas activas</span>
         </div>

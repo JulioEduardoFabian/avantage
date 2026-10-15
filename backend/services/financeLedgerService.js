@@ -1052,6 +1052,14 @@ export class FinanceLedgerService {
    * Solo cuenta el dinero confirmado: los ingresos verificados por finanzas y
    * los asientos del libro diario ya pagados. Lo pendiente (o pagado pero sin
    * verificar) todavía no es dinero en caja y falsearía el balance.
+   *
+   * La ventana de meses es del GRÁFICO (la evolución mensual) y nada más. El
+   * saldo de cada cuenta y los totales se calculan sobre TODO el dinero
+   * confirmado, sin ventana: un saldo recortado a los últimos N meses no es un
+   * saldo — deja afuera la plata que entró antes y sigue en la cuenta, y la
+   * fechada más adelante (una cuota adelantada al mes que viene) se caía del
+   * grid en silencio, así que la tarjeta de BCP Finanzas decía S/ 700.00 con
+   * S/ 3,700.00 verificados en INGRESOS.
    */
   async getOverview({ monthsBack = 6 } = {}) {
     const months = Math.min(Math.max(Number(monthsBack) || 6, 1), 24);
@@ -1062,12 +1070,21 @@ export class FinanceLedgerService {
       monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
     }
     const earliest = `${monthKeys[0]}-01`;
+    // Fin de la ventana: el primer día del mes siguiente al último del gráfico.
+    // Se escribe en la consulta en vez de dejar que el grid descarte lo que no
+    // entra, que es lo que escondía el problema.
+    const afterLast = (() => {
+      const [y, m] = monthKeys[monthKeys.length - 1].split('-').map(Number);
+      const d = new Date(y, m, 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    })();
 
     const incomeRows = await db('finance_income')
       .select('banco')
       .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
       .sum('monto as total')
       .where('fecha', '>=', earliest)
+      .where('fecha', '<', afterLast)
       .where('estado', 'verificado')
       .groupBy('banco', 'month');
 
@@ -1077,6 +1094,7 @@ export class FinanceLedgerService {
       .select(db.raw('SUM(CASE WHEN monto >= 0 THEN monto ELSE 0 END) as ingreso'))
       .select(db.raw('SUM(CASE WHEN monto < 0 THEN -monto ELSE 0 END) as egreso'))
       .where('fecha', '>=', earliest)
+      .where('fecha', '<', afterLast)
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .groupBy('banco', 'month');
@@ -1105,18 +1123,52 @@ export class FinanceLedgerService {
       banco,
       values: monthKeys.map((m) => Math.round(grid[banco][m] * 100) / 100)
     }));
-    const bankTotal = (grid, banco) => monthKeys.reduce((s, m) => s + grid[banco][m], 0);
-    const grandTotal = (grid) => BANCOS.reduce((s, b) => s + bankTotal(grid, b), 0);
 
-    const totalIngresos = Math.round(grandTotal(ingresos) * 100) / 100;
-    const totalEgresos = Math.round(grandTotal(egresos) * 100) / 100;
+    // --- Saldo por cuenta: todo el dinero confirmado, sin ventana de meses ---
+    const incomeByBank = await db('finance_income')
+      .select('banco')
+      .sum('monto as total')
+      .where('estado', 'verificado')
+      .groupBy('banco');
 
+    const journalByBank = await db('finance_journal')
+      .select('banco')
+      .select(db.raw('SUM(CASE WHEN monto >= 0 THEN monto ELSE 0 END) as ingreso'))
+      .select(db.raw('SUM(CASE WHEN monto < 0 THEN -monto ELSE 0 END) as egreso'))
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .groupBy('banco');
+
+    const saldos = Object.fromEntries(BANCOS.map((b) => [b, { ingresos: 0, egresos: 0 }]));
+    let sumaIngresos = 0;
+    let sumaEgresos = 0;
+    // El total suma TODO lo confirmado —incluido lo que no tiene banco asignado,
+    // que es dinero igual y así lo cuenta la pestaña INGRESOS—; el desglose por
+    // cuenta solo reparte lo que sí cayó en una de las cuentas conocidas.
+    const acumular = (banco, ingreso, egreso) => {
+      sumaIngresos += ingreso;
+      sumaEgresos += egreso;
+      if (saldos[banco]) {
+        saldos[banco].ingresos += ingreso;
+        saldos[banco].egresos += egreso;
+      }
+    };
+    for (const r of incomeByBank) acumular(r.banco, Number(r.total) || 0, 0);
+    for (const r of journalByBank) {
+      acumular(r.banco, Number(r.ingreso) || 0, Number(r.egreso) || 0);
+    }
+
+    const redondear = (n) => Math.round(n * 100) / 100;
+    const totalIngresos = redondear(sumaIngresos);
+    const totalEgresos = redondear(sumaEgresos);
+
+    // Se cuenta el mismo universo que suman los totales (todo lo confirmado):
+    // un conteo con otra ventana es justo la clase de cifra que no cuadra con
+    // nada de lo que tiene al lado.
     const [incomeCount] = await db('finance_income')
-      .where('fecha', '>=', earliest)
       .where('estado', 'verificado')
       .count('id as cnt');
     const [journalCount] = await db('finance_journal')
-      .where('fecha', '>=', earliest)
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .count('id as cnt');
@@ -1184,12 +1236,12 @@ export class FinanceLedgerService {
       totals: {
         ingresos: totalIngresos,
         egresos: totalEgresos,
-        balance: Math.round((totalIngresos - totalEgresos) * 100) / 100,
+        balance: redondear(totalIngresos - totalEgresos),
         totalTransactions,
         byBank: BANCOS.map((banco) => ({
           banco,
-          ingresos: Math.round(bankTotal(ingresos, banco) * 100) / 100,
-          egresos: Math.round(bankTotal(egresos, banco) * 100) / 100
+          ingresos: redondear(saldos[banco].ingresos),
+          egresos: redondear(saldos[banco].egresos)
         }))
       },
       recentTransactions
