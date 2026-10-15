@@ -4,6 +4,7 @@ import {
   dniMatchKey,
   duplicateMessage,
   duplicateReasons,
+  groupDuplicateLeads,
   phoneMatchKey
 } from '../leadService.js';
 
@@ -88,4 +89,41 @@ test('sin nombre ni responsable, el aviso igual identifica la ficha', () => {
   const msg = duplicateMessage([{ id: 9, full_name: null, reasons: ['dni'] }]);
   assert.match(msg, /#9/);
   assert.match(msg, /ese DNI/);
+});
+
+/*
+ * El botón "Duplicados" del Funnel de Ventas agrupa a la misma persona cargada
+ * varias veces con la MISMA regla del tope del alta manual.
+ */
+test('agrupa por celular aunque uno venga con prefijo y espacios', () => {
+  const grupos = groupDuplicateLeads([
+    { id: 1, phone: '975 545 098', created_at: '2026-10-10' },
+    { id: 2, phone: '+51975545098', created_at: '2026-10-03' },
+    { id: 3, phone: '999888777', created_at: '2026-10-01' }
+  ]);
+  assert.equal(grupos.length, 1);
+  assert.deepEqual(grupos[0].reasons, ['phone']);
+  // El más reciente primero.
+  assert.deepEqual(grupos[0].leads.map((l) => l.id), [1, 2]);
+});
+
+test('une en un solo grupo a quien comparte celular con uno y DNI con otro', () => {
+  const grupos = groupDuplicateLeads([
+    { id: 1, phone: '987654321', dni: null, created_at: '2026-10-01' },
+    { id: 2, phone: '51987654321', dni: '12345678', created_at: '2026-10-02' },
+    { id: 3, phone: '911222333', dni: '12.345.678', created_at: '2026-10-03' }
+  ]);
+  assert.equal(grupos.length, 1);
+  assert.deepEqual(grupos[0].reasons, ['phone', 'dni']);
+  assert.deepEqual(grupos[0].leads.map((l) => l.id), [3, 2, 1]);
+});
+
+test('los datos vacíos o cortos no juntan a nadie', () => {
+  const grupos = groupDuplicateLeads([
+    { id: 1, phone: '', dni: null },
+    { id: 2, phone: null, dni: '' },
+    { id: 3, phone: '123', dni: '12' },
+    { id: 4, phone: '123', dni: '12' }
+  ]);
+  assert.equal(grupos.length, 0);
 });

@@ -1975,6 +1975,22 @@ app.get('/api/leads/check-duplicate', requireAuth, requireAnyPermission('leads.v
 });
 
 /**
+ * Las personas cargadas más de una vez (mismo celular o mismo DNI), agrupadas.
+ * Botón "Duplicados" del Funnel de Ventas; el alcance lo recorta
+ * `listDuplicateGroups()`. Declarada antes de `/api/leads/:id` por la misma
+ * razón que `check-duplicate`.
+ */
+app.get('/api/leads/duplicates', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const groups = await leadService.listDuplicateGroups(req.user);
+    res.json({ groups });
+  } catch (error) {
+    console.error('❌ Error al listar leads duplicados:', error);
+    res.status(500).json({ error: 'No se pudieron listar los leads duplicados.', details: error.message });
+  }
+});
+
+/**
  * Backfill de un solo uso: completa grado académico/universidad/carrera de
  * los leads de un formulario de Meta Lead Ads importados ANTES de que
  * metaWebhookService.importLead() empezara a guardar esas respuestas (ver

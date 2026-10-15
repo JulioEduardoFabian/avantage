@@ -142,6 +142,77 @@ export function duplicateReasons(candidate, lead) {
 }
 
 /**
+ * Agrupa los leads que son la misma persona: los que comparten celular (últimos
+ * 9 dígitos) o documento, con la misma regla de `duplicateReasons()`.
+ *
+ * Es transitivo a propósito (unión de conjuntos): si A comparte celular con B
+ * y B comparte DNI con C, los tres son una persona — mostrarlos en dos grupos
+ * separados escondería justo el eslabón que los une. Cada grupo dice qué dato
+ * se repite (`reasons`) y se devuelven solo los de dos o más fichas, el más
+ * reciente primero: el gemelo recién creado es el que el equipo todavía puede
+ * cortar antes de que lo trabajen dos personas.
+ */
+export function groupDuplicateLeads(leads = []) {
+  const parent = new Map();
+  const find = (id) => {
+    while (parent.get(id) !== id) {
+      parent.set(id, parent.get(parent.get(id)));
+      id = parent.get(id);
+    }
+    return id;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+
+  const byKey = new Map();
+  for (const lead of leads) {
+    parent.set(lead.id, lead.id);
+    const keys = [
+      ['phone', phoneMatchKey(lead.phone)],
+      ['dni', dniMatchKey(lead.dni)]
+    ];
+    for (const [kind, key] of keys) {
+      if (!key) continue;
+      const mapKey = `${kind}:${key}`;
+      if (byKey.has(mapKey)) union(lead.id, byKey.get(mapKey));
+      else byKey.set(mapKey, lead.id);
+    }
+  }
+
+  const groups = new Map();
+  for (const lead of leads) {
+    const root = find(lead.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(lead);
+  }
+
+  const time = (lead) => new Date(lead.created_at || 0).getTime() || 0;
+  return [...groups.values()]
+    .filter((group) => group.length > 1)
+    .map((group) => {
+      const sorted = [...group].sort((a, b) => time(b) - time(a));
+      const reasons = [];
+      const repeats = (fn) => {
+        const seen = new Set();
+        return sorted.some((lead) => {
+          const key = fn(lead);
+          if (!key) return false;
+          if (seen.has(key)) return true;
+          seen.add(key);
+          return false;
+        });
+      };
+      if (repeats((lead) => phoneMatchKey(lead.phone))) reasons.push('phone');
+      if (repeats((lead) => dniMatchKey(lead.dni))) reasons.push('dni');
+      return { reasons, leads: sorted };
+    })
+    .sort((a, b) => time(b.leads[0]) - time(a.leads[0]));
+}
+
+/**
  * Lo que se le dice a quien está cargando el lead.
  *
  * Nombra el DATO repetido (el celular, el documento o los dos), a la persona
@@ -358,6 +429,61 @@ export class LeadService {
         reasons,
         visible: viewer ? this.canView(row, viewer, salesStatuses) : false
       }));
+  }
+
+  /**
+   * Las personas que están cargadas más de una vez (botón "Duplicados" del
+   * Funnel de Ventas). Agrupa con `groupDuplicateLeads()` —la misma regla del
+   * tope del alta manual— sobre TODA la tabla, porque el gemelo que más daño
+   * hace es el que trabaja otra persona.
+   *
+   * Pero no le abre la base entera a cualquiera: quien no administra el área
+   * comercial recibe solo los grupos donde al menos una ficha es suya (la que
+   * él trabaja y su gemela ajena), y de cada ficha viaja el mismo RESUMEN que
+   * en `findDuplicates()` con `visible` para saber si la puede abrir.
+   */
+  async listDuplicateGroups(viewer) {
+    const rows = await db('leads')
+      .select(
+        'leads.id',
+        'leads.full_name',
+        'leads.phone',
+        'leads.dni',
+        'leads.status',
+        'leads.source',
+        'leads.created_at',
+        'leads.sales_funnel_at',
+        'leads.assigned_to',
+        'leads.assigned_user_id',
+        'leads.setter_user_id',
+        'leads.closer_user_id',
+        'asesor.name as assigned_user_name',
+        'projects.id as project_id'
+      )
+      .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
+      .leftJoin('projects', 'projects.lead_id', 'leads.id')
+      .where(function () {
+        this.whereNotNull('leads.phone').orWhereNotNull('leads.dni');
+      });
+
+    const { scope, salesStatuses } = await this.visibilityFor(viewer);
+    return groupDuplicateLeads(rows)
+      .map((group) => ({
+        reasons: group.reasons,
+        leads: group.leads.map((row) => ({
+          id: row.id,
+          full_name: row.full_name,
+          phone: row.phone,
+          dni: row.dni,
+          status: row.status,
+          source: row.source,
+          created_at: row.created_at,
+          has_project: Boolean(row.project_id),
+          assigned_user_name: row.assigned_user_name || row.assigned_to || null,
+          visible: this.canView(row, viewer, salesStatuses)
+        }))
+      }))
+      .filter((group) => scope === 'all' || group.leads.some((lead) => lead.visible));
   }
 
   /**

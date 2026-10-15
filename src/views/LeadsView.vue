@@ -27,6 +27,9 @@
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
         </button>
+        <button class="btn-action-secondary" @click="showDuplicatesModal = true" title="Ver las personas cargadas más de una vez (mismo celular o DNI)">
+          <span class="btn-icon">👯</span> Duplicados
+        </button>
         <button class="btn-action-ghost" @click="showMetaRecModal = true" title="Comparar los leads de los formularios de Meta contra los que llegaron al CRM">
           🧮 Conciliar Meta
         </button>
@@ -569,6 +572,14 @@
     </div>
 
     <MetaReconciliationModal v-model="showMetaRecModal" @imported="fetchAll" />
+
+    <!-- Personas cargadas más de una vez (mismo celular o DNI), de los dos tableros. -->
+    <DuplicateLeadsModal
+      v-model="showDuplicatesModal"
+      :openable-ids="leadIds"
+      :stage-label="stageLabelFor"
+      @open="openDuplicateLead"
+    />
 
     <!-- Agendar una reunión sin salir del funnel: el mismo modal del Calendario. -->
     <MeetingModal v-model="showMeetingModal" :lead="meetingLead" @created="onMeetingCreated" />
@@ -1175,6 +1186,7 @@ import LeadNotes from '../components/LeadNotes.vue';
 import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
+import DuplicateLeadsModal from '../components/DuplicateLeadsModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
@@ -1991,6 +2003,18 @@ const setterGroups = computed(() => {
   }
   return grupos;
 });
+
+const showDuplicatesModal = ref(false);
+const leadIds = computed(() => leads.value.map((lead) => lead.id));
+
+/* El nombre de una etapa en cualquiera de los dos tableros: las columnas de
+   Ventas primero y, si no, las del Setter Funnel. */
+function stageLabelFor(status) {
+  const col = columns.value.find((c) => c.key === status)
+    || setterColumns.value.find((c) => c.key === status);
+  if (!col) return status || 'Sin etapa';
+  return `${col.icon || ''} ${col.label}`.trim();
+}
 
 const boardGroups = computed(() => [
   ...columns.value.map((col) => ({
