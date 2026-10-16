@@ -1575,6 +1575,17 @@ export class WhatsappBotService {
     // el panel de WhatsApp que el flujo está funcionando, sin depender de los
     // logs del servidor.
     this.activity = [];
+    // Un solo barrido de inactividad a la vez. `server.js` lo dispara con un
+    // setInterval cada diez minutos sin mirar si el anterior terminó, y con
+    // cientos de conversaciones el barrido tarda más que eso: cada envío
+    // duerme su gap de tecleo y cada turno recuperado espera al LLM. Dos
+    // barridos encima del mismo contacto se atropellan — el segundo lee la
+    // foto de "quién habló último" ANTES de que el saliente del primero llegue
+    // a la base, da el turno por perdido otra vez y lo escala a un asesor
+    // mientras el primero todavía está preparando la respuesta (caso real: un
+    // lead recibió "Perdona la demora", la transferencia y recién después el
+    // saludo, los tres en el mismo minuto).
+    this.sweepInFlight = false;
   }
 
   logActivity(entry) {
@@ -5558,6 +5569,33 @@ ${numberedList(fullSlotLabels(offer))}
    * ese contacto (no vuelve a insistir solo).
    */
   async checkStaleConversations() {
+    // Un barrido a la vez por proceso. El tick que cae mientras el anterior
+    // sigue corriendo se DESCARTA en vez de encolarse: no hay nada que se
+    // pierda por saltearlo (ninguna rama de acá marca su trabajo como hecho
+    // sin hacerlo, y lo que no se atendió lo toma el barrido siguiente diez
+    // minutos después), mientras que dejarlos correr juntos le manda al mismo
+    // contacto dos veces lo mismo.
+    //
+    // Esto NO reemplaza las reservas en la base (`nudge_sent_at`,
+    // `missed_reply_at`) ni la revalidación de `_recoverMissedReply`: el
+    // candado es de este proceso, y en producción el hosting puede levantar
+    // más de un worker, cada uno con su propio temporizador.
+    if (this.sweepInFlight) {
+      this.logActivity({
+        type: 'stale_sweep_skipped_overlap',
+        reason: 'El barrido anterior todavía está corriendo: este tick se descarta.'
+      });
+      return;
+    }
+    this.sweepInFlight = true;
+    try {
+      await this._runStaleConversationsSweep();
+    } finally {
+      this.sweepInFlight = false;
+    }
+  }
+
+  async _runStaleConversationsSweep() {
     // Con el bot apagado el barrido ni siquiera corre. No alcanza con que
     // `send()` frene el envío: este bucle RESERVA la fila antes de mandar
     // (marca `nudge_sent_at`, congela sesiones, consume el cupo de
@@ -5971,8 +6009,18 @@ ${numberedList(fullSlotLabels(offer))}
       this.logActivity({ type: 'orphan_inbound_recovered', waId: row.wa_id, text: row.body });
 
       try {
-        await this.send(row.wa_id, whatsappBotCopy.missedReplyApology());
-        await this.runSerialized(row.wa_id, () => this.runConversationTurn(row.wa_id, row.body || ''));
+        // La disculpa va DENTRO de la cola serializada junto con el turno, no
+        // suelta antes: así el contacto está marcado como "en curso"
+        // (`turnChains`) desde el primer envío, que es lo que mira
+        // `_recoverMissedReply` para no dar por perdido un turno que se está
+        // respondiendo. Suelta, quedaba un hueco de varios segundos —el gap de
+        // tecleo de `send()`— en el que no había ni turno en curso ni saliente
+        // en la base, y por ahí entraba la transferencia a un asesor encima de
+        // la respuesta que ya venía en camino.
+        await this.runSerialized(row.wa_id, async () => {
+          await this.send(row.wa_id, whatsappBotCopy.missedReplyApology());
+          await this.runConversationTurn(row.wa_id, row.body || '');
+        });
       } catch (error) {
         console.error(`❌ [WhatsApp Bot] Error al recuperar el mensaje sin procesar de ${row.wa_id}:`, error);
       }
@@ -5998,6 +6046,43 @@ ${numberedList(fullSlotLabels(offer))}
   async _recoverMissedReply(session, lastText) {
     const waId = session.wa_id;
 
+    // Un turno de este contacto corriendo AHORA en este proceso es justamente
+    // la respuesta que este método viene a recuperar: la recuperación de
+    // huérfanos (`_recoverOrphanInbounds`) arranca el turno y recién al
+    // terminar deja el saliente en la base, así que entre medio el contacto
+    // "sigue sin respuesta" para cualquier otro barrido.
+    if (this.turnChains.has(waId)) {
+      this.logActivity({
+        type: 'missed_reply_skipped_turn_running',
+        waId,
+        reason: 'Ya hay un turno en curso para este contacto: la respuesta está en camino.'
+      });
+      return;
+    }
+
+    // Revalidación contra la base, y no contra la foto que tomó el barrido al
+    // arrancar: entre esa consulta y este momento pasan minutos (el barrido
+    // recorre cientos de conversaciones y cada envío duerme su gap), y encima
+    // `send()` guarda el saliente DESPUÉS de dormir ese gap y de llamar a la
+    // Graph API. Si en ese rato ya le contestó alguien —el turno de otro
+    // barrido, o un asesor desde el panel o desde WhatsApp Business, que deja
+    // su eco por `recordOutboundEcho`— acá no hay ningún turno perdido que
+    // recuperar, y seguir adelante le manda una disculpa y una transferencia
+    // encima de una conversación que ya está andando.
+    const [ultimo] = await db('whatsapp_messages')
+      .where({ wa_id: waId })
+      .orderBy('id', 'desc')
+      .limit(1)
+      .select('direction');
+    if (!ultimo || ultimo.direction !== 'inbound') {
+      this.logActivity({
+        type: 'missed_reply_skipped_answered',
+        waId,
+        reason: 'El contacto ya recibió una respuesta: no hay turno perdido que recuperar.'
+      });
+      return;
+    }
+
     const claimed = await db('whatsapp_bot_sessions')
       .where({ id: session.id })
       .whereNull('missed_reply_at')
@@ -6019,11 +6104,15 @@ ${numberedList(fullSlotLabels(offer))}
     this.logActivity({ type: 'missed_reply_recovered', waId, text: lastText });
 
     try {
-      await this.send(waId, whatsappBotCopy.missedReplyApology());
-      // Se reencola por la cola serializada del contacto, igual que un
-      // mensaje nuevo: si justo ahora entrara otro mensaje suyo, los dos
-      // turnos se ordenan en vez de pisarse.
-      await this.runSerialized(waId, () => this.runConversationTurn(waId, lastText));
+      // Se encola por la cola serializada del contacto, igual que un mensaje
+      // nuevo: si justo ahora entrara otro mensaje suyo, los dos turnos se
+      // ordenan en vez de pisarse. La disculpa va adentro por la misma razón
+      // que en `_recoverOrphanInbounds`: marca el contacto como "en curso"
+      // desde el primer envío.
+      await this.runSerialized(waId, async () => {
+        await this.send(waId, whatsappBotCopy.missedReplyApology());
+        await this.runConversationTurn(waId, lastText);
+      });
     } catch (error) {
       // El próximo barrido verá que el último mensaje SIGUE siendo del
       // contacto y, con la fila ya reservada, lo pasará a un asesor.
