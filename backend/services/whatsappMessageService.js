@@ -4,6 +4,7 @@ import { db } from '../db/connection.js';
 import { firstRealName } from './contactName.js';
 import { whatsappMediaDir } from '../middleware/upload.js';
 import { isAdFormMessage } from './whatsappBotService.js';
+import { buildStageResolver, loadFunnelStageIndex } from './funnelStageLabel.js';
 import { WhisperService } from './whisperService.js';
 
 const whisperService = new WhisperService();
@@ -656,7 +657,8 @@ export class WhatsappMessageService {
 
   /**
    * Cuelga de cada conversación el nombre y el id del lead correspondiente
-   * (`lead_name`, `lead_id`), emparejando por los últimos 9 dígitos del
+   * (`lead_name`, `lead_id`) y su **etapa del funnel** (`funnel_stage`),
+   * emparejando por los últimos 9 dígitos del
    * teléfono: el wa_id llega en formato internacional ("+51934819600") y el
    * teléfono del lead puede estar guardado con el "+", sin él o como el
    * celular local a secas, y comparar las cadenas tal cual no emparejaba.
@@ -671,7 +673,10 @@ export class WhatsappMessageService {
 
     const leads = await db('leads')
       .whereNotNull('phone').where('phone', '!=', '')
-      .select('id', 'phone', 'full_name')
+      // `status` y `sales_funnel_at` son para la etapa: el sello dice a cuál
+      // de los dos tableros pertenece el lead, y de eso depende con qué
+      // etiqueta se nombra su status (ver `funnelStageLabel.js`).
+      .select('id', 'phone', 'full_name', 'status', 'sales_funnel_at')
       .orderBy('id', 'desc');
 
     const porSufijo = new Map();
@@ -682,10 +687,20 @@ export class WhatsappMessageService {
       if (key && !porSufijo.has(key)) porSufijo.set(key, lead);
     }
 
+    /*
+     * La etapa se resuelve una vez para toda la página (tres consultas a
+     * tablas chicas) y no una por conversación: la bandeja se refresca sola
+     * cada pocos segundos.
+     */
+    const stageOf = buildStageResolver(await loadFunnelStageIndex());
+
     for (const conversation of conversations) {
       const lead = porSufijo.get(phoneKey(conversation.wa_id));
       conversation.lead_id = lead?.id ?? null;
       conversation.lead_name = firstRealName(lead?.full_name);
+      // Sin lead no hay etapa que mostrar: es un contacto que todavía no tiene
+      // ficha, y decir "sin etapa" en la mitad de las filas es ruido.
+      conversation.funnel_stage = lead ? stageOf(lead) : null;
     }
     return conversations;
   }

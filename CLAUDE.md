@@ -804,6 +804,20 @@ antes de tocar el arranque de producción.
   comisiones se pagan por fuera de la planilla, así que no hay una fila de `finance_salaries` que
   repita ese mismo egreso — si algún día se empiezan a anotar en Salarios, el único lugar donde hay
   que dejar de sumarlas es `getOverview()`, donde está dicho en un comentario.
+- En la bandeja de WhatsApp, **al lado del nombre va la etapa del funnel** del lead
+  (`funnel_stage` en cada conversación, resuelto en `funnelStageLabel.js`): quien contesta un
+  mensaje no tenía forma de saber si del otro lado hay un contacto recién llegado o un cliente al
+  que ya se le cotizó, y de eso depende cómo se le escribe. Traducir un `leads.status` a algo
+  legible necesita las dos tablas de columnas (`funnel_columns` y `setter_funnel_columns`) **y**
+  saber a qué tablero pertenece el lead, que no se deduce del texto del status sino de
+  `leadHasGraduated()` — por eso la traducción vive en un módulo y no copiada en cada pantalla.
+  Gana la etiqueta del tablero del lead y solo después la del otro: una clave que existe en los dos
+  (`cita_agendada`) puede llamarse distinto en cada uno, y mostrar la del otro es decirle a quien
+  contesta que el lead está donde no está. Un status sin columna —un desenlace fijo que el equipo
+  no configuró, o el `nuevo` de `createLead()`— igual se nombra (`ESTADOS_FIJOS`), que es justo el
+  caso en el que saber la etapa más importa. La etapa se resuelve **una vez por página**, no una
+  por conversación: la bandeja se refresca sola cada pocos segundos. Sin lead no hay etapa y no se
+  dibuja nada: "sin etapa" repetido en media bandeja es ruido.
 - La **bandeja de WhatsApp** (`/api/whatsapp/conversations`) está **paginada**: devolvía las 100 más
   recientes y el resto no existía para el panel, y además leía la tabla entera de mensajes en cada
   refresco para plegarla en memoria (crece con cada mensaje de cada conversación). Ahora primero se

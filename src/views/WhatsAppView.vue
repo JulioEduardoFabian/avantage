@@ -387,7 +387,21 @@
             <span class="contact-info">
               <span class="contact-name">
                 <span v-if="c.handed_off_at" class="urgent-flag" title="Avan lo transfirió a un asesor">🆘</span>
-                {{ displayName(c) }}
+                <span class="contact-name-text">{{ displayName(c) }}</span>
+                <!-- En qué etapa del funnel está su ficha. Va pegada al nombre
+                     porque es lo que cambia cómo se le contesta: no es lo mismo
+                     escribirle a un contacto recién llegado que a un cliente al
+                     que ya se le cotizó. -->
+                <span
+                  v-if="c.funnel_stage"
+                  class="stage-badge"
+                  :class="`stage-${c.funnel_stage.board}`"
+                  :style="stageStyle(c.funnel_stage)"
+                  :title="stageTitle(c.funnel_stage)"
+                >
+                  <span v-if="c.funnel_stage.icon" aria-hidden="true">{{ c.funnel_stage.icon }}</span>
+                  {{ c.funnel_stage.label }}
+                </span>
                 <!-- El alias del perfil de WhatsApp, cuando no es el nombre
                      real: es como aparece en el celular de quien atiende. -->
                 <span v-if="aliasOf(c)" class="contact-alias" :title="'En WhatsApp aparece como ' + aliasOf(c)">
@@ -427,7 +441,19 @@
               {{ initialsOf(selectedContactName) }}
             </span>
             <div class="thread-identity">
-              <strong class="thread-name">{{ selectedContactName }}</strong>
+              <strong class="thread-name">
+                {{ selectedContactName }}
+                <span
+                  v-if="selectedStage"
+                  class="stage-badge"
+                  :class="`stage-${selectedStage.board}`"
+                  :style="stageStyle(selectedStage)"
+                  :title="stageTitle(selectedStage)"
+                >
+                  <span v-if="selectedStage.icon" aria-hidden="true">{{ selectedStage.icon }}</span>
+                  {{ selectedStage.label }}
+                </span>
+              </strong>
               <span class="thread-sub">
                 <span class="thread-phone">{{ selectedWaId }}</span>
                 <span
@@ -790,6 +816,30 @@ const selectedContactName = computed(() => {
   const conv = selectedConversation.value;
   return conv ? displayName(conv) : selectedWaId.value;
 });
+
+/**
+ * La etapa del funnel del contacto abierto. Sale de la conversación de la
+ * lista —el servidor ya la resolvió ahí (`funnel_stage`)— y no de una
+ * petición propia: es el mismo dato, y pedirlo dos veces es como se llega a
+ * que la lista y la cabecera digan etapas distintas.
+ */
+const selectedStage = computed(() => selectedConversation.value?.funnel_stage || null);
+
+const BOARD_LABEL = { setter: 'Setter Funnel', ventas: 'Funnel de Ventas' };
+
+function stageTitle(stage) {
+  return `${BOARD_LABEL[stage.board] || 'Funnel'}: ${stage.label}`;
+}
+
+/**
+ * La píldora se pinta con el color que el equipo le puso a esa columna, para
+ * que coincida con el tablero. Sin color configurado quedan los tonos neutros
+ * de `.stage-setter` / `.stage-ventas`, que ya distinguen un tablero del otro.
+ */
+function stageStyle(stage) {
+  if (!stage.color) return {};
+  return { background: `${stage.color}22`, color: stage.color, borderColor: `${stage.color}55` };
+}
 
 /*
  * La búsqueda la resuelve el SERVIDOR (ver `/api/whatsapp/conversations`).
@@ -1960,9 +2010,20 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
+/* Fila de identidad del contacto: nombre, etapa del funnel y alias. Es flex
+   para que lo único que se recorte sea el NOMBRE —la píldora de etapa no
+   encoge— y no al revés: una etapa a medias no dice nada, y un nombre cortado
+   se sigue reconociendo. */
 .contact-name {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+.contact-name-text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1975,6 +2036,12 @@ onUnmounted(() => {
   font-weight: 400;
   font-size: 0.72rem;
   color: var(--text-muted);
+  /* Lo último que sobrevive si la fila se queda corta: el nombre y la etapa
+     van primero. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .contact-alias::before { content: '· '; }
@@ -2030,6 +2097,42 @@ onUnmounted(() => {
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
   white-space: nowrap;
+}
+
+/*
+ * Etapa del funnel al lado del nombre. Hereda la forma de `.channel-badge`
+ * —misma altura, mismo radio— para que las dos píldoras de una fila se lean
+ * como una sola familia, pero con borde: el color viene de la columna que
+ * configuró el equipo y sin borde se pierde contra el fondo de la fila activa.
+ */
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  flex-shrink: 0;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 0 0.42rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+/* Sin color propio: el tablero igual se distingue. */
+.stage-setter {
+  background: var(--surface-2);
+  color: var(--text-sub);
+  border-color: var(--border-color);
+}
+
+.stage-ventas {
+  background: rgba(47, 125, 90, 0.14);
+  color: #4FA87D;
+  border-color: rgba(47, 125, 90, 0.35);
 }
 
 .channel-fb {
@@ -2169,6 +2272,9 @@ onUnmounted(() => {
 }
 
 .thread-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   font-size: 0.95rem;
   font-weight: 600;
   line-height: 1.2;
