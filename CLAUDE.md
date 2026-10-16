@@ -331,6 +331,22 @@ antes de tocar el arranque de producción.
   (el desplegable reagrega ese valor como "Registrado anteriormente"); renombrar con
   `propagate: true` sí reescribe `leads.field_of_study` y `projects.field_of_study`, nunca
   cotizaciones ni contratos ya emitidos.
+- El **buscador de los dos tableros** es `src/leadSearch.js` y **tolera tildes y dedazos**
+  (Levenshtein): "Rodrigez" encuentra a "Rodríguez" y "castanida" a "Castañeda". Eso no lo hace más
+  rápido —la distancia cuesta más que un `includes`—, así que el orden importa: primero la
+  coincidencia exacta, que resuelve casi todo sin calcular nada, y la corrección solo sobre lo que
+  no coincidió. El texto buscable de cada lead se normaliza **una vez** y queda en un `WeakMap`
+  (con la concatenación cruda como firma, para que reasignar un lead —que reescribe `assigned_to`
+  sobre el mismo objeto— no deje el índice viejo): sin eso, cada tecla volvía a quitarle las tildes
+  a nueve campos de cada lead y una consulta de dos palabras sobre 2.000 fichas costaba ~95 ms por
+  pulsación (ahora ~13 ms, y 2 ms cuando la coincidencia es exacta).
+  **Los números no se corrigen**: una consulta de puros dígitos mira solo id, celular y documento, y
+  por substring. En un teléfono un dígito de diferencia es otra persona, y un buscador que lo
+  "corrige" muestra la ficha equivocada justo cuando alguien está por llamar. Tampoco se corrige
+  nada de menos de 4 caracteres (con "ana" y una letra de margen entra media agenda).
+  Los campos son los mismos en los dos tableros: antes cada pantalla tenía su lista —el de Ventas no
+  miraba la universidad ni el canal, el del setter no miraba las notas— y el mismo texto encontraba
+  cosas distintas según dónde se buscara.
 - Las **etapas del Setter Funnel** son `setter_funnel_columns` (`setterFunnelColumnService.js`,
   `/api/setter-funnel-columns`, cliente en `src/setterFunnelColumns.js`), **tabla propia y no filas
   de `funnel_columns` con un campo "tablero"**: `loadSalesFunnelStatuses()` trata TODA clave de

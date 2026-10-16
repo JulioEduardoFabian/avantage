@@ -93,7 +93,7 @@
           v-model="searchQuery"
           type="text"
           class="search-input"
-          placeholder="Buscar por tema, cliente, #ID, email, teléfono..."
+          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
         />
         <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
       </div>
@@ -1182,6 +1182,7 @@ import DuplicateLeadsModal from '../components/DuplicateLeadsModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { formatCardDate, formatLeadDate } from '../leadCardDate.js';
+import { matchesLeadSearch } from '../leadSearch.js';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
 import { DEFAULT_SETTER_COLUMNS, loadSetterColumns } from '../setterFunnelColumns.js';
@@ -1519,20 +1520,10 @@ const avgViabilityScore = computed(() => {
  * a que el reparto muestre leads que la búsqueda ya había descartado.
  */
 function matchesBoardFilters(lead) {
-  const query = searchQuery.value.trim().toLowerCase();
-  if (query) {
-    const cleanId = query.replace(/^#/, '');
-    const matchId = String(lead.id || '').includes(cleanId);
-    const matchName = (lead.full_name || '').toLowerCase().includes(query);
-    const matchTopic = (lead.topic || '').toLowerCase().includes(query);
-    const matchEmail = (lead.email || '').toLowerCase().includes(query);
-    const matchPhone = (lead.phone || '').toLowerCase().includes(query);
-    const matchField = (lead.field_of_study || '').toLowerCase().includes(query);
-    const matchAcademic = (lead.academic_level || '').toLowerCase().includes(query);
-    const matchNotes = (lead.additional_notes || '').toLowerCase().includes(query);
-    const matchAssigned = (lead.assigned_to || '').toLowerCase().includes(query);
-    if (!matchId && !matchName && !matchTopic && !matchEmail && !matchPhone && !matchField && !matchAcademic && !matchNotes && !matchAssigned) return false;
-  }
+  // La regla del buscador vive en `leadSearch.js` y la comparten los dos
+  // tableros: tolera tildes y dedazos en el texto, y el celular, el documento
+  // y el id se buscan tal cual (ahí un dígito de diferencia es otra persona).
+  if (!matchesLeadSearch(lead, searchQuery.value)) return false;
 
   if (selectedViabilityFilter.value !== 'all') {
     const lvl = (lead.viability_level || '').toLowerCase();

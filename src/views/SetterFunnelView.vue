@@ -97,7 +97,7 @@
           v-model="searchQuery"
           type="text"
           class="search-input"
-          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad..."
+          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
         />
         <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
       </div>
@@ -1034,6 +1034,7 @@ import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { formatCardDate, formatLeadDate as formatDate, limaDay } from '../leadCardDate.js';
+import { matchesLeadSearch } from '../leadSearch.js';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
@@ -1407,7 +1408,9 @@ const filteredLeadsByColumn = computed(() => {
     grouped[col.key] = [];
   }
 
-  const query = searchQuery.value.trim().toLowerCase();
+  // Se normaliza dentro de `matchesLeadSearch`: acá solo se saca de la ref una
+  // vez, fuera del bucle de leads.
+  const query = searchQuery.value;
   const channelFilter = selectedChannelFilter.value;
   const assigneeFilter = selectedAssigneeFilter.value;
   const firstColKey = columns.value[0]?.key || 'conversacion_abierta';
@@ -1436,23 +1439,11 @@ const filteredLeadsByColumn = computed(() => {
       if (dateTo.value && day > dateTo.value) continue;
     }
 
-    // Filtro por texto de búsqueda
-    if (query) {
-      const cleanId = query.replace(/^#/, '');
-      const matchId = String(lead.id || '').includes(cleanId);
-      const matchName = (lead.full_name || '').toLowerCase().includes(query);
-      const matchTopic = (lead.topic || '').toLowerCase().includes(query);
-      const matchEmail = (lead.email || '').toLowerCase().includes(query);
-      const matchPhone = (lead.phone || '').toLowerCase().includes(query);
-      const matchField = (lead.field_of_study || '').toLowerCase().includes(query);
-      const matchUniversity = (lead.university || '').toLowerCase().includes(query);
-      const matchChannel = (lead.source || '').toLowerCase().includes(query);
-      const matchAssigned = (lead.assigned_to || '').toLowerCase().includes(query);
-
-      if (!matchId && !matchName && !matchTopic && !matchEmail && !matchPhone && !matchField && !matchUniversity && !matchChannel && !matchAssigned) {
-        continue;
-      }
-    }
+    // Filtro por texto de búsqueda. La regla vive en `leadSearch.js` y la
+    // comparten los dos tableros: tolera tildes y dedazos en el texto, y el
+    // celular, el documento y el id se buscan tal cual (ahí un dígito de
+    // diferencia es otra persona).
+    if (!matchesLeadSearch(lead, query)) continue;
 
     // Filtro por nivel de viabilidad
     if (selectedViabilityFilter.value !== 'all') {
