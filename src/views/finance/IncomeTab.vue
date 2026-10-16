@@ -273,7 +273,10 @@
           <dt>No concretado</dt>
           <dd class="is-muted">S/ {{ formatAmount(totals.descartado) }}</dd>
         </div>
-        <div class="ledger-summary-item">
+        <div
+          class="ledger-summary-item"
+          title="Lo que el banco cobró por esas transferencias: no entró a la cuenta. Se descuenta en el Resumen Financiero"
+        >
           <dt>ITF</dt>
           <dd>S/ {{ formatAmount(totals.itf) }}</dd>
         </div>

@@ -152,15 +152,21 @@
           <dt>Egresos</dt>
           <dd class="is-out">S/ {{ formatAmount(totals.egresos) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Ingresos menos egresos ya pagados">
+        <!-- El ITF también sale de la cuenta, así que el neto lo descuenta: las
+             columnas de arriba son la suma de las filas y por eso no lo
+             incluyen, pero "lo que quedó" sin restarlo no es lo que quedó. -->
+        <div class="ledger-summary-item" title="Ingresos menos egresos ya pagados, descontando el ITF que cobró el banco">
           <dt>Neto</dt>
-          <dd>S/ {{ formatAmount(totals.ingresos - totals.egresos) }}</dd>
+          <dd>S/ {{ formatAmount(totals.ingresos - totals.egresos - totals.itf) }}</dd>
         </div>
         <div class="ledger-summary-item" title="Saldo de los asientos que siguen pendientes (no entra en el neto)">
           <dt>Pendiente</dt>
           <dd class="is-pending">S/ {{ formatAmount(totals.pendiente) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Solo asientos pagados">
+        <div
+          class="ledger-summary-item"
+          title="Solo asientos pagados. Lo que el banco cobró por esas operaciones: se descuenta en el Resumen Financiero"
+        >
           <dt>ITF</dt>
           <dd>S/ {{ formatAmount(totals.itf) }}</dd>
         </div>

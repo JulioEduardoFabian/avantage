@@ -6,7 +6,7 @@
         <h2 class="ov-title">Visión General de Tesorería</h2>
         <p class="ov-subtitle">
           Consolidado en tiempo real, en soles: ingresos verificados menos asientos del libro diario,
-          salarios y comisiones ya pagados. Los saldos son de todas las cuentas; el rango de meses
+          salarios y comisiones ya pagados, y el ITF que cobró el banco. Los saldos son de todas las cuentas; el rango de meses
           solo recorta la gráfica de evolución.
         </p>
       </div>
@@ -70,15 +70,16 @@
           <span class="kpi-cur">S/</span> {{ fmt(data.totals.egresos) }}
         </div>
         <!--
-          Desglosado y no solo sumado: este total mezcla tres pestañas (libro
-          diario, Salarios y Comisiones), así que sin el desglose "¿por qué
-          subió?" solo se contesta revisando las tres a mano.
+          Desglosado y no solo sumado: este total mezcla el libro diario,
+          Salarios, Comisiones y el ITF que cobra el banco, así que sin el
+          desglose "¿por qué subió?" solo se contesta revisando todo a mano.
         -->
         <div class="kpi-card-footer">
           <span class="kpi-breakdown">
             <span>Libro <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.libro) }}</b></span>
             <span>Salarios <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.salarios) }}</b></span>
             <span>Comisiones <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.comisiones) }}</b></span>
+            <span>ITF <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.itf) }}</b></span>
           </span>
         </div>
       </div>
@@ -709,7 +710,7 @@ const data = ref({
     // Mismos nombres y misma forma que devuelve `getOverview()`: la plantilla
     // los lee antes de la primera respuesta, y un `undefined` acá se ve como
     // una tarjeta vacía en la primera pintada.
-    egresosPorOrigen: { libro: 0, salarios: 0, comisiones: 0 },
+    egresosPorOrigen: { libro: 0, salarios: 0, comisiones: 0, itf: 0 },
     pendientes: { salarios: 0, comisiones: 0, total: 0 },
     totalTransactions: 0,
     byBank: BANCOS.map((banco) => ({ banco, ingresos: 0, egresos: 0 }))

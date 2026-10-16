@@ -1082,7 +1082,8 @@ export class FinanceLedgerService {
    *
    *  - Ingresos = `finance_income` + asientos positivos del libro diario (en soles).
    *  - Egresos  = asientos negativos del libro diario + **salarios pagados**
-   *               + **comisiones pagadas** (en soles, en valor absoluto).
+   *               + **comisiones pagadas** + el **ITF** de unos y otros (en
+   *               soles, en valor absoluto).
    *
    * Salarios y comisiones nacieron fuera de la contabilidad (ver la cabecera de
    * `finance_salaries` y de `sales_commissions`) y por eso no entraban acá,
@@ -1127,6 +1128,10 @@ export class FinanceLedgerService {
       .select('banco')
       .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
       .sum('monto as total')
+      // El ITF viaja en la misma consulta agrupada: es una columna más de las
+      // filas que ya se están sumando, y pedirlo aparte serían dos consultas
+      // que pueden terminar contando universos distintos.
+      .sum('itf as itf')
       .where('fecha', '>=', earliest)
       .where('fecha', '<', afterLast)
       .where('estado', 'verificado')
@@ -1137,6 +1142,7 @@ export class FinanceLedgerService {
       .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
       .select(db.raw('SUM(CASE WHEN monto >= 0 THEN monto ELSE 0 END) as ingreso'))
       .select(db.raw('SUM(CASE WHEN monto < 0 THEN -monto ELSE 0 END) as egreso'))
+      .sum('itf as itf')
       .where('fecha', '>=', earliest)
       .where('fecha', '<', afterLast)
       .where('moneda', 'soles')
@@ -1209,13 +1215,17 @@ export class FinanceLedgerService {
       if (ingresos[r.banco]?.[r.month] !== undefined) {
         ingresos[r.banco][r.month] += Number(r.total) || 0;
       }
+      // El ITF de esa transferencia no entró nunca: se lo quedó el banco.
+      if (egresos[r.banco]?.[r.month] !== undefined) {
+        egresos[r.banco][r.month] += Number(r.itf) || 0;
+      }
     }
     for (const r of journalRows) {
       if (ingresos[r.banco]?.[r.month] !== undefined) {
         ingresos[r.banco][r.month] += Number(r.ingreso) || 0;
       }
       if (egresos[r.banco]?.[r.month] !== undefined) {
-        egresos[r.banco][r.month] += Number(r.egreso) || 0;
+        egresos[r.banco][r.month] += (Number(r.egreso) || 0) + (Number(r.itf) || 0);
       }
     }
     /** La cuenta de la fila, o el cajón de lo que no cayó en ninguna conocida. */
@@ -1241,6 +1251,7 @@ export class FinanceLedgerService {
     const incomeByBank = await db('finance_income')
       .select('banco')
       .sum('monto as total')
+      .sum('itf as itf')
       .where('estado', 'verificado')
       .groupBy('banco');
 
@@ -1248,6 +1259,7 @@ export class FinanceLedgerService {
       .select('banco')
       .select(db.raw('SUM(CASE WHEN monto >= 0 THEN monto ELSE 0 END) as ingreso'))
       .select(db.raw('SUM(CASE WHEN monto < 0 THEN -monto ELSE 0 END) as egreso'))
+      .sum('itf as itf')
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .groupBy('banco');
@@ -1294,6 +1306,25 @@ export class FinanceLedgerService {
       .first();
     const egresoComisiones = Number(comisionesPagadas?.egreso) || 0;
     acumular(null, 0, egresoComisiones);
+
+    /*
+     * El ITF: la comisión que el banco cobra por cada transferencia. Es dinero
+     * que nunca llegó a la cuenta (o que salió de ella) y hasta ahora se
+     * mostraba como una cifra suelta en cada pestaña sin restar en ningún
+     * lado, así que el Balance Neto en Caja daba de más.
+     *
+     * Cuenta el MISMO universo que el resto del resumen —ingresos verificados
+     * y asientos pagados en soles—: el ITF de una cuota que todavía no se
+     * verificó no se cobró todavía. Va a la cuenta de su propia fila, porque
+     * el banco lo descuenta de esa cuenta y no de un fondo común.
+     */
+    let egresoItf = 0;
+    for (const r of [...incomeByBank, ...journalByBank]) {
+      const itf = Number(r.itf) || 0;
+      if (!itf) continue;
+      acumular(r.banco, 0, itf);
+      egresoItf += itf;
+    }
 
     /*
      * Lo que se debe y todavía no salió. NO toca el balance —esta pantalla
@@ -1451,7 +1482,8 @@ export class FinanceLedgerService {
         egresosPorOrigen: {
           libro: redondear(egresoLibro),
           salarios: redondear(egresoSalarios),
-          comisiones: redondear(egresoComisiones)
+          comisiones: redondear(egresoComisiones),
+          itf: redondear(egresoItf)
         },
         // Devengado y sin pagar: no entra en el balance (no salió de ninguna
         // cuenta), pero se muestra al lado.

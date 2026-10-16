@@ -262,6 +262,16 @@ antes de tocar el arranque de producción.
   día abierto: el nombre de una entrega no entra en una celda de 50 px, y apretarlo para que entre
   deja texto cortado que no dice nada. La vista elegida se recuerda en `localStorage`
   (`entregables.view`), entre `try` porque en una ventana privada el acceso lanza.
+- El **ITF resta**: es la comisión que el banco cobra por cada transferencia, o sea dinero que
+  nunca llegó a la cuenta (o que salió de ella). Se mostraba como una cifra suelta en cada pestaña
+  sin descontarse en ningún lado, así que el Balance Neto en Caja daba de más. Entra en los egresos
+  de `getOverview()` —con su propia línea en `egresosPorOrigen`, en la gráfica mensual y en la
+  tarjeta de SU cuenta, porque el banco lo descuenta de esa cuenta y no de un fondo común— contando
+  el **mismo universo** que el resto del resumen: ingresos `verificado` y asientos `pagado` en
+  soles (el ITF de una cuota que no se verificó todavía no se cobró). Viaja en las MISMAS consultas
+  agrupadas que ya suman esas filas, no en consultas aparte: dos consultas distintas terminan
+  contando universos distintos. En el Libro Diario el **Neto** también lo descuenta; las columnas
+  de Ingresos y Egresos no, porque son la suma de las filas y tienen que seguir cuadrando con ellas.
 - El **ITF se propone, no se impone** (`resolveItf()` en `financeLedgerService.js`, usado por el
   alta y la edición de INGRESOS y del Libro Diario). La fórmula del Excel del área
   (`|monto| < 1000 ? 0 : INT(|monto|/1000) × 0.05`, en `calcItf`) sigue siendo el valor por
