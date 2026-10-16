@@ -579,6 +579,7 @@
       :openable-ids="leadIds"
       :stage-label="stageLabelFor"
       @open="openDuplicateLead"
+      @deleted="fetchLeads"
     />
 
     <!-- Agendar una reunión sin salir del funnel: el mismo modal del Calendario. -->

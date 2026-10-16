@@ -2629,6 +2629,12 @@ app.delete('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'se
     console.log(`🗑️ [Prospectos] Prospecto eliminado #${req.params.id}`);
     res.json({ success: true, message: 'Prospecto eliminado exitosamente.' });
   } catch (error) {
+    // De la ficha cuelga trabajo (proyecto, cuotas, contrato…): borrarla
+    // eliminaría el proyecto y dejaría el dinero sin cliente. No es un error
+    // del servidor, es una regla del módulo — ver `deleteLead()`.
+    if (error.code === 'LEAD_HAS_WORK') {
+      return res.status(409).json({ error: error.message });
+    }
     console.error('❌ Error al eliminar prospecto:', error);
     res.status(500).json({ error: 'Error al eliminar el prospecto.', details: error.message });
   }

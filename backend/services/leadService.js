@@ -499,7 +499,11 @@ export class LeadService {
       });
 
     const { scope, salesStatuses } = await this.visibilityFor(viewer);
-    return groupDuplicateLeads(rows)
+    const grupos = groupDuplicateLeads(rows);
+    // Una sola pasada por las cinco tablas para todas las fichas repetidas.
+    const workload = await this.workloadByLead(grupos.flatMap((group) => group.leads.map((lead) => lead.id)));
+
+    return grupos
       .map((group) => ({
         reasons: group.reasons,
         leads: group.leads.map((row) => ({
@@ -512,7 +516,11 @@ export class LeadService {
           created_at: row.created_at,
           has_project: Boolean(row.project_id),
           assigned_user_name: row.assigned_user_name || row.assigned_to || null,
-          visible: this.canView(row, viewer, salesStatuses)
+          visible: this.canView(row, viewer, salesStatuses),
+          // La misma regla que aplica el borrado, viajando a la pantalla: el
+          // botón que se ve y lo que el servidor acepta no pueden decir cosas
+          // distintas (mismo criterio que `delivery_blocked` en Entregables).
+          delete_blocked_reason: deletionBlockReason(workload.get(row.id))
         }))
       }))
       .filter((group) => scope === 'all' || group.leads.some((lead) => lead.visible));
@@ -1192,7 +1200,96 @@ ${note}` : note;
     return this.getLeadById(id);
   }
 
+  /**
+   * Cuánto trabajo cuelga de cada uno de estos leads.
+   *
+   * Cinco consultas agrupadas para TODA la lista, no cinco por lead: se usa
+   * desde el listado de duplicados, que puede traer cientos de fichas.
+   */
+  async workloadByLead(ids = []) {
+    const unicos = [...new Set(ids.map(Number).filter(Boolean))];
+    const mapa = new Map(unicos.map((id) => [id, { projects: 0, income: 0, contracts: 0, quotes: 0, commissions: 0 }]));
+    if (unicos.length === 0) return mapa;
+
+    const contar = async (tabla, campo) => {
+      const filas = await db(tabla).whereIn('lead_id', unicos).select('lead_id').count({ n: '*' }).groupBy('lead_id');
+      for (const fila of filas) {
+        const registro = mapa.get(Number(fila.lead_id));
+        if (registro) registro[campo] = Number(fila.n) || 0;
+      }
+    };
+
+    await Promise.all([
+      contar('projects', 'projects'),
+      contar('finance_income', 'income'),
+      contar('contracts', 'contracts'),
+      contar('quotes', 'quotes'),
+      contar('sales_commissions', 'commissions')
+    ]);
+    return mapa;
+  }
+
+  /**
+   * Borra la ficha de un lead. Devuelve cuántas filas borró.
+   *
+   * Se niega si de esa ficha cuelga trabajo, y no es una precaución de más:
+   * `projects`, `quotes`, `sales_commissions`, las notas y el historial de
+   * etapas están en CASCADE, así que borrar el lead **borra el proyecto con
+   * todo lo suyo**; y `finance_income` y `contracts` están en SET NULL, así
+   * que las cuotas sobreviven pero se quedan **sin cliente** — desaparecen del
+   * cierre en INGRESOS y de Cobranzas, y ya no hay forma de saber de quién
+   * eran. Hasta acá el borrado no comprobaba nada, y el botón nuevo del modal
+   * de duplicados lo pone justo al lado de una ficha marcada "🏆 con proyecto".
+   *
+   * La regla es la MISMA que viaja al listado de duplicados
+   * (`deletionBlockReason`), para que el botón que se ve y lo que el servidor
+   * acepta no puedan decir cosas distintas.
+   */
   async deleteLead(id) {
+    const workload = (await this.workloadByLead([id])).get(Number(id));
+    const motivo = deletionBlockReason(workload);
+    if (motivo) {
+      const error = new Error(motivo);
+      error.code = 'LEAD_HAS_WORK';
+      throw error;
+    }
     return db('leads').where({ id }).del();
   }
+}
+
+/**
+ * Por qué NO se puede borrar esta ficha, o `null` si se puede.
+ *
+ * Nombra lo que hay colgando y lo que pasaría, en vez de un "no se puede" a
+ * secas: de un duplicado casi siempre se borra el gemelo vacío, y si justo el
+ * que se eligió es el que tiene el proyecto hay que poder darse cuenta sin
+ * salir del modal.
+ */
+export function deletionBlockReason(workload) {
+  if (!workload) return null;
+
+  const tiene = [];
+  const pasaria = [];
+  if (workload.projects > 0) {
+    tiene.push('un proyecto abierto');
+    pasaria.push('se borraría el proyecto con todo su trabajo');
+  }
+  if (workload.quotes > 0) {
+    tiene.push(`${workload.quotes} cotización(es)`);
+    pasaria.push('se borrarían sus cotizaciones');
+  }
+  if (workload.commissions > 0) {
+    tiene.push(`${workload.commissions} comisión(es) devengada(s)`);
+    pasaria.push('se borrarían sus comisiones');
+  }
+  // Las dos SET NULL van juntas: la fila sobrevive pero se queda huérfana, que
+  // en los libros es casi peor que perderla — nadie sabe de quién era.
+  if (workload.income > 0) tiene.push(`${workload.income} cuota(s) en Finanzas`);
+  if (workload.contracts > 0) tiene.push(`${workload.contracts} contrato(s)`);
+  if (workload.income > 0 || workload.contracts > 0) pasaria.push('el dinero quedaría sin cliente');
+
+  if (tiene.length === 0) return null;
+
+  return `Esta ficha tiene ${tiene.join(', ')}: ${pasaria.join(' y ')}. `
+    + 'Si la repetida es esta, primero hay que mover ese trabajo a la ficha que se queda.';
 }

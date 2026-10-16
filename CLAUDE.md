@@ -442,6 +442,20 @@ antes de tocar el arranque de producción.
   tablero y por eso lo vuelve a cargar de buena fe. De una ficha ajena viaja un **resumen**
   (`findDuplicates()`: nombre, celular, documento, etapa y de quién es) y nunca el lead, y `visible`
   dice si además la puede abrir, para no ofrecerle un enlace que `requireLeadVisible` le va a negar.
+  Desde ese modal se puede **eliminar la ficha repetida**, pero `deleteLead()` se niega si de ella
+  cuelga trabajo (`deletionBlockReason()`: proyecto, cuotas de Finanzas, contratos, cotizaciones o
+  comisiones; la ruta responde **409**). No es una precaución de más: `projects`, `quotes`,
+  `sales_commissions`, las notas y el historial de etapas están en **CASCADE**, así que borrar el
+  lead borra el proyecto con todo lo suyo; y `finance_income` y `contracts` están en **SET NULL**,
+  así que las cuotas sobreviven pero se quedan **sin cliente** —desaparecen del cierre en INGRESOS y
+  de Cobranzas y ya no hay forma de saber de quién eran—. Hasta el 16/10/2026 el borrado no
+  comprobaba nada y el botón nuevo quedaba justo al lado de una ficha marcada "🏆 con proyecto". El
+  motivo viaja al listado (`delete_blocked_reason`, calculado con la MISMA función que aplica el
+  borrado, igual que `delivery_blocked` en Entregables) y se lee debajo de la fila, no solo en el
+  título del botón: es lo que hay que saber ANTES de elegir cuál de las dos se borra. El botón sale
+  solo en las fichas visibles —`requireLeadVisible` rechaza las ajenas y un botón que siempre falla
+  es peor que no tenerlo— y el cálculo del trabajo colgante son **cinco consultas agrupadas para
+  toda la lista** (`workloadByLead()`), no cinco por ficha.
   La ficha dice además **quién cargó el lead a mano** (`leads.created_by`, escrito solo por
   `registerManualLead()`; viaja como `created_by_name` y se muestra al lado del canal en el modal
   del Setter Funnel y en la ficha de la Base de Datos). No es lo mismo que el responsable comercial

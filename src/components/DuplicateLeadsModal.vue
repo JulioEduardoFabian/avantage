@@ -17,6 +17,10 @@
           Fichas que comparten celular o DNI: son la misma persona cargada más de una vez.
         </p>
 
+        <!-- Fuera de la cadena v-if/v-else-if de abajo: el resultado de un
+             borrado tiene que verse junto con la lista ya recargada. -->
+        <p v-if="notice" class="dupg-notice">✅ {{ notice }}</p>
+
         <div v-if="loading" class="dupg-empty">Buscando duplicados…</div>
 
         <div v-else-if="error" class="info-box" style="border-color: rgba(220, 90, 90, 0.4); background: rgba(220, 90, 90, 0.08);">
@@ -56,11 +60,32 @@
                 </div>
                 <div class="dupg-owner">
                   <span>{{ lead.assigned_user_name ? `A cargo de ${lead.assigned_user_name}` : 'Sin responsable asignado' }}</span>
-                  <button v-if="openableIds.includes(lead.id)" type="button" class="dupg-link" @click="openLead(lead)">
-                    Ver ficha →
-                  </button>
-                  <span v-else-if="!lead.visible" class="dupg-hidden">No está en tu cartera</span>
+                  <span class="dupg-actions">
+                    <!--
+                      Borrar la ficha repetida. Solo de las que la persona
+                      puede ver: `requireLeadVisible` rechaza las ajenas, y un
+                      botón que siempre falla es peor que no tenerlo.
+                      Queda deshabilitado —con el motivo en el título— cuando
+                      de la ficha cuelga trabajo: ese dato lo manda el servidor
+                      (`delete_blocked_reason`) con la MISMA regla que aplica
+                      al borrar.
+                    -->
+                    <button
+                      v-if="lead.visible"
+                      type="button"
+                      class="dupg-delete"
+                      :class="{ 'is-blocked': lead.delete_blocked_reason }"
+                      :disabled="deletingId === lead.id || Boolean(lead.delete_blocked_reason)"
+                      :title="lead.delete_blocked_reason || 'Eliminar esta ficha repetida'"
+                      @click="removeLead(group, lead)"
+                    >{{ deletingId === lead.id ? '…' : '🗑️ Eliminar' }}</button>
+                    <button v-if="openableIds.includes(lead.id)" type="button" class="dupg-link" @click="openLead(lead)">
+                      Ver ficha →
+                    </button>
+                    <span v-else-if="!lead.visible" class="dupg-hidden">No está en tu cartera</span>
+                  </span>
                 </div>
+                <p v-if="lead.delete_blocked_reason" class="dupg-blocked">⚠️ {{ lead.delete_blocked_reason }}</p>
               </li>
             </ul>
           </section>
@@ -87,12 +112,14 @@ const props = defineProps({
   /* Cómo nombra la pantalla cada etapa (las columnas las configura el equipo). */
   stageLabel: { type: Function, default: (status) => status || 'Sin etapa' }
 });
-const emit = defineEmits(['update:modelValue', 'open']);
+const emit = defineEmits(['update:modelValue', 'open', 'deleted']);
 
 const loading = ref(false);
 const error = ref('');
 const groups = ref([]);
 const search = ref('');
+const deletingId = ref(null);
+const notice = ref('');
 
 const filteredGroups = computed(() => {
   const term = search.value.trim().toLowerCase();
@@ -141,6 +168,50 @@ function close() {
 function openLead(lead) {
   emit('open', lead);
   close();
+}
+
+/**
+ * Borra una de las fichas repetidas.
+ *
+ * Se confirma nombrando la ficha y su etapa —de dos fichas con el mismo nombre
+ * y el mismo celular, lo único que las distingue es en qué etapa está cada
+ * una— y se avisa de lo que el borrado se lleva. El tope de verdad está en el
+ * servidor (`deleteLead()` responde 409 si de la ficha cuelga trabajo): este
+ * botón solo evita el viaje cuando ya se sabe que va a fallar.
+ */
+async function removeLead(group, lead) {
+  if (lead.delete_blocked_reason) {
+    notice.value = lead.delete_blocked_reason;
+    return;
+  }
+  const nombre = lead.full_name || `Lead #${lead.id}`;
+  const etapa = props.stageLabel(lead.status);
+  const quedan = group.leads.length - 1;
+  const aviso = `¿Eliminar la ficha de "${nombre}" que está en ${etapa}?
+
+`
+    + `Se borra también su conversación, sus notas y su historial de etapas. `
+    + `${quedan === 1 ? 'Queda la otra ficha' : `Quedan las otras ${quedan} fichas`} de esta persona.`;
+  if (!confirm(aviso)) return;
+
+  deletingId.value = lead.id;
+  error.value = '';
+  notice.value = '';
+  try {
+    const response = await apiFetch(`/api/leads/${lead.id}`, { method: 'DELETE' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo eliminar la ficha.');
+    notice.value = `Ficha de ${nombre} eliminada.`;
+    emit('deleted', lead);
+    // Se recarga en vez de sacarla de la lista en memoria: al quedar una sola
+    // ficha, esa persona ya no es un duplicado y el grupo entero tiene que
+    // desaparecer del modal.
+    await load();
+  } catch (e) {
+    error.value = e.message;
+  } finally {
+    deletingId.value = null;
+  }
 }
 
 watch(
@@ -247,4 +318,48 @@ watch(
 }
 
 .dupg-hidden { font-style: italic; color: var(--text-muted); }
+
+.dupg-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.dupg-delete {
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-rose);
+  cursor: pointer;
+}
+
+.dupg-delete:hover:not(:disabled) {
+  border-color: var(--accent-rose);
+  background: rgba(220, 90, 90, 0.08);
+}
+
+.dupg-delete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+/* El motivo por el que esa ficha no se puede borrar, debajo de su fila: el
+   título del botón deshabilitado no se lee sin pasar el mouse, y es justo lo
+   que hay que saber antes de elegir cuál de las dos se borra. */
+.dupg-blocked {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--accent-amber);
+}
+
+.dupg-notice {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  color: var(--accent-emerald);
+}
 </style>
