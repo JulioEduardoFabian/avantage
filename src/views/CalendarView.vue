@@ -18,6 +18,12 @@
           @click="showAvailability = !showAvailability"
         >🟩 Disponibilidad</button>
         <button class="btn-action-secondary" @click="showPeek = true">🕘 Ver horario</button>
+        <button
+          class="btn-action-secondary"
+          :disabled="isSyncing"
+          title="Trae al panel lo que cambió en el Google Calendar de los asesores. No modifica nada en Google."
+          @click="sync"
+        >{{ isSyncing ? '⏳ Sincronizando…' : '🔄 Sincronizar con Google' }}</button>
         <button class="btn-action-primary" @click="openCreate(selectedDay)">+ Nueva reunión</button>
       </div>
     </header>
@@ -103,6 +109,7 @@
               v-for="meeting in (byDay[celda.iso] || []).slice(0, 3)"
               :key="meeting.id"
               class="calendar-chip"
+              :class="{ 'is-cancelled': meeting.cancelled_at }"
               :title="chipTitle(meeting)"
               @click.stop="openDay(celda.iso)"
             >
@@ -143,12 +150,20 @@
         </p>
 
         <ul v-else class="calendar-day-list">
-          <li v-for="meeting in byDay[selectedDay]" :key="meeting.id" class="calendar-meeting">
+          <li
+            v-for="meeting in byDay[selectedDay]"
+            :key="meeting.id"
+            class="calendar-meeting"
+            :class="{ 'is-cancelled': meeting.cancelled_at }"
+          >
             <div class="calendar-meeting-time">
               {{ hourOf(meeting.start_time) }}<small>{{ hourOf(meeting.end_time) }}</small>
             </div>
             <div class="calendar-meeting-body">
               <span class="calendar-meeting-client">{{ clientOf(meeting) }}</span>
+              <span v-if="meeting.cancelled_at" class="calendar-meeting-cancelled">
+                ❌ Cancelada en Google Calendar
+              </span>
               <span v-if="meeting.topic" class="calendar-meeting-topic">{{ meeting.topic }}</span>
               <span class="calendar-meeting-meta">
                 <i class="calendar-chip-dot" :style="{ background: avatarColor(meeting.advisor_name) }"></i>
@@ -163,7 +178,12 @@
                 class="calendar-meeting-link"
               >🎥 Entrar a la reunión</a>
               <span v-else-if="meeting.modality === 'llamada'" class="calendar-meeting-meta">📞 Por llamada telefónica</span>
-              <span v-else class="calendar-meeting-meta">Sin enlace de Meet</span>
+              <!--
+                De una reunión traída de Google no se sabe cómo se hace: que no
+                tenga enlace de Meet no es un problema que haya que reportar,
+                como sí lo es en una que el panel agendó por Meet.
+              -->
+              <span v-else-if="meeting.source !== 'google'" class="calendar-meeting-meta">Sin enlace de Meet</span>
             </div>
             <button
               type="button"
@@ -222,8 +242,9 @@
             v-for="bloque in positionedMeetings"
             :key="bloque.meeting.id"
             class="dayview-meeting"
+            :class="{ 'is-cancelled': bloque.meeting.cancelled_at }"
             :style="bloque.style"
-            :title="originOf(bloque.meeting)"
+            :title="bloque.meeting.cancelled_at ? 'Cancelada en Google Calendar' : originOf(bloque.meeting)"
           >
             <span class="dayview-meeting-bar" :style="{ background: avatarColor(bloque.meeting.advisor_name) }"></span>
             <div class="dayview-meeting-body">
@@ -301,6 +322,7 @@ const availabilitySlots = ref([]);
 const showAvailability = ref(true);
 const view = ref('mes');
 const isLoading = ref(false);
+const isSyncing = ref(false);
 const errorMessage = ref('');
 const notice = ref('');
 const showModal = ref(false);
@@ -593,6 +615,10 @@ function clientOf(meeting) {
  * nombre.
  */
 function originOf(meeting) {
+  // La traída de Google no la agendó nadie del panel: la creó el asesor en su
+  // propio calendario y el botón de sincronizar la trajo. Decir "agendada por
+  // el bot" sería mandar a preguntarle a Avan por una reunión que nunca vio.
+  if (meeting.source === 'google') return 'traída de Google Calendar';
   if (meeting.source !== 'manual') return 'agendada por el bot';
   return meeting.created_by_name
     ? `cargada a mano por ${meeting.created_by_name}`
@@ -600,7 +626,8 @@ function originOf(meeting) {
 }
 
 function chipTitle(meeting) {
-  return `${hourOf(meeting.start_time)} · ${clientOf(meeting)} · ${meeting.advisor_name || 'sin asesor'}`;
+  const base = `${hourOf(meeting.start_time)} · ${clientOf(meeting)} · ${meeting.advisor_name || 'sin asesor'}`;
+  return meeting.cancelled_at ? `${base} · cancelada en Google Calendar` : base;
 }
 
 function longDay(iso) {
@@ -665,6 +692,69 @@ async function load() {
   }
 }
 
+/**
+ * Trae al panel lo que cambió en el Google Calendar de los asesores.
+ *
+ * Se sincroniza el rango que se está mirando (las seis semanas de la grilla,
+ * también en la vista de día): pedir "todo" sería recorrer el calendario
+ * entero de cada asesor en cada clic, y lo que a alguien le importa arreglar
+ * es el mes que tiene delante.
+ */
+async function sync() {
+  isSyncing.value = true;
+  errorMessage.value = '';
+  notice.value = '';
+  try {
+    const response = await apiFetch('/api/meetings/sync', {
+      method: 'POST',
+      body: JSON.stringify({ from: cells.value[0].iso, to: cells.value[cells.value.length - 1].iso })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo sincronizar con Google Calendar.');
+    notice.value = syncSummary(data);
+    // 15 s y no los 8 de los demás avisos: este es el único que trae cifras
+    // que vale la pena leer con calma (y contrastar con el calendario).
+    setTimeout(() => { notice.value = ''; }, 15000);
+    await load();
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    isSyncing.value = false;
+  }
+}
+
+/**
+ * Qué hizo la sincronización, en una línea. Un botón que no dice qué cambió
+ * obliga a revisar el mes entero a mano para saber si sirvió de algo — y el
+ * caso más común es justamente que no haya cambiado nada, que también hay que
+ * decirlo para que no parezca que el botón no funcionó.
+ */
+function syncSummary(data) {
+  if (data.advisors === 0) {
+    return 'Nadie del área comercial tiene su Google Calendar conectado, así que no había nada que sincronizar. Se conecta en "Mi Disponibilidad".';
+  }
+
+  const partes = [];
+  if (data.imported) partes.push(`${data.imported} ${data.imported === 1 ? 'reunión traída' : 'reuniones traídas'} de Google`);
+  if (data.updated) partes.push(`${data.updated} con la hora o el enlace corregidos`);
+  if (data.cancelled) partes.push(`${data.cancelled} ${data.cancelled === 1 ? 'cancelada' : 'canceladas'} en Google`);
+  if (data.restored) partes.push(`${data.restored} ${data.restored === 1 ? 'restaurada' : 'restauradas'}`);
+
+  let texto = partes.length > 0
+    ? `✅ ${partes.join(', ')}.`
+    : `✅ Todo al día: ${data.checked} ${data.checked === 1 ? 'reunión' : 'reuniones'} revisadas y nada que cambiar.`;
+
+  // Los de día completo no entran a una agenda por horas, pero decir cuántos
+  // quedaron afuera evita que alguien los busque sin saber que no están.
+  if (data.skippedAllDay) {
+    texto += ` ${data.skippedAllDay} ${data.skippedAllDay === 1 ? 'evento de día completo no se trajo' : 'eventos de día completo no se trajeron'} (no tienen hora).`;
+  }
+  for (const fallo of data.errors || []) {
+    texto += ` ⚠️ ${fallo.advisor}: ${fallo.reason}`;
+  }
+  return texto;
+}
+
 async function loadAdvisors() {
   try {
     const response = await apiFetch('/api/meetings/advisors');
@@ -709,8 +799,11 @@ async function remove(meeting) {
     const response = await apiFetch(`/api/meetings/${meeting.id}`, { method: 'DELETE' });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudo quitar la reunión.');
+    // Si el evento sigue vivo en Google, la próxima sincronización lo va a
+    // volver a traer — y eso es coherente, no un error: en esa dirección
+    // Google es la verdad. Hay que decirlo acá, que es donde se decide.
     notice.value = data.hadCalendarEvent
-      ? 'Reunión quitada del panel. El evento sigue en Google Calendar: cancélalo desde ahí si corresponde.'
+      ? 'Reunión quitada del panel. El evento sigue en Google Calendar: cancélalo desde ahí, o la próxima sincronización la volverá a traer.'
       : 'Reunión quitada del panel.';
     setTimeout(() => { notice.value = ''; }, 8000);
     load();
@@ -1026,6 +1119,23 @@ onBeforeUnmount(() => {
 .calendar-meeting-meta { font-size: 0.7rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.25rem; }
 .calendar-meeting-link { font-size: 0.74rem; color: var(--primary); text-decoration: none; }
 .calendar-meeting-link:hover { text-decoration: underline; }
+
+/*
+ * Cancelada en Google: se ve, pero se ve apagada. Sigue en el Calendario (y
+ * solo acá: no cuenta para recordatorios ni para "próximas reuniones") porque
+ * la cancelación la hizo otra persona en otra pantalla, y alguien del equipo
+ * tiene que poder enterarse de que esa cita ya no va. Tachar el nombre dice
+ * eso sin texto; el renglón rojo lo dice con palabras, porque el color solo no
+ * alcanza.
+ */
+.calendar-meeting.is-cancelled { border-left-color: var(--text-muted); opacity: 0.72; }
+.calendar-meeting.is-cancelled .calendar-meeting-client { text-decoration: line-through; }
+/* Mismo tono de aviso que `.calendar-alert`: el panel no tiene un token de
+   error, así que se usa el color que esta pantalla ya usa para lo que va mal. */
+.calendar-meeting-cancelled { font-size: 0.7rem; font-weight: 600; color: #C85532; }
+.calendar-chip.is-cancelled { opacity: 0.6; text-decoration: line-through; }
+.dayview-meeting.is-cancelled { opacity: 0.6; }
+.dayview-meeting.is-cancelled .dayview-meeting-client { text-decoration: line-through; }
 
 .calendar-meeting-remove {
   border: none;

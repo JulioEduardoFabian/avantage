@@ -171,6 +171,11 @@ export class ScheduledMeetingService {
   /**
    * Próximas reuniones (desde ahora en adelante), con nombre/teléfono del
    * lead asociado cuando existe.
+   *
+   * Las canceladas en Google quedan fuera, acá y en todas las lecturas salvo
+   * la del Calendario: una reunión que ya no está en el calendario del asesor
+   * no es una próxima reunión. Ver `cancelled_at` en
+   * `calendarSyncService.js`.
    */
   async getUpcoming({ limit = 50 } = {}) {
     return withContactLabel(await db('scheduled_meetings')
@@ -183,6 +188,7 @@ export class ScheduledMeetingService {
         'leads.topic as lead_topic'
       )
       .where('scheduled_meetings.start_time', '>=', db.fn.now())
+      .whereNull('scheduled_meetings.cancelled_at')
       .orderBy('scheduled_meetings.start_time', 'asc')
       .limit(limit));
   }
@@ -210,6 +216,7 @@ export class ScheduledMeetingService {
       )
       .where('scheduled_meetings.start_time', '>=', start)
       .where('scheduled_meetings.start_time', '<', end)
+      .whereNull('scheduled_meetings.cancelled_at')
       .orderBy('scheduled_meetings.start_time', 'asc'));
   }
 
@@ -226,6 +233,9 @@ export class ScheduledMeetingService {
       .leftJoin('leads', 'leads.id', 'scheduled_meetings.lead_id')
       .select('scheduled_meetings.*', 'leads.full_name as lead_full_name')
       .whereNull('scheduled_meetings.reminder_sent_at')
+      // Cancelada en Google: no se le recuerda al lead una reunión que el
+      // asesor ya borró de su calendario.
+      .whereNull('scheduled_meetings.cancelled_at')
       .where('scheduled_meetings.start_time', '>', new Date(now))
       .where('scheduled_meetings.start_time', '<=', new Date(now + leadMs))
       .where('scheduled_meetings.created_at', '<=', new Date(now - minAgeMs))
@@ -243,7 +253,11 @@ export class ScheduledMeetingService {
    * reunión después de que ya quedó agendada.
    */
   async getLatestForContact(waId) {
-    return db('scheduled_meetings').where({ wa_id: waId }).orderBy('created_at', 'desc').first();
+    return db('scheduled_meetings')
+      .where({ wa_id: waId })
+      .whereNull('cancelled_at')
+      .orderBy('created_at', 'desc')
+      .first();
   }
 
   /**

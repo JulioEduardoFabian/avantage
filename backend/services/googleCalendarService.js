@@ -373,6 +373,70 @@ export class GoogleCalendarService {
   }
 
   /**
+   * Los eventos del calendario del asesor en un rango, crudos como los
+   * devuelve Google. Es la mitad de lectura que necesita la sincronización del
+   * Calendario (`calendarSyncService.js`).
+   *
+   * `showDeleted` viene en true a propósito: un evento borrado sigue
+   * apareciendo con `status: 'cancelled'`, y esa es justamente la señal que el
+   * panel necesita para tachar la reunión. Sin eso, un evento borrado se vuelve
+   * indistinguible de uno que el asesor movió a otro mes.
+   *
+   * `singleEvents` expande las series repetidas en sus instancias, que es lo
+   * que se puede ubicar en una agenda; `maxResults` (tope de Google: 2500) evita
+   * paginar en el caso normal de un mes, y la paginación se recorre igual para
+   * no perder nada en un calendario muy cargado.
+   */
+  async listEvents(userId, { timeMin, timeMax, maxResults = 2500 } = {}) {
+    const client = await this.getAuthorizedClient(userId);
+    const calendar = google.calendar({ version: 'v3', auth: client });
+
+    const items = [];
+    let pageToken;
+    try {
+      do {
+        const { data } = await calendar.events.list({
+          calendarId: 'primary',
+          timeMin: new Date(timeMin).toISOString(),
+          timeMax: new Date(timeMax).toISOString(),
+          singleEvents: true,
+          showDeleted: true,
+          orderBy: 'startTime',
+          maxResults,
+          pageToken
+        });
+        items.push(...(data.items || []));
+        pageToken = data.nextPageToken || undefined;
+      } while (pageToken);
+    } catch (error) {
+      await this.handleTokenError(userId, error);
+    }
+    return items;
+  }
+
+  /**
+   * UN evento por su id, o `null` si Google ya no lo tiene (404/410).
+   *
+   * Existe para la pregunta que `events.list` no puede contestar: una reunión
+   * del panel cuyo evento no vino en el rango consultado puede estar borrada o
+   * puede haberse movido fuera de ese rango, y las dos cosas se arreglan de
+   * forma opuesta. Se pregunta solo por las que no coinciden, que son pocas.
+   */
+  async getEvent(userId, eventId) {
+    const client = await this.getAuthorizedClient(userId);
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    try {
+      const { data } = await calendar.events.get({ calendarId: 'primary', eventId });
+      return data || null;
+    } catch (error) {
+      const status = error?.response?.status || error?.code;
+      if (status === 404 || status === 410) return null;
+      await this.handleTokenError(userId, error);
+      return null;
+    }
+  }
+
+  /**
    * Descarta de `candidates` los bloques que se cruzan con eventos ya
    * existentes en el Google Calendar real del asesor. Se usa events.list (no
    * freebusy.query) porque el scope pedido al asesor es "calendar.events"

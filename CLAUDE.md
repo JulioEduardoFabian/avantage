@@ -628,6 +628,33 @@ antes de tocar el arranque de producción.
   franja no se tira: se lista al pie. En el celular el mes queda como mapa (número, franja de
   disponibilidad y una raya por reunión con el color de su asesor) y el detalle se mira en la vista
   de día, que es la que entra en una columna.
+  El botón **"Sincronizar con Google"** (`POST /api/meetings/sync`, `calendarSyncService.js` +
+  `calendarSync.js` para las reglas puras) trae al panel lo que pasó en el Google Calendar de los
+  asesores. Es **de Google al panel y en un solo sentido**: no crea, no mueve y no cancela ningún
+  evento, así que apretarlo nunca puede estropear el calendario de nadie — por eso puede ser un
+  botón y no un proceso supervisado. Cubre las tres fugas de la mitad que faltaba: el asesor mueve
+  la reunión en su calendario y el panel seguía mostrando la hora vieja (con la que el bot le
+  mandaba el recordatorio al lead), la borra y la reunión seguía en la agenda del equipo, o agenda
+  algo directamente en Google y el panel no se enteraba. Recorre a **todo el área comercial** que
+  tenga su Google conectado y solo el **rango visible**, y un asesor con el token caducado no
+  detiene a los demás: su error viaja en el resumen. Lo que cambió se le dice al que apretó
+  (`syncSummary()`), incluido "nada que cambiar" — un botón que no dice qué hizo obliga a revisar el
+  mes a mano.
+  Una reunión que ya no está en Google se **marca** (`scheduled_meetings.cancelled_at`) y no se
+  borra: de ella cuelgan el lead, el autor y el estado del recordatorio, y un botón que destruye
+  filas es un botón que nadie aprieta. Marcada, deja de contar en todas las lecturas
+  (`getUpcoming`, `getForDay`, `getPendingReminders`, `getLatestForContact`) **menos** en el
+  Calendario, donde se ve tachada para que alguien se entere; si el evento reaparece en Google se
+  des-cancela sola. Si la reunión se movió y su recordatorio ya había salido, `reminder_sent_at`
+  vuelve a null (el que salió decía la hora vieja) salvo que la reunión ya haya pasado.
+  Dos cosas que parecen detalles y no lo son: una reunión del panel cuyo evento **no vino** en el
+  rango consultado NO se cancela —pudo haberse movido a otro mes— sino que se pregunta de a una con
+  `events.get()`; y `calendar_event_id` se compara contra **todo** el panel, no contra el asesor en
+  curso, porque un evento con varios invitados es el MISMO evento en los dos calendarios y si no
+  entraría dos veces. Los eventos de **día completo** no se importan (no caen en una grilla de
+  horas) pero se cuentan y el resumen lo dice. Y quitar del panel una reunión cuyo evento sigue vivo
+  en Google es temporal: la próxima sincronización la vuelve a traer, y la pantalla lo avisa al
+  quitarla — en esta dirección Google es la verdad.
   El botón "Ver horario" (`AvailabilityPeekModal.vue`, `GET /api/availability/:userId` bajo
   `calendar.view`) muestra el horario semanal de UN asesor de **solo lectura**, en rangos y no en
   casillas. La ruta va **después** de `/api/availability/me` (Express resuelve por orden y `:userId`

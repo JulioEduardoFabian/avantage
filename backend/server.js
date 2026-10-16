@@ -49,6 +49,7 @@ import { InstagramService } from './services/instagramService.js';
 import { InstagramWebhookService } from './services/instagramWebhookService.js';
 import { GoogleCalendarService } from './services/googleCalendarService.js';
 import { ScheduledMeetingService } from './services/scheduledMeetingService.js';
+import { CalendarSyncService } from './services/calendarSyncService.js';
 import { NotificationService } from './services/notificationService.js';
 import { ProjectSettingsService } from './services/projectSettingsService.js';
 import { ProjectNoticeService } from './services/projectNoticeService.js';
@@ -175,6 +176,10 @@ const googleCalendarService = new GoogleCalendarService();
 // Recibe el cliente de Google porque la reunión cargada a mano desde el panel
 // crea el evento ella misma (el bot, en cambio, ya lo trae creado).
 const scheduledMeetingService = new ScheduledMeetingService({ googleCalendarService });
+// Lee el Google Calendar de cada asesor y acomoda el panel a lo que encuentra
+// (nunca al revés): es la mitad que faltaba del Calendario, ver
+// `calendarSyncService.js`.
+const calendarSyncService = new CalendarSyncService({ googleCalendarService, userService });
 const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
 // Avisa al equipo de Entregables cuando Finanzas verifica una cuota: es el
@@ -775,6 +780,33 @@ app.get('/api/meetings', requireAuth, requirePermission('calendar.view'), async 
   } catch (error) {
     console.error('❌ Error al obtener el calendario:', error);
     res.status(500).json({ error: 'Error al obtener las reuniones.', details: error.message });
+  }
+});
+
+/**
+ * Trae al panel lo que cambió en el Google Calendar de los asesores: el botón
+ * "Sincronizar" del Calendario.
+ *
+ * Es un POST y no un GET porque escribe —importa reuniones, corrige horas,
+ * marca cancelaciones—, así que no puede ser el efecto de abrir una pantalla.
+ * Por la misma razón no se dispara solo al cargar el mes: quien lo aprieta
+ * tiene que poder decidir cuándo, y ver después qué pasó.
+ *
+ * Va con `calendar.view`, el mismo permiso que ver la agenda y agendar en
+ * ella: la sincronización no decide nada que no decidiera ya cualquiera que
+ * pueda entrar al Calendario, y solo escribe en el panel — en el calendario de
+ * Google no toca nada.
+ */
+app.post('/api/meetings/sync', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const resultado = await calendarSyncService.sync({
+      from: req.body?.from || req.query.from || null,
+      to: req.body?.to || req.query.to || null
+    });
+    res.json(resultado);
+  } catch (error) {
+    console.error('❌ Error al sincronizar el calendario:', error);
+    res.status(400).json({ error: error.message });
   }
 });
 
