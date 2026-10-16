@@ -624,3 +624,18 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/*
+ * Enlace de texto dentro de una pista del formulario ("Usar ese", para volver
+ * al ITF de la fórmula). Es un <button> porque ejecuta una acción, no navega;
+ * el estilo de enlace es para que no compita con el botón de guardar.
+ */
+.ledger-inline-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
+}

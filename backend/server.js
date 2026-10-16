@@ -1107,9 +1107,9 @@ app.get('/api/finance/income', requireAuth, requirePermission('finance.view'), a
 
 app.post('/api/finance/income', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
-    const { fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario } = req.body || {};
+    const { fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario } = req.body || {};
     const record = await financeLedgerService.createIncome({
-      fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario, createdBy: req.user.id
+      fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario, createdBy: req.user.id
     });
     res.status(201).json({ income: record });
   } catch (error) {
@@ -1120,9 +1120,9 @@ app.post('/api/finance/income', requireAuth, requirePermission('finance.view'), 
 
 app.put('/api/finance/income/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
-    const { fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario } = req.body || {};
+    const { fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario } = req.body || {};
     const record = await financeLedgerService.updateIncome(req.params.id, {
-      fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario
+      fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario
     });
     if (!record) return res.status(404).json({ error: 'Ingreso no encontrado.' });
     res.json({ income: record });
@@ -1507,9 +1507,9 @@ app.get('/api/finance/journal', requireAuth, requirePermission('finance.view'), 
 
 app.post('/api/finance/journal', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
-    const { fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
+    const { fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
     const record = await financeLedgerService.createJournal({
-      fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino,
+      fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino,
       receipts: req.receipts, createdBy: req.user.id
     });
     res.status(201).json({ journal: record });
@@ -1521,9 +1521,9 @@ app.post('/api/finance/journal', requireAuth, requirePermission('finance.view'),
 
 app.put('/api/finance/journal/:id', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
-    const { fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
+    const { fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
     const record = await financeLedgerService.updateJournal(req.params.id, {
-      fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino,
+      fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino,
       receipts: req.receipts
     });
     if (!record) return res.status(404).json({ error: 'Asiento no encontrado.' });

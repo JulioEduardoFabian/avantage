@@ -46,6 +46,29 @@ function calcItf(monto) {
   return Math.round(Math.floor(a / 1000) * 0.05 * 100) / 100;
 }
 
+/**
+ * El ITF que se guarda: el que mandó el formulario, o el de la fórmula si no
+ * mandó ninguno.
+ *
+ * La fórmula es la del Excel del área y acierta casi siempre, pero el banco
+ * cobra lo que cobra: hay cuentas exoneradas, operaciones entre cuentas
+ * propias y redondeos que no cuadran, y hasta ahora el campo era de solo
+ * lectura y esa diferencia se quedaba fuera de los libros. Ahora la fórmula es
+ * el **valor propuesto** y el que registra puede corregirlo.
+ *
+ * Un `itf` ausente, vacío o nulo NO es un cero: significa "no me lo dieron,
+ * calculalo". Un cero explícito sí se respeta — es exactamente el caso de la
+ * cuenta exonerada, y tratarlo como "no vino" haría imposible registrarlo.
+ */
+export function resolveItf(itf, monto) {
+  if (itf === undefined || itf === null || itf === '') return calcItf(monto);
+  const numeric = Number(itf);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    throw new Error('El ITF debe ser un número mayor o igual a 0.');
+  }
+  return Math.round(numeric * 100) / 100;
+}
+
 function dayOnly(fecha) {
   if (fecha instanceof Date) return isoDay(fecha);
   return String(fecha).slice(0, 10);
@@ -282,10 +305,11 @@ export class FinanceLedgerService {
 
   /**
    * Valida y normaliza los campos editables de un ingreso; los comparten el
-   * alta y la edición para que ambas apliquen las mismas reglas (mes e ITF
-   * siempre derivados de la fecha y el monto).
+   * alta y la edición para que ambas apliquen las mismas reglas (el mes sale
+   * siempre de la fecha; el ITF se propone con la fórmula y se puede corregir,
+   * ver `resolveItf`).
    */
-  #normalizeIncome({ fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario }) {
+  #normalizeIncome({ fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario }) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!CUOTAS.includes(cuota)) throw new Error('La cuota debe ser 1era, 2da o 3era.');
     if (!EMITIR_OPCIONES.includes(emitir)) throw new Error('El campo "emitir" no es válido.');
@@ -305,7 +329,7 @@ export class FinanceLedgerService {
       cuota,
       emitir,
       monto: numericMonto,
-      itf: calcItf(numericMonto),
+      itf: resolveItf(itf, numericMonto),
       banco,
       estado: ESTADOS_INGRESO.includes(estado) ? estado : 'pendiente',
       tributario: tributario?.trim() || null
@@ -627,7 +651,17 @@ export class FinanceLedgerService {
           due_date: entry.dueDate,
           // Una cuota cobrada conserva el día en que entró el dinero; una
           // pendiente se asienta el día que se pactó hasta que se pague.
-          ...(settled ? {} : { fecha: entry.dueDate, mes: mesEnLetras(entry.dueDate), monto: entry.monto, itf: calcItf(entry.monto) }),
+          //
+          // El ITF se recalcula SOLO si el monto cambió: el cronograma no tiene
+          // campo de ITF, así que recalcularlo siempre le borraría en silencio
+          // la corrección a quien la hizo a mano desde INGRESOS, por abrir el
+          // plan de pagos y guardarlo sin tocar los importes.
+          ...(settled ? {} : {
+            fecha: entry.dueDate,
+            mes: mesEnLetras(entry.dueDate),
+            monto: entry.monto,
+            ...(Math.abs(Number(existing.monto) - entry.monto) > 0.01 ? { itf: calcItf(entry.monto) } : {})
+          }),
           ...(entry.emitir ? { emitir: entry.emitir } : {}),
           ...(entry.banco ? { banco: entry.banco } : {})
         });
@@ -801,7 +835,7 @@ export class FinanceLedgerService {
   }
 
   /** Valida y normaliza los campos editables de un asiento (alta y edición). */
-  #normalizeJournal({ fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino }) {
+  #normalizeJournal({ fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino }) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!detalle || !detalle.trim()) throw new Error('El detalle es obligatorio.');
     if (!BANCOS.includes(banco)) throw new Error(`El banco debe ser uno de: ${BANCOS.join(', ')}.`);
@@ -813,7 +847,7 @@ export class FinanceLedgerService {
       detalle: detalle.trim(),
       monto: numericMonto,
       moneda: MONEDAS.includes(moneda) ? moneda : 'soles',
-      itf: calcItf(numericMonto),
+      itf: resolveItf(itf, numericMonto),
       banco,
       estado: ESTADOS_DIARIO.includes(estado) ? estado : 'pendiente',
       area: area?.trim() || null,

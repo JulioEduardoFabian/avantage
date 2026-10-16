@@ -3,9 +3,10 @@
     <p class="ledger-hint">
       Cada bloque es un <strong>cierre</strong>: el precio total del trato, cuánto se lleva
       cubierto y, debajo, sus cuotas. El código es del cliente —todas sus cuotas comparten
-      el mismo— y se genera automáticamente (AAAAMMDD + correlativo del día); el ITF, con la
-      fórmula
-      <code>|monto|&lt;1000 ? 0 : INT(|monto|/1000)×0.05</code>. Una cuota recorre
+      el mismo— y se genera automáticamente (AAAAMMDD + correlativo del día); el ITF se
+      propone con la fórmula
+      <code>|monto|&lt;1000 ? 0 : INT(|monto|/1000)×0.05</code> y se puede corregir con lo
+      que cobró el banco. Una cuota recorre
       <strong>pendiente → pagado</strong> (al adjuntar el comprobante)
       <strong>→ verificado</strong>; solo lo verificado suma en las cifras de Finanzas y,
       si es el primer pago de un proyecto, lo activa.
@@ -130,8 +131,25 @@
             />
           </div>
           <div class="form-group">
-            <label class="form-label">ITF (calculado)</label>
-            <input :value="formatAmount(itfPreview)" type="text" class="form-input" readonly />
+            <label class="form-label">ITF (S/)</label>
+            <input
+              v-model="form.itf"
+              type="number"
+              step="0.01"
+              min="0"
+              class="form-input"
+              :placeholder="formatAmount(itfSugerido)"
+              @input="onItfInput"
+            />
+            <!--
+              La fórmula pasó de imponer el valor a proponerlo, así que cuando
+              lo escrito se aparta de ella hay que poder ver de cuánto es la
+              diferencia y volver atrás de un clic.
+            -->
+            <p v-if="itfEditado" class="ledger-receipt-hint">
+              La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
+              <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
+            </p>
           </div>
           <div class="form-group">
             <label class="form-label">Banco</label>
@@ -869,6 +887,9 @@ function emptyForm() {
     cuota: "1era",
     emitir: "factura",
     monto: "",
+    // Vacío = "usá la fórmula". Se rellena solo al escribir el monto (ver el
+    // watcher de abajo) y solo mientras nadie lo haya tocado a mano.
+    itf: "",
     banco: "BCP",
     estado: "pendiente",
     tributario: "",
@@ -882,7 +903,42 @@ const mesPreview = computed(() => {
   return MESES[Number(form.fecha.slice(5, 7)) - 1] || "";
 });
 
-const itfPreview = computed(() => calcItf(form.monto));
+/**
+ * El ITF que propone la fórmula del área para el monto que se está escribiendo.
+ * Es una PROPUESTA: el campo se puede corregir, porque el banco cobra lo que
+ * cobra (cuentas exoneradas, traspasos entre cuentas propias, redondeos) y
+ * hasta ahora esa diferencia se quedaba fuera de los libros.
+ */
+const itfSugerido = computed(() => calcItf(form.monto));
+
+/** ¿Lo que hay escrito en el campo se aparta de la fórmula? */
+const itfEditado = computed(() => {
+  if (form.itf === "" || form.itf === null) return false;
+  return Math.abs(Number(form.itf) - itfSugerido.value) > 0.005;
+});
+
+/*
+ * Mientras nadie toque el campo, el ITF sigue al monto: es lo que hacía antes,
+ * cuando era de solo lectura. En cuanto alguien lo corrige deja de moverse
+ * solo — recalcularlo por debajo le borraría la corrección justo a quien acaba
+ * de hacerla.
+ */
+const itfTocado = ref(false);
+
+watch(
+  () => form.monto,
+  () => { if (!itfTocado.value) form.itf = itfSugerido.value; }
+);
+
+function onItfInput() {
+  itfTocado.value = true;
+}
+
+/** Vuelve al valor de la fórmula y deja que siga al monto otra vez. */
+function usarItfSugerido() {
+  itfTocado.value = false;
+  form.itf = itfSugerido.value;
+}
 
 /** Cuota pactada cuya fecha ya pasó y que todavía nadie cobró. */
 function isOverdue(row) {
@@ -907,6 +963,7 @@ function onTributarioChange(event) {
 
 function resetForm() {
   Object.assign(form, emptyForm());
+  itfTocado.value = false;
   pendingFiles = [];
   pendingTributarioFile = null;
   editingTotal.value = false;
@@ -937,10 +994,14 @@ function startEdit(row) {
     cuota: row.cuota || "1era",
     emitir: row.emitir || "factura",
     monto: row.monto ?? "",
+    itf: row.itf ?? "",
     banco: row.banco || "BCP",
     estado: row.estado || "pendiente",
     tributario: row.tributario || "",
   });
+  // Un ITF guardado que no coincide con la fórmula se corrigió a mano: se
+  // marca como tocado para que cambiar el monto no lo pise en silencio.
+  itfTocado.value = Math.abs(Number(row.itf || 0) - calcItf(row.monto)) > 0.005;
   isFormOpen.value = true;
   errorMessage.value = "";
 }

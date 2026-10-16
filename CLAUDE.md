@@ -262,12 +262,29 @@ antes de tocar el arranque de producción.
   día abierto: el nombre de una entrega no entra en una celda de 50 px, y apretarlo para que entre
   deja texto cortado que no dice nada. La vista elegida se recuerda en `localStorage`
   (`entregables.view`), entre `try` porque en una ventana privada el acceso lanza.
+- El **ITF se propone, no se impone** (`resolveItf()` en `financeLedgerService.js`, usado por el
+  alta y la edición de INGRESOS y del Libro Diario). La fórmula del Excel del área
+  (`|monto| < 1000 ? 0 : INT(|monto|/1000) × 0.05`, en `calcItf`) sigue siendo el valor por
+  defecto, pero el campo es editable: el banco cobra lo que cobra —cuentas exoneradas, traspasos
+  entre cuentas propias, redondeos— y con el campo de solo lectura esa diferencia se quedaba fuera
+  de los libros. Un `itf` **ausente, nulo o vacío** significa "calculalo"; un **cero escrito a
+  mano** se respeta, porque es justamente el caso de la cuenta exonerada y tratarlo como ausente
+  volvería imposible registrar lo que más justifica que el campo se pueda editar. En pantalla el
+  campo sigue al monto **mientras nadie lo toque** (lo que hacía de solo lectura) y se congela en
+  cuanto alguien lo corrige — recalcularlo por debajo le borraría la corrección a quien acaba de
+  hacerla—; al abrir una fila para editarla, un valor que no coincide con la fórmula se considera
+  corregido a mano. Por lo mismo, `replaceScheduleForLead()` recalcula el ITF **solo si el monto
+  cambió**: el cronograma no tiene campo de ITF, así que recalcularlo siempre borraría la
+  corrección por abrir el plan de pagos y guardarlo sin tocar importes. `calcItf` vive en
+  `src/views/finance/incomeOptions.js` para todo el frontend (el Libro Diario tenía su propia
+  copia, que podía quedar diciendo otra cosa).
 - El **estado de un asiento del Libro Diario** (`finance_journal.estado`, `pagado`/`pendiente`) se
   cambia de un clic sobre su propia celda: la píldora de la tabla es un `<button>` y llama a
   `PATCH /api/finance/journal/:id/estado` → `updateJournalEstado()`. Va aparte del
   `PUT /api/finance/journal/:id` del formulario a propósito: ese pide el asiento entero (y pasa por
   multer porque admite comprobantes), y reenviarlo para cambiar una palabra reescribe de paso
-  campos que nadie tocó — un ITF recalculado, una fecha normalizada distinto. De ese estado cuelgan
+  campos que nadie tocó — una fecha normalizada distinto, un ITF corregido a mano que el
+  formulario vuelve a mandar. De ese estado cuelgan
   los totales de la pestaña (lo pendiente es dinero que todavía no se movió y suma aparte), así que
   el clic cambia las cifras de arriba y no solo el color; al volver se escribe **la fila en
   memoria** y no se recarga la tabla, que devolvería al usuario al principio de la paginación y
