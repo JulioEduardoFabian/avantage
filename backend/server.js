@@ -8,6 +8,7 @@ import { OllamaService } from './services/ollamaService.js';
 import { EmailService } from './services/emailService.js';
 import { LeadService } from './services/leadService.js';
 import { FunnelColumnService } from './services/funnelColumnService.js';
+import { SetterFunnelColumnService } from './services/setterFunnelColumnService.js';
 import { CareerCatalogService } from './services/careerCatalogService.js';
 import { LeadRoutingService } from './services/leadRoutingService.js';
 import { ProjectService } from './services/projectService.js';
@@ -132,6 +133,9 @@ const commissionService = new CommissionService();
 const collectionService = new CollectionService({ commissionService });
 const leadService = new LeadService({ commissionService });
 const funnelColumnService = new FunnelColumnService();
+// Las etapas del Setter Funnel: tabla aparte de las de Ventas a propósito, ver
+// la cabecera de `setterFunnelColumnService.js`.
+const setterFunnelColumnService = new SetterFunnelColumnService();
 const careerCatalogService = new CareerCatalogService();
 const clientAccountService = new ClientAccountService();
 // La campana del panel se construye acá arriba porque el aviso de proyecto
@@ -3574,6 +3578,116 @@ app.delete('/api/funnel-columns/:key', requireAuth, requireAnyPermission('leads.
   } catch (error) {
     console.error('❌ Error al eliminar la columna:', error);
     res.status(500).json({ error: 'Error al eliminar la columna del funnel.', details: error.message });
+  }
+});
+
+/* ------------------------- Etapas del Setter Funnel ------------------------ */
+/*
+ * Mismas operaciones que `/api/funnel-columns` pero sobre la tabla del otro
+ * tablero. Hasta el 16/10/2026 estas etapas vivían en el `localStorage` del
+ * navegador, así que el tablero era distinto en cada máquina aunque entrara la
+ * misma persona — y como arrastrar un lead escribe `leads.status` con la clave
+ * de la columna, que sí es compartida, cada máquina le ensuciaba el tablero a
+ * las demás.
+ *
+ * Van con el mismo permiso que las de Ventas (`leads.view` o `setter.view`):
+ * es el mismo oficio sobre el otro tablero, y pedir más acá dejaría al setter
+ * sin poder ordenar el suyo.
+ */
+
+app.get('/api/setter-funnel-columns', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const columns = await setterFunnelColumnService.getAllColumns();
+    res.json({ columns });
+  } catch (error) {
+    console.error('❌ Error al obtener las etapas del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al obtener las etapas del Setter Funnel.', details: error.message });
+  }
+});
+
+app.post('/api/setter-funnel-columns', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const { key, label, icon, color, final: isFinal, atIndex } = req.body || {};
+    if (!label || !label.trim()) {
+      return res.status(400).json({ error: 'El nombre de la etapa es requerido.' });
+    }
+    const columnKey = (key && key.trim())
+      || 'setter_col_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 5);
+
+    if (await setterFunnelColumnService.getColumnByKey(columnKey)) {
+      return res.status(409).json({ error: 'Ya existe una etapa con esa clave.' });
+    }
+
+    const column = await setterFunnelColumnService.createColumn({
+      key: columnKey,
+      label: label.trim(),
+      icon,
+      color,
+      final: isFinal,
+      atIndex: Number.isInteger(atIndex) ? atIndex : null
+    });
+    res.status(201).json({ column });
+  } catch (error) {
+    console.error('❌ Error al crear la etapa del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al crear la etapa.', details: error.message });
+  }
+});
+
+// Va ANTES de `/:key`: Express resuelve por orden y la ruta con parámetro
+// se quedaría con "reorder" y con "reset" como si fueran claves de columna.
+app.patch('/api/setter-funnel-columns/reorder', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const { keys } = req.body || {};
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return res.status(400).json({ error: 'keys debe ser un arreglo con el orden de las etapas.' });
+    }
+    const columns = await setterFunnelColumnService.reorderColumns(keys);
+    res.json({ columns });
+  } catch (error) {
+    console.error('❌ Error al reordenar las etapas del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al reordenar las etapas.', details: error.message });
+  }
+});
+
+app.post('/api/setter-funnel-columns/reset', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const columns = await setterFunnelColumnService.resetToDefaults();
+    res.json({ columns });
+  } catch (error) {
+    console.error('❌ Error al restablecer las etapas del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al restablecer las etapas.', details: error.message });
+  }
+});
+
+app.put('/api/setter-funnel-columns/:key', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    if (!(await setterFunnelColumnService.getColumnByKey(req.params.key))) {
+      return res.status(404).json({ error: 'Etapa no encontrada.' });
+    }
+    const { label, icon, color, final: isFinal } = req.body || {};
+    const column = await setterFunnelColumnService.updateColumn(req.params.key, { label, icon, color, final: isFinal });
+    res.json({ column });
+  } catch (error) {
+    console.error('❌ Error al actualizar la etapa del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al actualizar la etapa.', details: error.message });
+  }
+});
+
+/**
+ * Borra una etapa. Los leads que estaban en ella los reubica el cliente antes
+ * de llamar acá, por `PATCH /api/leads/:id/status` — el único camino que mueve
+ * el funnel y el que deja registro en `lead_stage_changes`.
+ */
+app.delete('/api/setter-funnel-columns/:key', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    if (!(await setterFunnelColumnService.getColumnByKey(req.params.key))) {
+      return res.status(404).json({ error: 'Etapa no encontrada.' });
+    }
+    await setterFunnelColumnService.deleteColumn(req.params.key);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error al eliminar la etapa del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al eliminar la etapa.', details: error.message });
   }
 });
 

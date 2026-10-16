@@ -215,6 +215,16 @@
       <p>{{ loadError }}</p>
     </div>
 
+    <!--
+      Las etapas ahora se guardan en el servidor y son de todo el equipo, así
+      que un cambio que no llegó tiene que decirse: antes se escribía en el
+      navegador y nunca podía fallar.
+    -->
+    <div v-if="columnError" class="info-box alert-box">
+      <h4>⚠️ No se pudo guardar el cambio de etapas</h4>
+      <p>{{ columnError }}</p>
+    </div>
+
     <!-- Toast de Proyecto Creado Automáticamente al Ganar -->
     <transition name="toast-slide">
       <div v-if="projectToast" class="project-created-banner">
@@ -1029,7 +1039,14 @@ import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
-import { DEFAULT_SETTER_COLUMNS, loadSetterColumns as readSetterColumns, saveSetterColumns } from '../setterFunnelColumns.js';
+import {
+  createSetterColumn,
+  deleteSetterColumn,
+  fetchSetterColumns,
+  reorderSetterColumns,
+  resetSetterColumns,
+  updateSetterColumn
+} from '../setterFunnelColumns.js';
 
 // Etapas predeterminadas especializadas para Setter Funnel
 const PRESET_EMOJIS = ['💬', '🎯', '📅', '🤝', '🏆', '🚫', '💚', '📘', '📸', '📞', '🆕', '📋', '⏳', '⭐', '⚡', '💰'];
@@ -1089,6 +1106,8 @@ function onMeetingCreated(data) {
 const showBotChat = ref(false);
 const isLoading = ref(false);
 const loadError = ref('');
+// Las etapas viajan al servidor: un cambio puede fallar, y hay que decirlo.
+const columnError = ref('');
 const draggedLead = ref(null);
 const hoveredColumn = ref(null);
 const projectToast = ref(null);
@@ -1530,23 +1549,34 @@ const availableTargetColumns = computed(() => {
   return columns.value.filter(c => c.key !== deletingColumn.value.key);
 });
 
-// Mover columnas
+// Mover columnas. Se reordena en pantalla y se manda el orden completo al
+// servidor; si falla se vuelve al orden que había, para no dejar el tablero
+// diciendo una cosa y la base otra.
 function moveColumnLeft(index) {
   if (index <= 0) return;
-  const newCols = [...columns.value];
-  const [removed] = newCols.splice(index, 1);
-  newCols.splice(index - 1, 0, removed);
-  columns.value = newCols;
-  persistSetterColumns();
+  swapColumns(index, index - 1);
 }
 
 function moveColumnRight(index) {
   if (index >= columns.value.length - 1) return;
+  swapColumns(index, index + 1);
+}
+
+async function swapColumns(from, to) {
+  const anterior = [...columns.value];
   const newCols = [...columns.value];
-  const [removed] = newCols.splice(index, 1);
-  newCols.splice(index + 1, 0, removed);
+  const [removed] = newCols.splice(from, 1);
+  newCols.splice(to, 0, removed);
   columns.value = newCols;
-  persistSetterColumns();
+  columns.value.forEach((c, i) => { c.position = i; });
+
+  try {
+    columnError.value = '';
+    await reorderSetterColumns(columns.value.map((c) => c.key));
+  } catch (err) {
+    columns.value = anterior;
+    columnError.value = err.message || 'No se pudo guardar el nuevo orden de las etapas.';
+  }
 }
 
 function scrollBoard(direction) {
@@ -1741,27 +1771,29 @@ function openCreateColumnModal(index = null) {
   showCreateColModal.value = true;
 }
 
-function saveNewColumn() {
+async function saveNewColumn() {
   if (!newColumnForm.label.trim()) return;
-  const key = 'setter_col_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 5);
-  const newCol = {
-    key,
-    label: newColumnForm.label.trim(),
-    icon: newColumnForm.icon || '📌',
-    color: newColumnForm.color || '#2C8C99',
-    final: Boolean(newColumnForm.final),
-    position: 0
-  };
-  const at = insertAtIndex.value;
-  if (at !== null) {
-    columns.value.splice(at, 0, newCol);
-  } else {
-    columns.value.push(newCol);
+  // La clave la genera el servidor, que es el que puede garantizar que no
+  // choque con otra: dos personas creando una etapa a la vez en dos máquinas
+  // es exactamente el caso que esta pantalla vino a arreglar.
+  try {
+    columnError.value = '';
+    const column = await createSetterColumn({
+      label: newColumnForm.label.trim(),
+      icon: newColumnForm.icon || '📌',
+      color: newColumnForm.color || '#2C8C99',
+      final: Boolean(newColumnForm.final),
+      atIndex: insertAtIndex.value
+    });
+    const at = insertAtIndex.value;
+    if (at !== null) columns.value.splice(at, 0, column);
+    else columns.value.push(column);
+    columns.value.forEach((c, i) => { c.position = i; });
+    showCreateColModal.value = false;
+    insertAtIndex.value = null;
+  } catch (err) {
+    columnError.value = err.message || 'No se pudo crear la etapa.';
   }
-  columns.value.forEach((c, i) => { c.position = i; });
-  persistSetterColumns();
-  showCreateColModal.value = false;
-  insertAtIndex.value = null;
 }
 
 /*
@@ -1973,17 +2005,26 @@ function openEditColumnModal(col) {
   showEditColModal.value = true;
 }
 
-function saveEditedColumn() {
+async function saveEditedColumn() {
   if (!editingColumn.value || !editColumnForm.label.trim()) return;
   const col = columns.value.find(c => c.key === editingColumn.value.key);
-  if (col) {
-    col.label = editColumnForm.label.trim();
-    col.icon = editColumnForm.icon;
-    col.color = editColumnForm.color;
-    col.final = Boolean(editColumnForm.final);
+  const anterior = col ? { ...col } : null;
+  const cambios = {
+    label: editColumnForm.label.trim(),
+    icon: editColumnForm.icon,
+    color: editColumnForm.color,
+    final: Boolean(editColumnForm.final)
+  };
+  if (col) Object.assign(col, cambios);
+
+  try {
+    columnError.value = '';
+    await updateSetterColumn(editingColumn.value.key, cambios);
+    showEditColModal.value = false;
+  } catch (err) {
+    if (col && anterior) Object.assign(col, anterior);
+    columnError.value = err.message || 'No se pudo actualizar la etapa.';
   }
-  persistSetterColumns();
-  showEditColModal.value = false;
 }
 
 function openDeleteColumnModal(col) {
@@ -1998,36 +2039,61 @@ async function confirmDeleteColumn() {
   const colKey = deletingColumn.value.key;
   const targetKey = targetReassignColKey.value;
 
-  // Reasignar leads que estaban en la columna eliminada
-  for (const lead of leads.value) {
-    if (lead.status === colKey) {
-      lead.status = targetKey;
-      apiFetch(`/api/leads/${lead.id}/status`, {
+  /*
+   * Primero se mueven los leads y recién después se borra la etapa: al revés,
+   * si el borrado sale bien y la reasignación falla, quedan leads con un
+   * `status` que ya no es columna de nadie — y esos aparecen en la primera
+   * columna sin que nadie entienda por qué. Se espera a que terminen (antes
+   * se mandaban sueltas con `.catch(console.error)`) porque ahora la etapa se
+   * borra en el servidor y el orden entre las dos cosas importa.
+   */
+  const enLaColumna = leads.value.filter((lead) => lead.status === colKey);
+  try {
+    columnError.value = '';
+    await Promise.all(enLaColumna.map(async (lead) => {
+      const res = await apiFetch(`/api/leads/${lead.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: targetKey })
-      }).catch(console.error);
-    }
+      });
+      if (!res.ok) throw new Error('No se pudieron mover los leads de esa etapa.');
+      lead.status = targetKey;
+    }));
+
+    await deleteSetterColumn(colKey);
+    columns.value = columns.value.filter(c => c.key !== colKey);
+    showDeleteColModal.value = false;
+    deletingColumn.value = null;
+  } catch (err) {
+    columnError.value = err.message || 'No se pudo eliminar la etapa.';
+    await loadSetterColumns();
+    await fetchAll();
   }
-
-  columns.value = columns.value.filter(c => c.key !== colKey);
-  persistSetterColumns();
-  showDeleteColModal.value = false;
-  deletingColumn.value = null;
 }
 
-function confirmResetColumns() {
-  if (!confirm('¿Restablecer las etapas de Setter Funnel a su configuración original?')) return;
-  columns.value = JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
-  persistSetterColumns();
+async function confirmResetColumns() {
+  if (!confirm('¿Restablecer las etapas de Setter Funnel a su configuración original? Es para todo el equipo.')) return;
+  try {
+    columnError.value = '';
+    columns.value = await resetSetterColumns();
+  } catch (err) {
+    columnError.value = err.message || 'No se pudieron restablecer las etapas.';
+  }
 }
 
-function persistSetterColumns() {
-  saveSetterColumns(columns.value);
-}
-
-function loadSetterColumns() {
-  columns.value = readSetterColumns();
+/**
+ * Las etapas del equipo, desde el servidor. Si la petición falla el tablero
+ * queda con lo que tenía (o vacío en la primera carga) y se dice: dibujar las
+ * de fábrica como si fueran las del equipo invita a arrastrar leads a una
+ * columna que para los demás no existe.
+ */
+async function loadSetterColumns() {
+  try {
+    columnError.value = '';
+    columns.value = await fetchSetterColumns();
+  } catch (err) {
+    columnError.value = err.message || 'No se pudieron cargar las etapas del Setter Funnel.';
+  }
 }
 
 /**

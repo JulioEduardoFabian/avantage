@@ -1,18 +1,30 @@
+import { apiFetch } from './apiClient.js';
+
 /*
  * Las columnas del Setter Funnel.
  *
- * Viven en `localStorage` y no en la base —a diferencia de las del Funnel de
- * Ventas, que son `funnel_columns`—, así que este archivo es el único sitio que
- * sabe su clave de almacenamiento y sus valores por defecto. Lo necesitan dos
- * pantallas: el Setter Funnel, que las dibuja y las edita, y el Funnel de
- * Ventas, que las usa para NOMBRAR las etapas de los leads del otro tablero en
- * la asignación masiva. Copiada la lista en la segunda, el día que alguien
- * renombra una etapa el reparto empieza a llamarla por un nombre que ya no
- * existe en ningún lado.
+ * Viven en la base (`setter_funnel_columns`, vía `/api/setter-funnel-columns`),
+ * como las del Funnel de Ventas. Antes vivían en el `localStorage` del
+ * navegador y por eso el tablero era de la MÁQUINA y no del equipo: el
+ * 16/10/2026 la misma persona veía siete etapas en una computadora y cuatro en
+ * otra, con los mismos 17 leads repartidos distinto. Y no era solo visual —
+ * arrastrar un lead escribe `leads.status` con la clave de la columna, que sí
+ * se guarda en el servidor, así que un lead movido a una etapa que solo existe
+ * en una máquina aparecía en la primera columna de todas las demás.
+ *
+ * Este archivo lo usan dos pantallas: el Setter Funnel, que las dibuja y las
+ * edita, y el Funnel de Ventas, que las usa para NOMBRAR las etapas de los
+ * leads del otro tablero en la asignación masiva. Copiada la lista en la
+ * segunda, el día que alguien renombra una etapa el reparto empieza a llamarla
+ * por un nombre que ya no existe en ningún lado.
  */
 
-const STORAGE_KEY = 'setter_funnel_columns_v2';
-
+/**
+ * Las etapas de fábrica. Ya no son "lo que se usa si no hay nada guardado"
+ * —de eso se encarga el servidor, que las sembró en la migración— sino el
+ * respaldo para dibujar algo si la petición falla: un tablero vacío por una
+ * caída de red se lee como "se borraron las etapas".
+ */
 export const DEFAULT_SETTER_COLUMNS = [
   { key: 'conversacion_abierta', label: 'Conversación Abierta', icon: '💬', color: '#2C8C99', final: false, position: 0 },
   { key: 'calificando', label: 'En Calificación', icon: '🎯', color: '#6F8125', final: false, position: 1 },
@@ -23,29 +35,67 @@ export const DEFAULT_SETTER_COLUMNS = [
   { key: 'descartado', label: 'No Califica / Sin Resp.', icon: '🚫', color: '#B23A45', final: false, position: 6 }
 ];
 
-/**
- * Las columnas guardadas, o las de fábrica si no hay ninguna (o si el acceso a
- * `localStorage` lanza, que es lo que pasa en una ventana privada).
- *
- * Devuelve siempre una copia: quien la recibe las edita en su propio estado.
- */
-export function loadSetterColumns() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch (e) {
-    console.warn('Error al cargar columnas guardadas:', e);
-  }
-  return JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
+async function leerColumnas(response) {
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'No se pudieron cargar las etapas del Setter Funnel.');
+  return Array.isArray(data.columns) ? data.columns : [];
 }
 
-export function saveSetterColumns(columns) {
+/**
+ * Las etapas del equipo. Si la petición falla devuelve las de fábrica y lo
+ * avisa en la consola: es preferible un tablero con las etapas base que uno
+ * vacío, pero quien lo mire tiene que poder enterarse de que está viendo un
+ * respaldo (por eso `fetchSetterColumns` sí lanza, para las pantallas que
+ * quieran decirlo en voz alta).
+ */
+export async function loadSetterColumns() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(columns));
-  } catch (e) {
-    console.warn('No se pudo guardar columnas en localStorage:', e);
+    return await fetchSetterColumns();
+  } catch (error) {
+    console.warn('No se pudieron cargar las etapas del Setter Funnel:', error);
+    return JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
   }
+}
+
+export async function fetchSetterColumns() {
+  return leerColumnas(await apiFetch('/api/setter-funnel-columns'));
+}
+
+/** `atIndex` inserta la etapa entre dos existentes (el botón "+" del tablero). */
+export async function createSetterColumn({ label, icon, color, final: isFinal, atIndex = null }) {
+  const response = await apiFetch('/api/setter-funnel-columns', {
+    method: 'POST',
+    body: JSON.stringify({ label, icon, color, final: isFinal, atIndex })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'No se pudo crear la etapa.');
+  return data.column;
+}
+
+export async function updateSetterColumn(key, { label, icon, color, final: isFinal }) {
+  const response = await apiFetch(`/api/setter-funnel-columns/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ label, icon, color, final: isFinal })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'No se pudo actualizar la etapa.');
+  return data.column;
+}
+
+export async function deleteSetterColumn(key) {
+  const response = await apiFetch(`/api/setter-funnel-columns/${encodeURIComponent(key)}`, { method: 'DELETE' });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'No se pudo eliminar la etapa.');
+  return true;
+}
+
+export async function reorderSetterColumns(keys) {
+  return leerColumnas(await apiFetch('/api/setter-funnel-columns/reorder', {
+    method: 'PATCH',
+    body: JSON.stringify({ keys })
+  }));
+}
+
+export async function resetSetterColumns() {
+  return leerColumnas(await apiFetch('/api/setter-funnel-columns/reset', { method: 'POST' }));
 }

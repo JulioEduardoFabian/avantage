@@ -304,6 +304,29 @@ antes de tocar el arranque de producción.
   (el desplegable reagrega ese valor como "Registrado anteriormente"); renombrar con
   `propagate: true` sí reescribe `leads.field_of_study` y `projects.field_of_study`, nunca
   cotizaciones ni contratos ya emitidos.
+- Las **etapas del Setter Funnel** son `setter_funnel_columns` (`setterFunnelColumnService.js`,
+  `/api/setter-funnel-columns`, cliente en `src/setterFunnelColumns.js`), **tabla propia y no filas
+  de `funnel_columns` con un campo "tablero"**: `loadSalesFunnelStatuses()` trata TODA clave de
+  `funnel_columns` como "este lead ya es del closer" y `loadWinningStatuses()` toma las `final` como
+  venta ganada, así que compartir la tabla haría que cada etapa que el setter cree graduara leads
+  (sacándolos de su propio tablero y dejando al bot sin trabajarlos) y que su "Ganado / Cerrado"
+  —`final` de fábrica— abriera proyectos y devengara comisiones. El precio de separarlas es un
+  servicio más; el de unirlas, revisar cada lectura de `funnel_columns` que exista y las que vengan.
+  Hasta el 16/10/2026 vivían en el `localStorage` del navegador y el tablero era de la **máquina**,
+  no del equipo: la misma persona veía 7 etapas en una computadora y 4 en otra, con los mismos 17
+  leads repartidos distinto. Y no era cosmético — arrastrar un lead escribe `leads.status` con la
+  clave de la columna, que sí es compartida, así que un lead movido a una etapa que solo existía en
+  una máquina caía en la primera columna de todas las demás ("si no coincide, ubicar en la primera
+  columna", `SetterFunnelView.vue`). La migración siembra las 7 de fábrica y **rescata** las etapas
+  huérfanas: toda clave que algún lead no graduado tenga en `status` y no sea de fábrica, ni de
+  Ventas, ni un desenlace o bandeja, entra como "Etapa recuperada" — su nombre vivía en el navegador
+  y se perdió, pero sin la columna esos leads se amontonarían en la primera sin que nadie sepa por
+  qué. Por la misma razón `resetToDefaults()` conserva las etapas propias **que tengan leads**:
+  restablecer es recuperar las de fábrica borradas, no vaciarle el tablero a quien tenga trabajo
+  repartido. Borrar una etapa mueve primero los leads y recién después borra la columna (al revés,
+  un borrado que sale bien con una reasignación que falla deja leads con un `status` que ya no es
+  columna de nadie), y la clave de una etapa nueva la genera el **servidor**: dos personas creándola
+  a la vez en dos máquinas es justo lo que esto vino a arreglar.
 - Los dos tableros de leads leen la **misma** columna `leads.status`, pero "¿este lead ya es del
   closer?" **no** se deduce de ese texto: se sella en `leads.sales_funnel_at` al entrar al funnel
   comercial. La deducción por status dejaba de reconocer al lead en cuanto el equipo borraba o
@@ -470,9 +493,8 @@ antes de tocar el arranque de producción.
   dibuja el selector «Tablero» y antepone su nombre a la etapa de cada fila —«Cita Agendada» existe
   en los dos—; el Setter Funnel sigue abriendo el mismo modal con un solo tablero y no ve ninguna de
   las dos cosas. Las etiquetas de las etapas del setter salen de `src/setterFunnelColumns.js`, que
-  es donde viven esas columnas (en `localStorage`, a diferencia de las de Ventas, que son
-  `funnel_columns`): con la lista copiada en la otra pantalla, una etapa renombrada se llamaría
-  distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
+  es el cliente de esas columnas: con la lista copiada en la otra pantalla, una etapa renombrada se
+  llamaría distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
   de desaparecer: un lead que no se lista no se puede repartir.
   En «Responsable» y «Setter» el desplegable lista **solo a los setters** (`isSetter()` en
   `src/data/commercialTeam.js`, por el nombre del rol): el área comercial se define por permiso, y

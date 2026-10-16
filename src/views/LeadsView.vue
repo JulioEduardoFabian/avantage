@@ -1171,7 +1171,7 @@ import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
-import { loadSetterColumns } from '../setterFunnelColumns.js';
+import { DEFAULT_SETTER_COLUMNS, loadSetterColumns } from '../setterFunnelColumns.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
 const DEFAULT_COLUMNS = [
@@ -1888,11 +1888,11 @@ async function fetchAll() {
 const showBulkTeamModal = ref(false);
 
 /* Las columnas del Setter Funnel se releen al abrir: se editan en la otra
-   pantalla y se guardan en `localStorage`, así que una etapa renombrada tiene
-   que verse acá sin recargar el panel. */
+   pantalla, así que una etapa renombrada tiene que verse acá sin recargar el
+   panel: se vuelven a pedir al abrir el modal. */
 function openBulkTeamModal() {
-  setterColumns.value = loadSetterColumns();
   showBulkTeamModal.value = true;
+  loadSetterColumns().then((columns) => { setterColumns.value = columns; });
 }
 const SALES_BOARD = { key: 'ventas', label: 'Funnel de Ventas' };
 const SETTER_BOARD = { key: 'setter', label: 'Setter Funnel' };
@@ -1908,8 +1908,12 @@ const SETTER_BOARD = { key: 'setter', label: 'Setter Funnel' };
  * de una lista propia, para que una etapa renombrada no se llame distinto en
  * cada pantalla. Lo que no cae en ninguna columna conocida se agrupa aparte en
  * vez de desaparecer: un lead que no se lista no se puede repartir.
+ *
+ * Arranca con las de fábrica y se reemplaza con las del servidor al abrir el
+ * modal: la lista dejó de ser un valor en memoria del navegador y ahora viene
+ * de la base, pero este agrupamiento se calcula antes de que llegue.
  */
-const setterColumns = ref(loadSetterColumns());
+const setterColumns = ref(JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS)));
 
 const setterGroups = computed(() => {
   const salesIds = new Set(visibleLeads.value.map((lead) => lead.id));
