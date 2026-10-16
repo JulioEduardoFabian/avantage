@@ -216,109 +216,150 @@
           @mousemove="onChartMouseMove"
           @mouseleave="onChartMouseLeave"
         >
-          <!-- Spline Area SVG -->
+          <!--
+            Área + línea, en píxeles reales: el viewBox sigue al ancho medido
+            del contenedor, así un trazo de 2 px mide 2 px y un punto es
+            redondo. Con el viewBox fijo de antes, estirado al ancho de la
+            tarjeta, los círculos salían ovalados y los números del eje
+            estrechos.
+          -->
           <svg
             v-if="chartMode === 'spline'"
-            viewBox="0 0 700 240"
+            :viewBox="`0 0 ${chartWidth} ${chartHeight}`"
             class="interactive-svg-chart"
-            preserveAspectRatio="none"
+            role="img"
+            :aria-label="`Ingresos y egresos de los últimos ${months} meses`"
           >
             <defs>
               <linearGradient id="incomeAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#10B981" stop-opacity="0.32" />
-                <stop offset="100%" stop-color="#10B981" stop-opacity="0.0" />
+                <stop offset="0%" :stop-color="SERIES.income" stop-opacity="0.14" />
+                <stop offset="100%" :stop-color="SERIES.income" stop-opacity="0" />
               </linearGradient>
               <linearGradient id="expenseAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.28" />
-                <stop offset="100%" stop-color="#F59E0B" stop-opacity="0.0" />
+                <stop offset="0%" :stop-color="SERIES.expense" stop-opacity="0.14" />
+                <stop offset="100%" :stop-color="SERIES.expense" stop-opacity="0" />
               </linearGradient>
             </defs>
 
-            <!-- Horizontal Guide Lines -->
+            <!-- Rejilla: línea fina y CONTINUA. Punteada se lee como un umbral
+                 o una proyección, y acá es solo una guía. -->
             <g class="grid-lines">
-              <line x1="40" y1="20" x2="680" y2="20" stroke="var(--border-color)" stroke-dasharray="3 3" opacity="0.6" />
-              <line x1="40" y1="80" x2="680" y2="80" stroke="var(--border-color)" stroke-dasharray="3 3" opacity="0.6" />
-              <line x1="40" y1="140" x2="680" y2="140" stroke="var(--border-color)" stroke-dasharray="3 3" opacity="0.6" />
-              <line x1="40" y1="200" x2="680" y2="200" stroke="var(--border-color)" opacity="0.8" />
+              <line
+                v-for="tick in yTicks"
+                :key="`grid-${tick.value}`"
+                :x1="plot.left"
+                :y1="tick.y"
+                :x2="plot.right + 8"
+                :y2="tick.y"
+                stroke="var(--border-color)"
+                stroke-width="1"
+                :opacity="tick.value === 0 ? 0.9 : 0.45"
+              />
             </g>
 
-            <!-- Y-Axis labels -->
             <g class="y-labels">
-              <text x="32" y="24" text-anchor="end" class="chart-axis-text">S/ {{ fmtShort(chartMax) }}</text>
-              <text x="32" y="84" text-anchor="end" class="chart-axis-text">S/ {{ fmtShort(chartMax * 0.66) }}</text>
-              <text x="32" y="144" text-anchor="end" class="chart-axis-text">S/ {{ fmtShort(chartMax * 0.33) }}</text>
-              <text x="32" y="204" text-anchor="end" class="chart-axis-text">S/ 0</text>
+              <text
+                v-for="tick in yTicks"
+                :key="`tick-${tick.value}`"
+                :x="plot.left - 10"
+                :y="tick.y + 3.5"
+                text-anchor="end"
+                class="chart-axis-text"
+              >{{ tick.value === 0 ? 'S/ 0' : `S/ ${fmtShort(tick.value)}` }}</text>
             </g>
 
-            <!-- Filled Areas -->
+            <!-- Meses, dentro del mismo SVG: así quedan exactamente bajo su
+                 punto en vez de repartidos por una fila de divs aparte. -->
+            <g class="x-labels">
+              <text
+                v-for="(pt, idx) in incomePoints"
+                :key="`x-${idx}`"
+                :x="pt.x"
+                :y="plot.bottom + 22"
+                text-anchor="middle"
+                class="chart-axis-text"
+                :class="{ 'is-hovered': hoverIdx === idx }"
+              >{{ monthLabel(data.months[idx]) }}</text>
+            </g>
+
             <path :d="incomeAreaPath" fill="url(#incomeAreaGrad)" />
             <path :d="expenseAreaPath" fill="url(#expenseAreaGrad)" />
 
-            <!-- Smooth Lines -->
             <path
               :d="incomeLinePath"
               fill="none"
-              stroke="#10B981"
-              stroke-width="3"
+              :stroke="SERIES.income"
+              stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
             />
             <path
               :d="expenseLinePath"
               fill="none"
-              stroke="#F59E0B"
-              stroke-width="3"
+              :stroke="SERIES.expense"
+              stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
             />
 
-            <!-- Circles on Points -->
-            <g v-for="(pt, idx) in incomePoints" :key="'inc-pt-' + idx">
-              <circle
-                :cx="pt.x"
-                :cy="pt.y"
-                r="4.5"
-                fill="#10B981"
-                stroke="var(--bg-card-solid)"
-                stroke-width="2"
-              />
-            </g>
-            <g v-for="(pt, idx) in expensePoints" :key="'exp-pt-' + idx">
-              <circle
-                :cx="pt.x"
-                :cy="pt.y"
-                r="4.5"
-                fill="#F59E0B"
-                stroke="var(--bg-card-solid)"
-                stroke-width="2"
-              />
-            </g>
+            <!-- Puntos con anillo del color de la tarjeta: es lo que los deja
+                 legibles donde una línea cruza a la otra. -->
+            <circle
+              v-for="(pt, idx) in incomePoints"
+              :key="`inc-pt-${idx}`"
+              :cx="pt.x"
+              :cy="pt.y"
+              r="4"
+              :fill="SERIES.income"
+              stroke="var(--bg-card-solid)"
+              stroke-width="2"
+            />
+            <circle
+              v-for="(pt, idx) in expensePoints"
+              :key="`exp-pt-${idx}`"
+              :cx="pt.x"
+              :cy="pt.y"
+              r="4"
+              :fill="SERIES.expense"
+              stroke="var(--bg-card-solid)"
+              stroke-width="2"
+            />
 
-            <!-- Hover Vertical Guide Line & Tooltip Anchor -->
+            <!-- El último valor de cada línea, escrito. Es la única cifra que
+                 se lee sin pasar el mouse. -->
+            <text
+              v-for="label in endLabels"
+              :key="`end-${label.key}`"
+              :x="label.x"
+              :y="label.y"
+              class="chart-end-label"
+            >{{ fmtShort(label.value) }}</text>
+
+            <!-- Cruceta del hover -->
             <g v-if="hoverIdx !== null && incomePoints[hoverIdx]">
               <line
                 :x1="incomePoints[hoverIdx].x"
-                y1="10"
+                :y1="plot.top"
                 :x2="incomePoints[hoverIdx].x"
-                y2="200"
-                stroke="var(--primary)"
-                stroke-width="1.5"
-                stroke-dasharray="4 3"
+                :y2="plot.bottom"
+                stroke="var(--text-muted)"
+                stroke-width="1"
+                opacity="0.55"
               />
               <circle
                 :cx="incomePoints[hoverIdx].x"
                 :cy="incomePoints[hoverIdx].y"
-                r="6.5"
-                fill="#10B981"
-                stroke="#fff"
+                r="6"
+                :fill="SERIES.income"
+                stroke="var(--bg-card-solid)"
                 stroke-width="2.5"
               />
               <circle
                 :cx="expensePoints[hoverIdx].x"
                 :cy="expensePoints[hoverIdx].y"
-                r="6.5"
-                fill="#F59E0B"
-                stroke="#fff"
+                r="6"
+                :fill="SERIES.expense"
+                stroke="var(--bg-card-solid)"
                 stroke-width="2.5"
               />
             </g>
@@ -346,19 +387,6 @@
                 ></div>
               </div>
               <span class="bar-month-label">{{ monthLabel(month) }}</span>
-            </div>
-          </div>
-
-          <!-- X-Axis Labels (for Spline View) -->
-          <div v-if="chartMode === 'spline'" class="x-axis-row">
-            <div
-              v-for="(month, idx) in data.months"
-              :key="'xlab-' + month"
-              class="x-label-item"
-              :class="{ 'is-active': hoverIdx === idx }"
-              :style="{ left: `${(incomePoints[idx]?.x / 700) * 100}%` }"
-            >
-              {{ monthLabel(month) }}
             </div>
           </div>
 
@@ -648,13 +676,37 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { apiFetch } from "../../apiClient.js";
 import { BANCOS, bankSlug } from "./incomeOptions.js";
+import { monotonePath, niceAxisMax } from "./chartGeometry.js";
 
 const emit = defineEmits(["navigate-tab"]);
 
 const RANGE_OPTIONS = [3, 6, 12];
+
+/*
+ * Los dos colores del gráfico. El modo oscuro tiene su PROPIO paso y no el
+ * mismo color "a ver cómo queda": validados con el script de la guía de
+ * visualización contra cada fondo (banda de luminosidad, piso de croma,
+ * separación para daltonismo y contraste). Los tonos claros quedan por debajo
+ * de 3:1 contra el fondo blanco, y eso obliga a que los valores se puedan leer
+ * sin depender del color — de ahí las etiquetas al final de cada línea.
+ */
+const SERIES_LIGHT = { income: "#10B981", expense: "#F59E0B" };
+const SERIES_DARK = { income: "#0E9F6E", expense: "#DB6B20" };
+const prefersDark = typeof window !== 'undefined' && window.matchMedia
+  ? window.matchMedia('(prefers-color-scheme: dark)')
+  : null;
+const isDark = ref(false);
+
+function leerTema() {
+  if (typeof document === 'undefined') return;
+  const elegido = document.documentElement.getAttribute('data-theme');
+  isDark.value = elegido ? elegido === 'dark' : Boolean(prefersDark?.matches);
+}
+
+const SERIES = computed(() => (isDark.value ? SERIES_DARK : SERIES_LIGHT));
 const BANK_COLORS = {
   BCP: "#2563EB",
   "BCP Finanzas": "#6366F1",
@@ -735,86 +787,103 @@ const monthlyTotals = computed(() => {
   });
 });
 
+/*
+ * El alto del gráfico en unidades del SVG. El ancho se mide del contenedor
+ * (`chartWidth`) para que una unidad del viewBox sea UN píxel: antes el SVG
+ * tenía un viewBox fijo de 700 estirado con `preserveAspectRatio="none"`, así
+ * que los trazos, los puntos y hasta los números del eje salían deformados a
+ * lo ancho — los círculos eran óvalos y la tipografía del eje, estrecha.
+ */
+const CHART_H = 260;
+// El hueco de cada lado está medido contra la etiqueta más larga que puede
+// salir ("S/ 1,250k" ≈ 57 px a 10.5 px de ancho fijo): con menos, el número
+// del eje se sale por la izquierda y el del final de la línea por la derecha.
+const PAD = { top: 18, right: 72, bottom: 34, left: 70 };
+
+const chartWidth = ref(700);
+const chartHeight = ref(CHART_H);
+let chartObserver = null;
+
+const plot = computed(() => ({
+  left: PAD.left,
+  right: Math.max(PAD.left + 40, chartWidth.value - PAD.right),
+  top: PAD.top,
+  bottom: Math.max(PAD.top + 40, chartHeight.value - PAD.bottom)
+}));
+
 const chartMax = computed(() => {
-  let max = 1000;
+  let max = 0;
   monthlyTotals.value.forEach((m) => {
     max = Math.max(max, m.income, m.expense);
   });
-  return Math.ceil(max * 1.15);
+  return niceAxisMax(max || 1000);
 });
 
-// Points for SVG Spline Chart (Width: 700, Height: 240, plotting area: x from 45 to 675, y from 20 to 200)
-const incomePoints = computed(() => {
-  const n = data.value.months.length;
+/** Las cuatro marcas del eje, de arriba hacia abajo. */
+const yTicks = computed(() => [1, 0.75, 0.5, 0.25, 0].map((f) => {
+  const value = chartMax.value * f;
+  const { top, bottom } = plot.value;
+  return { value, y: bottom - f * (bottom - top) };
+}));
+
+/** Los puntos de una serie, ya en píxeles del SVG. */
+function seriesPoints(valueOf) {
+  const n = monthlyTotals.value.length;
   if (!n) return [];
-  const startX = 50;
-  const endX = 670;
-  const stepX = n > 1 ? (endX - startX) / (n - 1) : 0;
-  const bottomY = 200;
-  const topY = 20;
-  const rangeY = bottomY - topY;
+  const { left, right, top, bottom } = plot.value;
+  const stepX = n > 1 ? (right - left) / (n - 1) : 0;
+  const rangeY = bottom - top;
 
   return monthlyTotals.value.map((m, i) => {
-    const x = startX + i * stepX;
-    const y = bottomY - (m.income / chartMax.value) * rangeY;
-    return { x, y: Math.max(topY, Math.min(bottomY, y)) };
+    const value = valueOf(m) || 0;
+    const y = bottom - (value / chartMax.value) * rangeY;
+    return { x: left + i * stepX, y: Math.max(top, Math.min(bottom, y)), value };
   });
-});
-
-const expensePoints = computed(() => {
-  const n = data.value.months.length;
-  if (!n) return [];
-  const startX = 50;
-  const endX = 670;
-  const stepX = n > 1 ? (endX - startX) / (n - 1) : 0;
-  const bottomY = 200;
-  const topY = 20;
-  const rangeY = bottomY - topY;
-
-  return monthlyTotals.value.map((m, i) => {
-    const x = startX + i * stepX;
-    const y = bottomY - (m.expense / chartMax.value) * rangeY;
-    return { x, y: Math.max(topY, Math.min(bottomY, y)) };
-  });
-});
-
-function getSplinePath(points) {
-  if (!points || points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(i - 1, 0)];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = points[Math.min(i + 2, points.length - 1)];
-
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-
-    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-  return d;
 }
 
-const incomeLinePath = computed(() => getSplinePath(incomePoints.value));
-const expenseLinePath = computed(() => getSplinePath(expensePoints.value));
+const incomePoints = computed(() => seriesPoints((m) => m.income));
+const expensePoints = computed(() => seriesPoints((m) => m.expense));
 
-const incomeAreaPath = computed(() => {
-  if (!incomePoints.value.length) return "";
-  const line = incomeLinePath.value;
-  const last = incomePoints.value[incomePoints.value.length - 1];
-  const first = incomePoints.value[0];
-  return `${line} L ${last.x.toFixed(1)} 200 L ${first.x.toFixed(1)} 200 Z`;
-});
+const incomeLinePath = computed(() => monotonePath(incomePoints.value));
+const expenseLinePath = computed(() => monotonePath(expensePoints.value));
 
-const expenseAreaPath = computed(() => {
-  if (!expensePoints.value.length) return "";
-  const line = expenseLinePath.value;
-  const last = expensePoints.value[expensePoints.value.length - 1];
-  const first = expensePoints.value[0];
-  return `${line} L ${last.x.toFixed(1)} 200 L ${first.x.toFixed(1)} 200 Z`;
+/** El área bajo la curva: la misma línea, cerrada contra la base del eje. */
+function areaPath(points, line) {
+  if (!points.length) return "";
+  const base = plot.value.bottom.toFixed(1);
+  const last = points[points.length - 1];
+  const first = points[0];
+  return `${line} L ${last.x.toFixed(1)} ${base} L ${first.x.toFixed(1)} ${base} Z`;
+}
+
+const incomeAreaPath = computed(() => areaPath(incomePoints.value, incomeLinePath.value));
+const expenseAreaPath = computed(() => areaPath(expensePoints.value, expenseLinePath.value));
+
+/**
+ * El valor del último mes, escrito al final de cada línea.
+ *
+ * Es la única cifra que el gráfico dice sin que haya que pasar el mouse —y la
+ * que hace falta para que las dos series se distingan sin depender del color,
+ * que es lo que pide el contraste de estos dos tonos sobre el fondo claro—.
+ * Si los dos finales quedan pegados, se separan lo justo para que no se pisen:
+ * una etiqueta encima de la otra no se lee.
+ */
+const endLabels = computed(() => {
+  const ingreso = incomePoints.value[incomePoints.value.length - 1];
+  const egreso = expensePoints.value[expensePoints.value.length - 1];
+  if (!ingreso || !egreso) return [];
+
+  let yIngreso = ingreso.y;
+  let yEgreso = egreso.y;
+  if (Math.abs(yIngreso - yEgreso) < 15) {
+    const medio = (yIngreso + yEgreso) / 2;
+    yIngreso = medio - 8;
+    yEgreso = medio + 8;
+  }
+  return [
+    { key: 'in', x: ingreso.x + 9, y: yIngreso + 3, value: ingreso.value },
+    { key: 'out', x: egreso.x + 9, y: yEgreso + 3, value: egreso.value }
+  ];
 });
 
 // Tooltip position style
@@ -822,11 +891,13 @@ const tooltipStyle = computed(() => {
   if (hoverIdx.value === null || !incomePoints.value[hoverIdx.value]) {
     return { display: "none" };
   }
+  // El ancho del SVG es el del contenedor, así que el porcentaje sale del
+  // ancho medido y no de un 700 fijo que ya no existe.
   const pt = incomePoints.value[hoverIdx.value];
-  const pctX = (pt.x / 700) * 100;
+  const pctX = (pt.x / Math.max(chartWidth.value, 1)) * 100;
   return {
     left: `${pctX}%`,
-    top: `15%`,
+    top: "8%",
     transform: pctX > 70 ? "translateX(-95%)" : pctX < 30 ? "translateX(5%)" : "translateX(-50%)"
   };
 });
@@ -836,7 +907,7 @@ function onChartMouseMove(e) {
   const rect = chartContainerRef.value.getBoundingClientRect();
   const mouseX = e.clientX - rect.left;
   const ratio = Math.max(0, Math.min(1, mouseX / rect.width));
-  const svgX = ratio * 700;
+  const svgX = ratio * chartWidth.value;
 
   // Find nearest point
   let closest = 0;
@@ -849,6 +920,18 @@ function onChartMouseMove(e) {
     }
   });
   hoverIdx.value = closest;
+}
+
+/**
+ * Mide el contenedor para que el viewBox sea del tamaño real. Sin esto hay que
+ * elegir entre un SVG deformado (viewBox fijo estirado) o uno que no ocupa el
+ * ancho de la tarjeta.
+ */
+function medirGrafico() {
+  const el = chartContainerRef.value;
+  if (!el) return;
+  chartWidth.value = Math.max(el.clientWidth || 0, 320);
+  chartHeight.value = Math.max(el.clientHeight || 0, 220);
 }
 
 function onChartMouseLeave() {
@@ -989,7 +1072,38 @@ function setRange(value) {
   fetchOverview();
 }
 
-onMounted(fetchOverview);
+let themeObserver = null;
+
+onMounted(async () => {
+  leerTema();
+  // El tema se cambia desde la barra del panel (atributo en <html>) o desde el
+  // sistema operativo: los dos caminos tienen que repintar las series, porque
+  // cada modo usa su propio paso de color.
+  if (typeof MutationObserver !== 'undefined') {
+    themeObserver = new MutationObserver(leerTema);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }
+  prefersDark?.addEventListener?.('change', leerTema);
+
+  await fetchOverview();
+  await nextTick();
+  medirGrafico();
+  // El gráfico se redibuja con el contenedor: la tarjeta cambia de ancho al
+  // plegar el menú lateral o al girar el celular, y un viewBox viejo deja las
+  // líneas desalineadas de sus meses.
+  if (typeof ResizeObserver !== 'undefined' && chartContainerRef.value) {
+    chartObserver = new ResizeObserver(medirGrafico);
+    chartObserver.observe(chartContainerRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  chartObserver?.disconnect();
+  chartObserver = null;
+  themeObserver?.disconnect();
+  themeObserver = null;
+  prefersDark?.removeEventListener?.('change', leerTema);
+});
 </script>
 
 <style scoped>
@@ -1351,48 +1465,44 @@ onMounted(fetchOverview);
   font-weight: 600;
 }
 
+/* El gráfico CRECE con la tarjeta. Antes tenía 250 px fijos dentro de un panel
+   que la columna de cuentas estira al doble, así que debajo de la curva
+   quedaba medio metro de vacío. */
 .chart-container {
   position: relative;
   width: 100%;
-  height: 250px;
+  flex: 1;
+  min-height: 280px;
   margin-top: 0.5rem;
   user-select: none;
 }
 
 .interactive-svg-chart {
   width: 100%;
-  height: 220px;
+  height: 100%;
+  display: block;
   overflow: visible;
 }
 
+/* El texto del gráfico usa tokens de texto, nunca el color de la serie: los
+   dos tonos son ilegibles como texto sobre el fondo claro. La identidad la
+   pone el punto de color que tienen al lado. */
 .chart-axis-text {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   fill: var(--text-muted);
 }
 
-.x-axis-row {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 25px;
-  pointer-events: none;
-}
-
-.x-label-item {
-  position: absolute;
-  transform: translateX(-50%);
-  font-family: var(--font-body);
-  font-size: 0.73rem;
-  color: var(--text-muted);
-  text-transform: capitalize;
-  transition: color 0.15s ease, font-weight 0.15s ease;
-}
-
-.x-label-item.is-active {
-  color: var(--text-main);
+.chart-axis-text.is-hovered {
+  fill: var(--text-main);
   font-weight: 700;
+}
+
+.chart-end-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  fill: var(--text-sub);
 }
 
 /* Floating Chart Tooltip */
@@ -1449,12 +1559,14 @@ onMounted(fetchOverview);
 }
 
 /* Bars View */
+/* Crece con la tarjeta, igual que la vista de curvas: las dos tienen que
+   ocupar el mismo alto o cambiar de pestaña da un salto. */
 .bars-chart-view {
   display: flex;
   align-items: flex-end;
   justify-content: space-around;
-  height: 210px;
-  padding: 0.5rem 1rem;
+  height: 100%;
+  padding: 0.5rem 1rem 0;
   border-bottom: 1px solid var(--border-color);
 }
 

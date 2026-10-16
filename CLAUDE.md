@@ -262,6 +262,22 @@ antes de tocar el arranque de producción.
   día abierto: el nombre de una entrega no entra en una celda de 50 px, y apretarlo para que entre
   deja texto cortado que no dice nada. La vista elegida se recuerda en `localStorage`
   (`entregables.view`), entre `try` porque en una ventana privada el acceso lanza.
+- El **gráfico de Flujo de Fondos** del Resumen (`OverviewTab.vue`, geometría en
+  `src/views/finance/chartGeometry.js`) tiene tres reglas que vinieron de arreglarlo y no conviene
+  deshacer: (1) la curva es **monótona** (Fritsch–Carlson) y no una spline Catmull-Rom — aquella se
+  pasaba de los datos: entre un mes en cero y el siguiente dibujaba ingresos **negativos** y
+  exageraba el pico, o sea el gráfico decía algo distinto de la tabla; (2) el eje sube a una cifra
+  **limpia** (`niceAxisMax`) y no al máximo × 1.15, que daba "S/ 22.5k · 14.9k · 7.4k", números con
+  los que no se estima nada; (3) el `viewBox` sigue al ancho **medido** del contenedor
+  (`ResizeObserver`) en vez de ser fijo y estirarse con `preserveAspectRatio="none"`, que deformaba
+  los trazos, convertía los puntos en óvalos y estrechaba la tipografía del eje. Los huecos
+  laterales están medidos contra la etiqueta más larga posible; el gráfico **crece con la tarjeta**
+  (antes tenía 250 px fijos y dejaba medio panel vacío); los dos colores tienen un paso **propio
+  para el modo oscuro**, validados con el script de la guía de visualización contra cada fondo; y el
+  texto del gráfico usa tokens de texto, nunca el color de la serie — la identidad la da el punto
+  de color que tiene al lado. El último valor de cada línea va **escrito**: es la única cifra que se
+  lee sin pasar el mouse, y es lo que releva el aviso de contraste de esos dos tonos sobre el fondo
+  claro.
 - El **ITF resta**: es la comisión que el banco cobra por cada transferencia, o sea dinero que
   nunca llegó a la cuenta (o que salió de ella). Se mostraba como una cifra suelta en cada pestaña
   sin descontarse en ningún lado, así que el Balance Neto en Caja daba de más. Entra en los egresos
