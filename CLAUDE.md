@@ -830,6 +830,33 @@ antes de tocar el arranque de producción.
   cortesía como "gracias" no). "No hay problema", "sin problema" y los dedazos de "sí" ("Dii") son un
   sí, y una respuesta ambigua al "¿Confirmo…?" repregunta una vez por el mismo horario
   (`confirmReasked`) en vez de soltarlo y preguntar "¿qué día te viene mejor?".
+- **Al contacto que nos corrige la carrera o la universidad se le hace caso en cualquier paso del
+  agendamiento** (`profileCorrection.js` → `detectProfileCorrection()`, enganchado en
+  `handleSchedulingTurn()` antes del clasificador de dudas). El bot le devuelve los dos datos
+  escritos justo antes de pasar a los horarios *para* que pueda corregirnos (ver `offerScheduling`),
+  pero la corrección caía en el paso de elección de horario, que solo sabe leer números y días: el
+  15/10/2026 un lead escribió tres veces que su universidad no era esa, recibió dos "No te entendí
+  bien 🤔" con la misma lista, se agotaron los intentos y lo transfirieron — un minuto después eligió
+  "10:00 am" de la lista y, con el bot ya en pausa, nadie lo leyó. Corregir **no gasta** los intentos
+  del paso (es el contacto arreglando un error nuestro, no una respuesta fallida) y el acuse sale
+  pegado al paso en curso, así que no cuesta un turno. Si descartó lo nuestro sin alcanzar a decir lo
+  correcto ("no es la pontificia", "es esta universidad") se le muestra lo anotado para que confirme
+  o corrija de una vez, con tope de `MAX_PROFILE_CORRECTION_ASKS` para no preguntar en bucle. Se
+  resuelve con reglas y no con el LLM porque de esto depende lo que queda escrito en la ficha —y
+  después en la cotización y en el contrato—, y el veto más importante es el del día y la hora: los
+  pasos del agendamiento son los dueños de esas frases.
+- El **catálogo de universidades** (`backend/data/peruUniversities.js`) gana el match **más
+  específico de todo el catálogo**, no el de la primera entrada que coincida, y los términos que
+  varias comparten (`AMBIGUOUS_UNIVERSITY_TERMS`: "católica", "nacional") **no resuelven a ninguna**
+  — devuelven confianza media, que es "quedarse con lo que escribió el contacto". Con el primero
+  ganando, el alias genérico `catolica` de la PUCP tapaba el nombre propio de todas las demás
+  católicas del país: "Universidad católica Sedes Sapientiae" se confirmaba como "Pontificia
+  Universidad Católica del Perú" con confianza alta (caso real del 15/10/2026), y lo mismo le pasaba
+  a la de Santa María, San Pablo, Santo Toribio y Trujillo. Un alias nuevo que ya sea palabra de otra
+  entrada va con el nombre completo detrás (`catolica de santa maria`) o a la lista de ambiguos.
+  `findUniversityMentions()` contesta otra pregunta —"¿de qué universidades habla este mensaje?"— y
+  es la que usa la corrección: "No es la pontificia / Es la Sapientiae" nombra DOS, y quedarse con la
+  primera es volver a guardar justo la que el contacto descartó.
 - **El ritmo con el que contesta el bot es parte del producto.** `nextSendAt()` decide cuándo sale
   cada mensaje: la espera normal es el mínimo antispam configurado
   (`whatsapp_bot_settings.message_gap_seconds`) o lo que tardaría alguien en teclear ese texto

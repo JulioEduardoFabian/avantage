@@ -6,6 +6,7 @@ import { buildKnowledgeBlock, meetingDurationLabel } from './whatsappBotPromptDe
 import { MIN_BOOKING_LEAD_MINUTES } from './googleCalendarService.js';
 import { normalizeUniversity } from './universityNormalizer.js';
 import { normalizeCareer } from './careerNormalizer.js';
+import { detectProfileCorrection } from './profileCorrection.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
 import { criticalSignal, describesThesisProgress, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
 import { coalesceTimeFragments } from './messageFragments.js';
@@ -152,6 +153,13 @@ const MAX_SLOT_CHOICE_ATTEMPTS = 2;
 // cualquier cosa que no fuera un número ("👍🏼", "hasta la vista baby"): el
 // contacto ya no estaba respondiendo al menú y el bot seguía insistiendo.
 const MAX_STEP_MISSES = 2;
+
+// Cuántas veces se le pregunta por un dato que nos corrigió sin alcanzar a
+// decir el valor correcto ("no es la pontificia", "es esta universidad").
+// Corregir no gasta intentos del paso —el contacto está colaborando, no
+// fallando—, pero preguntar el nombre de la universidad en bucle sí sería
+// otro contestador: pasado el tope, el mensaje vuelve al camino normal.
+const MAX_PROFILE_CORRECTION_ASKS = 2;
 
 // Tope aparte para los turnos que SÍ se atendieron dentro de un mismo paso
 // (preguntas sueltas respondidas y el paso retomado). Responderlas está bien,
@@ -3880,6 +3888,13 @@ Enlace: ${meeting.meet_link}` : '';
       return this.dispatchByStatus(waId, text);
     }
 
+    // Nos está corrigiendo la carrera o la universidad, no eligiendo un
+    // horario. Va ANTES del clasificador porque es determinístico y porque de
+    // esto depende lo que queda escrito en la ficha; y va acá y no en el
+    // handler del paso para que no gaste ninguno de los dos intentos que
+    // terminan en una transferencia.
+    if (await this._applyProfileCorrection(waId, session, trimmed)) return;
+
     const step = this._describeSchedulingStep(session.status, scheduling);
 
     let aside;
@@ -3989,6 +4004,82 @@ Enlace: ${meeting.meet_link}` : '';
     }
 
     await this.send(waId, restate ? `${aside.answer}\n\n${restate}` : aside.answer);
+  }
+
+  /**
+   * El contacto nos corrige la carrera o la universidad en medio del
+   * agendamiento. Devuelve true si consumió el turno.
+   *
+   * El bot le devuelve los dos datos escritos justo antes de pasar a los
+   * horarios (ver `offerScheduling`) "para que pueda corregirnos si
+   * interpretamos mal" — pero cuando corregía, el mensaje llegaba al paso de
+   * elección de horario, que solo sabe leer números y días. Caso real del
+   * 15/10/2026 (+51933977853): el bot leyó su universidad mal, él escribió
+   * tres veces que no era esa, recibió dos "No te entendí bien 🤔" con la
+   * misma lista, se agotaron los intentos y la conversación se transfirió. Un
+   * minuto después escribió "10:00 am" —un horario de la lista— y ya nadie lo
+   * leyó: la reunión nunca se agendó.
+   *
+   * Dos reglas sostienen el arreglo:
+   *   - la corrección NO gasta los intentos del paso (no es una respuesta
+   *     fallida: es el contacto arreglando un error nuestro), y
+   *   - el acuse sale pegado al paso que estaba en curso, así que corregir no
+   *     cuesta un turno de agendamiento.
+   */
+  async _applyProfileCorrection(waId, session, text) {
+    const { answers, scheduling } = this._readScheduling(session);
+    if (!scheduling) return false;
+
+    const correction = detectProfileCorrection(text, { university: answers.university, field: answers.field });
+    if (!correction) return false;
+
+    const step = this._describeSchedulingStep(session.status, scheduling);
+    const resume = step.restateShort || step.restate;
+    const isUniversity = correction.field === 'university';
+
+    // No alcanzó a decir el valor correcto: se le pregunta, mostrándole lo que
+    // tenemos para que confirme o corrija de una vez. Pasado el tope se deja
+    // seguir por el camino normal, para no quedar preguntando lo mismo.
+    if (!correction.value) {
+      const asks = Number(scheduling.correctionAsks || 0);
+      if (asks >= MAX_PROFILE_CORRECTION_ASKS) return false;
+
+      scheduling.correctionAsks = asks + 1;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'profile_correction_ask', waId, campo: correction.field, text, attempt: asks + 1 });
+
+      const label = isUniversity ? 'el nombre de tu universidad' : 'tu carrera';
+      const current = isUniversity ? (answers.university || '') : (answers.field || '');
+      const ask = whatsappBotCopy.profileCorrectionAsk(label, current);
+      await this.send(waId, resume ? `${ask}\n\n${resume}` : ask);
+      return true;
+    }
+
+    // Misma regla que al extraer el dato de la conversación: una corrección
+    // sin verificar no reemplaza lo que escribió el contacto, así que solo se
+    // adopta el nombre oficial cuando el catálogo lo reconoce.
+    let value;
+    if (isUniversity) {
+      const resolved = await normalizeUniversity(correction.value);
+      value = resolved.confidence === 'alta' ? resolved.name : correction.value;
+    } else {
+      value = normalizeCareer(correction.value);
+    }
+
+    answers[isUniversity ? 'university' : 'field'] = value;
+    // La corrección es progreso de la conversación, no un intento fallido: se
+    // limpia lo que venía contando para transferir.
+    scheduling.attempts = 0;
+    scheduling.correctionAsks = 0;
+    this._clearStepMisses(scheduling);
+    await this.updateSession(waId, { answers: JSON.stringify(answers) });
+    await this._syncLeadProfile(waId, answers);
+
+    this.logActivity({ type: 'profile_correction', waId, campo: correction.field, text, valor: value });
+
+    const ack = whatsappBotCopy.profileCorrected(value);
+    await this.send(waId, resume ? `${ack}\n\n${resume}` : ack);
+    return true;
   }
 
   /**

@@ -253,3 +253,34 @@ export function postponedFarewell(contactName) {
   return `Perfecto${name}, lo dejamos para cuando te acomode 🙌 No te escribo más por ahora. ` +
     'Cuando quieras retomar, me avisas.';
 }
+
+/**
+ * El contacto nos corrigió la carrera o la universidad (ver
+ * `profileCorrection.js`) y el dato nuevo ya quedó guardado.
+ *
+ * Tres cosas en una línea: se admite el error como propio ("lo corrijo", no
+ * "te entendí mal"), se repite el valor nuevo escrito completo —que es la
+ * única forma de que el contacto vea que esta vez quedó bien— y nada más: el
+ * paso que estaba en curso lo retoma quien llama, en el mismo mensaje. Pedirle
+ * disculpas en tres renglones por un dato mal leído, en medio de la elección
+ * de un horario, cuesta más de lo que arregla.
+ */
+export function profileCorrected(value) {
+  return `Gracias por la corrección 🙌 Lo anoto bien: *${value}*.`;
+}
+
+/**
+ * Descartó lo que le dijimos pero no alcanzamos a entender el valor correcto
+ * ("no es la pontificia", "es esta universidad", "no es esa carrera").
+ *
+ * No se repite lo que ya se sabe que está mal y no se le pide que "lo escriba
+ * de nuevo": nunca lo escribió mal — lo leímos mal nosotros. Si ya hay un
+ * valor guardado se le muestra para que confirme o corrija de una sola vez,
+ * en vez de preguntarle a ciegas algo que él ya contestó una vez.
+ */
+export function profileCorrectionAsk(label, current = '') {
+  if (current) {
+    return `Perdona, lo tengo anotado como *${current}*. Si no es así, dime el nombre y lo corrijo 🙌`;
+  }
+  return `Perdona, ¿me confirmas ${label}? La anoto bien 🙌`;
+}
