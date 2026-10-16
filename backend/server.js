@@ -1705,6 +1705,57 @@ app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view')
   }
 });
 
+/**
+ * El salario que se le paga a quien consiguió el lead por ESE proyecto.
+ *
+ * Es el "padre": no es plata que salió —no se descuenta en el Resumen— sino el
+ * compromiso, y de él cuelgan los pagos parciales. A quién se le paga NO se
+ * pide: sale del responsable del proyecto (ver `resolveProjectOwner`).
+ *
+ * Existe también el camino del cierre de venta (`POST /api/leads/:id/win`),
+ * que es donde el vendedor lo registra sin pasar por Finanzas.
+ */
+app.post('/api/finance/salaries/agreement', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const { projectId, monto, persona, moneda, metodoPago, banco, detalle, fecha } = req.body || {};
+    const salary = await financeSalaryService.createAgreement({
+      projectId, monto, persona, moneda, metodoPago, banco, detalle, fecha, createdBy: req.user.id
+    });
+    res.status(201).json({ salary });
+  } catch (error) {
+    if (error.code === 'SALARY_AGREEMENT_EXISTS') {
+      return res.status(409).json({ error: error.message, agreementId: error.agreementId });
+    }
+    console.error('❌ Error al registrar el salario del proyecto:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar el salario del proyecto.' });
+  }
+});
+
+/** Un pago parcial de ese acuerdo: fecha, monto y estado. El % se deriva. */
+app.post('/api/finance/salaries/:id/payments', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
+  try {
+    const { fecha, monto, estado, metodoPago, banco, detalle, moneda } = req.body || {};
+    const salary = await financeSalaryService.addPayment(req.params.id, {
+      fecha, monto, estado, metodoPago, banco, detalle, moneda,
+      receipts: req.receipts, createdBy: req.user.id
+    });
+    res.status(201).json({ salary });
+  } catch (error) {
+    console.error('❌ Error al registrar el pago del salario:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar el pago.' });
+  }
+});
+
+/** Los proyectos a los que todavía no se les registró su salario. */
+app.get('/api/finance/salaries/projects', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    res.json({ projects: await financeSalaryService.listProjectsWithoutAgreement() });
+  } catch (error) {
+    console.error('❌ Error al listar los proyectos sin salario:', error);
+    res.status(500).json({ error: 'No se pudieron listar los proyectos.' });
+  }
+});
+
 app.put('/api/finance/salaries/:id', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
     const { persona, cargo, fecha, periodo, monto, moneda, estado, metodoPago, banco, detalle } = req.body || {};
@@ -2585,9 +2636,34 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), req
     // ingreso, que no existía cuando se creó el proyecto unas líneas antes.
     const project = await projectService.getProjectById(created.id);
 
+    /*
+     * El salario que le toca a quien consiguió el lead, si el vendedor lo
+     * escribió en el cierre. Es el momento natural para registrarlo —acaba de
+     * conseguir el lead y conoce el trato— y le evita entrar a Finanzas, que
+     * además exige un permiso que un vendedor no tiene por qué tener.
+     *
+     * NO puede tumbar la venta: si falla, el lead queda ganado, el proyecto
+     * abierto y el salario se carga después desde la pestaña de Salarios. Es
+     * la misma regla que la comisión de la setter y el aviso de proyecto nuevo.
+     */
+    let salary = null;
+    if (Number(req.body?.salaryAmount) > 0) {
+      try {
+        salary = await financeSalaryService.createAgreement({
+          projectId: project.id,
+          monto: req.body.salaryAmount,
+          detalle: `Salario por el proyecto de ${lead.full_name || lead.topic || 'cliente'}`,
+          createdBy: req.user.id
+        });
+      } catch (error) {
+        console.error(`⚠️ [Ventas] No se pudo registrar el salario del proyecto #${project.id}:`, error.message);
+      }
+    }
+
     console.log(`🏆 [Ventas] Lead #${lead.id} ganado · proyecto #${project.id} · ingreso ${initialPayment?.code || 's/n'} (${initialPayment?.estado || 's/n'})` +
-      ` · cronograma de ${schedule.length} cuota(s)` + (hasAmount ? '' : ' · sin pago nuevo: ya estaba registrado'));
-    res.status(201).json({ lead: updatedLead, project, income: initialPayment, schedule });
+      ` · cronograma de ${schedule.length} cuota(s)` + (hasAmount ? '' : ' · sin pago nuevo: ya estaba registrado') +
+      (salary ? ` · salario S/ ${Math.abs(Number(salary.monto)).toFixed(2)} para ${salary.persona}` : ''));
+    res.status(201).json({ lead: updatedLead, project, income: initialPayment, schedule, salary });
   } catch (error) {
     vouchers.forEach((f) => financeLedgerService.discardUploadedFile(f));
     console.error('❌ Error al registrar el cierre de venta:', error);

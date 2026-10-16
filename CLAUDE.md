@@ -325,6 +325,33 @@ antes de tocar el arranque de producción.
   gente sin cuenta en el panel) y la fecha del pago es el dato que ordena la planilla. Cada fila
   tiene `estado` (`pagado`/`pendiente`) y el `monto` se guarda en **negativo** por ser un egreso
   (el formulario lo pide en positivo y `normalize()` le pone el signo).
+  Desde el 16/10/2026 la planilla tiene **dos niveles**, en la MISMA tabla y no en una nueva: el
+  **acuerdo** (`kind: 'acuerdo'`) es cuánto se le paga a quien consiguió el lead por ESE proyecto
+  (`project_id`), y de él cuelgan sus **pagos** (`kind: 'pago'`, `parent_id`, CASCADE). Es la
+  estructura que el equipo ya estaba escribiendo a mano en el campo de texto ("Pago del 40% del
+  usuario Juan Diego"), y comparten persona, moneda, banco y comprobantes, así que partirlos en dos
+  tablas obligaría a duplicar todo eso y a unirlas en cada lectura.
+  **Un acuerdo no es dinero que salió**: es el compromiso, como la comisión de la setter, así que
+  NO se descuenta en `getOverview()` — las cuatro consultas de salarios filtran `kind = 'pago'`, y
+  contar el acuerdo además de sus pagos descontaría dos veces lo mismo. Lo que sí viaja a
+  `totals.pendientes` son los pagos pendientes **más la parte del acuerdo que nadie repartió
+  todavía**: sumar el acuerdo entero duplicaría la porción ya programada, y mirar solo los pagos
+  escondería un acuerdo recién registrado, que es el compromiso más fresco.
+  `kind` es **explícito** y no se deduce de que la fila tenga proyecto o hijos: de él depende qué
+  plata resta en el Resumen, y una regla implícita ahí se rompe sola. El **porcentaje de cada pago
+  no se guarda** (`percentOf()`): se deriva del monto sobre el acuerdo en cada lectura, por lo mismo
+  que `is_locked` de un hito — corregido el acuerdo, un porcentaje guardado seguiría diciendo el
+  viejo. A quién se le paga tampoco se pregunta: sale del **responsable del proyecto**
+  (`resolveProjectOwner()`: el líder y, si todavía no tiene, el responsable comercial del lead —
+  ese segundo paso es el que sostiene el alta desde el cierre, cuando el proyecto se acaba de abrir
+  y nadie le asignó líder). Se escriben las DOS columnas, `user_id` y `persona`, por la misma razón
+  que `leads.assigned_user_id`/`assigned_to`. Un proyecto tiene **un** acuerdo (409 si se repite):
+  dos partirían los pagos en dos cuentas que no suman.
+  Se registra por **dos caminos**: el botón de la pestaña y el campo opcional del modal de cierre
+  (`POST /api/leads/:id/win` con `salaryAmount`), que es el momento en que el vendedor conoce el
+  trato y le evita entrar a Finanzas —que además exige un permiso que no tiene por qué tener—. Ese
+  segundo camino **no puede tumbar la venta**: si falla, el lead queda ganado, el proyecto abierto y
+  el salario se carga después (misma regla que la comisión de la setter).
   **Sí resta en el Resumen Financiero**, desde el 16/10/2026 y por decisión del equipo: lo que sale
   por planilla es plata que sale, y sin ella el Balance Neto en Caja daba de más. Entra solo lo
   `pagado` y solo en soles, el mismo criterio que el resto de `getOverview()` — lo `pendiente` no

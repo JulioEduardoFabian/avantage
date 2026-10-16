@@ -70,7 +70,31 @@
                 required
               />
             </div>
+            <!--
+              El salario que le toca a quien consiguió el lead, por ESTE
+              proyecto. Se pide acá porque es el momento en que se conoce el
+              trato, y así el vendedor no necesita entrar a Finanzas (que
+              además exige un permiso que no tiene por qué tener). Es
+              opcional: si no se sabe todavía, se carga después desde la
+              pestaña de Salarios.
+            -->
+            <div class="form-group">
+              <label class="form-label">Salario por este proyecto (S/)</label>
+              <input
+                v-model="salaryAmount"
+                type="number"
+                step="0.01"
+                min="0"
+                class="form-input win-monto-input"
+                placeholder="Opcional"
+              />
+            </div>
           </div>
+          <p class="win-hint">
+            El salario se le asigna automáticamente al responsable del proyecto y queda como un
+            acuerdo en Salarios, donde después se registran sus pagos. No descuenta del balance
+            hasta que se pague.
+          </p>
           <p v-if="!fullyRegistered" class="win-hint">
             Si el cliente aún no paga el total, registra aquí solo lo que ya pagó y programa
             abajo las cuotas que faltan.
@@ -164,6 +188,7 @@ const EMITIR_OPCIONES = ['factura', 'boleta', 'nrus', 'rxh', 'c. interno'];
 
 const monto = ref('');
 const totalAmount = ref('');
+const salaryAmount = ref('');
 const banco = ref('BCP');
 const emitir = ref('boleta');
 const vouchers = ref([]);
@@ -331,6 +356,7 @@ async function submit() {
     // se registra, y así el servidor no tiene que adivinar si el 0 es un pago.
     if (!covered) fd.append('monto', String(amount));
     fd.append('totalAmount', String(total));
+    if (Number(salaryAmount.value) > 0) fd.append('salaryAmount', String(Number(salaryAmount.value)));
     fd.append('banco', banco.value);
     fd.append('emitir', emitir.value);
     // El cronograma viaja como JSON porque el mismo POST sube los vouchers

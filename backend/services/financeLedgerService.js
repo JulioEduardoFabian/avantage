@@ -1178,6 +1178,10 @@ export class FinanceLedgerService {
       .where('fecha', '<', afterLast)
       .where('moneda', 'soles')
       .where('estado', 'pagado')
+      // Solo los PAGOS: un acuerdo de salario por proyecto es el compromiso
+      // —como la comisión de la setter— y no plata que salió. Contarlo
+      // además de sus pagos sería descontar dos veces lo mismo.
+      .where('kind', 'pago')
       .groupBy('banco', 'month');
 
     /*
@@ -1295,6 +1299,7 @@ export class FinanceLedgerService {
       .select(db.raw('SUM(ABS(monto)) as egreso'))
       .where('moneda', 'soles')
       .where('estado', 'pagado')
+      .where('kind', 'pago')
       .groupBy('banco');
     for (const r of salaryByBank) acumular(r.banco, 0, Number(r.egreso) || 0);
     const egresoSalarios = sumaEgresos - egresoLibro;
@@ -1333,11 +1338,32 @@ export class FinanceLedgerService {
      * media planilla sin pagar es el número que hace tomar la decisión
      * equivocada.
      */
-    const salariosPendientes = await db('finance_salaries')
+    /*
+     * Lo que se debe de la planilla, sin contar dos veces lo mismo: los pagos
+     * pendientes MÁS la parte de cada acuerdo de salario que todavía no se
+     * repartió en pagos. Sumar el acuerdo entero junto a sus pagos
+     * pendientes duplicaría la porción ya programada, y mirar solo los pagos
+     * escondería un acuerdo recién registrado del que nadie programó nada —
+     * que es justo el compromiso más fresco.
+     */
+    const pagosPendientes = await db('finance_salaries')
       .select(db.raw('SUM(ABS(monto)) as total'))
       .where('moneda', 'soles')
       .where('estado', 'pendiente')
+      .where('kind', 'pago')
       .first();
+
+    const acuerdos = await db('finance_salaries as acuerdo')
+      .select('acuerdo.id', 'acuerdo.monto')
+      .select(db.raw('COALESCE((SELECT SUM(ABS(hijo.monto)) FROM finance_salaries hijo WHERE hijo.parent_id = acuerdo.id), 0) as repartido'))
+      .where('acuerdo.kind', 'acuerdo')
+      .where('acuerdo.moneda', 'soles');
+    const sinRepartir = acuerdos.reduce((suma, fila) => {
+      const resto = Math.abs(Number(fila.monto) || 0) - (Number(fila.repartido) || 0);
+      return suma + Math.max(0, resto);
+    }, 0);
+
+    const salariosPendientes = { total: (Number(pagosPendientes?.total) || 0) + sinRepartir };
     const comisionesPendientes = await db('sales_commissions')
       .select(db.raw('SUM(ABS(monto)) as total'))
       .where('estado', 'pendiente')
@@ -1362,6 +1388,7 @@ export class FinanceLedgerService {
     const [salaryCount] = await db('finance_salaries')
       .where('moneda', 'soles')
       .where('estado', 'pagado')
+      .where('kind', 'pago')
       .count('id as cnt');
     const [commissionCount] = await db('sales_commissions')
       .where('estado', 'pagado')
@@ -1402,6 +1429,7 @@ export class FinanceLedgerService {
       .select('id', 'persona', 'cargo', 'fecha', 'monto', 'banco', 'periodo')
       .where('moneda', 'soles')
       .where('estado', 'pagado')
+      .where('kind', 'pago')
       .orderBy('fecha', 'desc')
       .orderBy('id', 'desc')
       .limit(8);
