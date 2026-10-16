@@ -264,7 +264,18 @@
                 <span v-if="cameFromForm(lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
                 {{ getLeadFullName(lead) }}
               </h4>
-              <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+              <!-- La fecha de registro comparte renglón con el celular: una
+                   línea más rompería el alto fijo con el que entran cinco
+                   tarjetas por columna. Se escribe igual que en el Setter
+                   Funnel (`leadCardDate.js`): es la misma tarjeta del mismo
+                   lead, y con una copia por pantalla el mismo lead terminaría
+                   diciendo dos fechas distintas. -->
+              <span class="card-lead-meta">
+                <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+                <span class="card-lead-date" :title="`Registrado: ${formatLeadDate(lead.created_at)}`">
+                  🗓 {{ formatCardDate(lead.created_at) }}
+                </span>
+              </span>
 
               <!-- Responsable comercial: el círculo va en la franja reservada
                    a la derecha, sin sumar una línea, para no romper el alto
@@ -1170,6 +1181,7 @@ import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import DuplicateLeadsModal from '../components/DuplicateLeadsModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { formatCardDate, formatLeadDate } from '../leadCardDate.js';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
 import { DEFAULT_SETTER_COLUMNS, loadSetterColumns } from '../setterFunnelColumns.js';
@@ -3400,11 +3412,31 @@ onMounted(() => {
   cursor: help;
 }
 
+/* El celular y la fecha, en un solo renglón: la tarjeta tiene alto fijo. */
+.card-lead-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .card-lead-phone {
   font-family: var(--font-mono);
   font-size: 0.73rem;
   color: var(--text-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* La fecha no se encoge: es corta y, si falta espacio, lo que se recorta es
+   el celular, que se reconoce igual por sus últimos dígitos. */
+.card-lead-date {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 

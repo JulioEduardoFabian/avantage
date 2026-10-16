@@ -403,7 +403,15 @@ antes de tocar el arranque de producción.
   Asignar **no mueve el funnel**: no pasa por `updateLeadStatus()` ni deja nada en
   `lead_stage_changes`. La tarjeta tiene alto fijo (`--lead-card-h`, calibrado para que entren
   cinco/diez por columna sin scroll), así que el círculo va en una franja reservada a la derecha y
-  el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado.
+  el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado. Por lo mismo, la
+  **fecha de registro comparte renglón con el celular** en los dos tableros en vez de sumar una
+  línea, y cuando falta espacio lo que se recorta es el celular —se reconoce por sus últimos
+  dígitos— y no la fecha. Cómo se escribe vive en `src/leadCardDate.js` y no en cada vista: es la
+  misma tarjeta del mismo lead, y con una copia por pantalla el mismo lead terminaría diciendo dos
+  fechas distintas según desde dónde se lo mire. El año sale solo si no es el actual (en 52 px cada
+  carácter compite con el nombre) y la fecha completa con la hora queda en el `title` y en la ficha;
+  `limaDay()` está ahí también porque de él cuelgan los filtros "Registrado: desde / hasta", y con
+  el huso del navegador un lead de las 23:00 cae en otro día.
 - **Una persona es un lead, no uno por cada formulario que llena.** Los tres caminos que crean leads
   desde afuera cruzan primero por teléfono (`findByPhone`, por los últimos 9 dígitos) y cuelgan lo
   nuevo de la ficha que ya existe: el webhook de Meta (`attachMetaLeadToExisting`), el primer

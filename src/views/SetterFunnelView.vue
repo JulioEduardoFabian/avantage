@@ -1033,6 +1033,7 @@ import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { formatCardDate, formatLeadDate as formatDate, limaDay } from '../leadCardDate.js';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
@@ -1168,18 +1169,6 @@ const assigneeOptions = computed(() => {
 const unassignedCount = computed(
   () => setterFunnelLeads.value.filter((lead) => leadPeople(lead).length === 0).length
 );
-
-/**
- * El día de calendario de Lima en que se registró el lead (`YYYY-MM-DD`), que
- * es como lo escribe el `<input type="date">`. Con el huso del navegador, un
- * lead de las 23:00 caería en el día siguiente para una laptop en otra zona.
- */
-function limaDay(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
-}
 
 // Paginación por Columna
 const columnPages = reactive({});
@@ -2149,35 +2138,7 @@ function getLevelClass(level) {
   return 'viability-unknown';
 }
 
-function formatDate(dateStr) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('es-PE', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
 
-/**
- * La fecha de registro en la tarjeta: día y mes, y el año solo si no es el
- * actual. La hora completa queda en el `title` y en la ficha.
- */
-function formatCardDate(dateStr) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '—';
-  const sameYear = limaDay(dateStr).slice(0, 4) === limaDay(new Date()).slice(0, 4);
-  return d.toLocaleDateString('es-PE', {
-    timeZone: 'America/Lima',
-    day: '2-digit',
-    month: 'short',
-    ...(sameYear ? {} : { year: '2-digit' })
-  });
-}
 
 function toggleBotChat() {
   showBotChat.value = !showBotChat.value;
