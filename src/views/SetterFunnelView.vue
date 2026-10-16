@@ -776,7 +776,16 @@
           <div class="lead-modal-title-group">
             <span class="lead-modal-id">#{{ selectedLead.id }}</span>
             <div>
-              <h3 class="lead-modal-name">{{ getLeadFullName(selectedLead) }}</h3>
+              <h3 class="lead-modal-name">
+                {{ getLeadFullName(selectedLead) }}
+                <!-- Los datos del lead se corrigen acá mismo: es la ficha que el
+                     setter tiene abierta mientras habla con la persona, y
+                     mandarlo a otra pantalla a arreglar un nombre o un correo es
+                     como se termina trabajando con el dato viejo. -->
+                <button v-if="!leadEdit" type="button" class="lead-edit-btn" title="Editar los datos del lead" @click="startLeadEdit">
+                  ✏️ Editar datos
+                </button>
+              </h3>
               <p class="lead-modal-subtext">
                 Canal: <strong :class="getLeadChannelInfo(selectedLead).cssClass">{{ getLeadChannelInfo(selectedLead).icon }} {{ selectedLead.source || getLeadChannelInfo(selectedLead).label }}</strong>
                 <!-- Quién lo cargó a mano: el responsable comercial que figura
@@ -860,8 +869,66 @@
             </div>
           </div>
 
+          <!-- Edición de los datos del lead -->
+          <form v-if="leadEdit" class="lead-edit-form" @submit.prevent="saveLeadEdit">
+            <div class="lead-edit-grid">
+              <label class="lead-edit-field">
+                <span>Nombre completo</span>
+                <input v-model="leadEdit.fullName" type="text" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>DNI</span>
+                <input v-model="leadEdit.dni" type="text" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Correo</span>
+                <input v-model="leadEdit.email" type="email" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Celular</span>
+                <input v-model="leadEdit.phone" type="text" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Universidad</span>
+                <input v-model="leadEdit.university" type="text" class="form-input custom-input" placeholder="Ej: Universidad Continental" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Nivel académico</span>
+                <select v-model="leadEdit.academicLevel" class="form-select custom-select">
+                  <option v-for="level in ACADEMIC_LEVELS" :key="level" :value="level">{{ level }}</option>
+                </select>
+              </label>
+              <label class="lead-edit-field lead-edit-field--wide">
+                <span>Carrera / especialidad</span>
+                <select v-model="leadEdit.fieldOfStudy" class="form-select custom-select">
+                  <optgroup v-for="group in careerGroupsWith(leadEdit.fieldOfStudy)" :key="group.label" :label="group.label">
+                    <option v-for="career in group.careers" :key="career" :value="career">{{ career }}</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label class="lead-edit-field lead-edit-field--wide">
+                <span>Tema de tesis</span>
+                <input v-model="leadEdit.topic" type="text" class="form-input custom-input" />
+              </label>
+            </div>
+            <p v-if="leadEditError" class="lead-edit-error">{{ leadEditError }}</p>
+            <LeadDuplicateAlert
+              :duplicates="editDupLeads"
+              :checking="editDupChecking"
+              :openable-ids="openableDupIds"
+              mode="edit"
+              @open="openDuplicateLead"
+            />
+            <div class="lead-edit-actions">
+              <button type="button" class="btn-action-ghost" @click="cancelLeadEdit">Cancelar</button>
+              <button type="submit" class="btn-action-primary" :disabled="leadEditSaving || hasEditDupLeads">
+                {{ leadEditSaving ? 'Guardando…' : hasEditDupLeads ? 'Dato repetido' : 'Guardar datos' }}
+              </button>
+            </div>
+          </form>
+
           <!-- Grid de Datos del Lead -->
-          <div class="lead-details-grid">
+          <div v-else class="lead-details-grid">
             <div class="detail-item">
               <span class="detail-label">🙋 Responsable comercial:</span>
               <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
@@ -956,7 +1023,8 @@ import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
-import { useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
+import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
+import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
@@ -993,6 +1061,12 @@ const leads = ref([]);
 // 'all' = se ven todos (administrador comercial); 'mine' = solo los propios.
 const leadScope = ref('all');
 const selectedLead = ref(null);
+// Copia editable de los datos del lead abierto (null = la ficha se está leyendo,
+// no editando).
+const leadEdit = ref(null);
+const leadEditSaving = ref(false);
+const leadEditError = ref('');
+const ACADEMIC_LEVELS = ['Pregrado (Bachiller/Título)', 'Posgrado (Maestría)', 'Posgrado (Doctorado)'];
 const meetingLead = ref(null);
 const showMeetingModal = ref(false);
 const meetingNotice = ref('');
@@ -1721,7 +1795,101 @@ function openDuplicateLead(dup) {
   const lead = leads.value.find((l) => l.id === dup.id);
   if (!lead) return;
   showCreateLeadModal.value = false;
+  cancelLeadEdit();
   selectedLead.value = lead;
+}
+
+/*
+ * ── Edición de los datos del lead desde su propia ficha ──
+ * Mismo formulario y mismas reglas que en el Funnel de Ventas: el dato se
+ * corrige donde se está mirando. La comprobación de duplicados es una instancia
+ * APARTE de la del alta manual: los dos formularios pueden estar abiertos en la
+ * misma pantalla, y compartir el estado haría que el aviso de uno bloqueara el
+ * botón del otro.
+ */
+const {
+  duplicates: editDupLeads,
+  checking: editDupChecking,
+  hasDuplicates: hasEditDupLeads,
+  schedule: scheduleEditDupCheck,
+  checkNow: checkEditDupNow,
+  setDuplicates: setEditDupLeads,
+  reset: resetEditDupCheck
+} = useLeadDuplicateCheck();
+
+watch(() => [leadEdit.value?.phone, leadEdit.value?.dni], () => {
+  if (!leadEdit.value) return;
+  scheduleEditDupCheck({ ...editDupPayload(), excludeId: selectedLead.value?.id });
+});
+
+/* Solo lo que cambió respecto de lo guardado: una ficha que ya tenía un gemelo
+   de antes no puede quedar con su propio formulario bloqueado. */
+function editDupPayload() {
+  return changedIdentityFields(leadEdit.value, selectedLead.value);
+}
+
+/** Copia editable de los datos del lead: cancelar no debe tocar el tablero. */
+function startLeadEdit() {
+  const lead = selectedLead.value;
+  if (!lead) return;
+  leadEditError.value = '';
+  resetEditDupCheck();
+  leadEdit.value = {
+    fullName: lead.full_name || '',
+    dni: lead.dni || '',
+    email: lead.email || '',
+    phone: lead.phone || '',
+    university: lead.university || '',
+    academicLevel: lead.academic_level || ACADEMIC_LEVELS[0],
+    fieldOfStudy: lead.field_of_study || DEFAULT_CAREER,
+    topic: lead.topic || ''
+  };
+}
+
+function cancelLeadEdit() {
+  leadEdit.value = null;
+  leadEditError.value = '';
+  resetEditDupCheck();
+}
+
+async function saveLeadEdit() {
+  leadEditError.value = '';
+  // Sin esperar el retardo del tipeo: el dato pudo escribirse y guardarse en el
+  // mismo segundo, y el aviso tiene que estar antes de mandar el guardado.
+  const repetidos = await checkEditDupNow({ ...editDupPayload(), excludeId: selectedLead.value?.id });
+  if (repetidos.length) {
+    leadEditError.value = 'Ese celular o ese DNI ya son de otra ficha.';
+    return;
+  }
+  leadEditSaving.value = true;
+  try {
+    const response = await apiFetch(`/api/leads/${selectedLead.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(leadEdit.value)
+    });
+    const data = await response.json();
+    if (response.status === 409) {
+      // El servidor manda: la comprobación de mientras se escribía pudo quedar
+      // vieja (otra persona cargó ese contacto entre medio).
+      setEditDupLeads(data.duplicates || []);
+      leadEditError.value = data.error || 'Ese dato ya es de otra ficha.';
+      return;
+    }
+    if (!response.ok) throw new Error(data.error || 'No se pudo guardar los datos.');
+
+    // El lead abierto y el del tablero son objetos distintos: se actualizan los
+    // dos para que la tarjeta muestre el nombre nuevo sin recargar.
+    Object.assign(selectedLead.value, data.lead);
+    const inBoard = leads.value.find((l) => l.id === data.lead.id);
+    if (inBoard) Object.assign(inBoard, data.lead);
+    leadEdit.value = null;
+    resetEditDupCheck();
+  } catch (err) {
+    leadEditError.value = err.message;
+  } finally {
+    leadEditSaving.value = false;
+  }
 }
 
 // Modal Nuevo Lead manual
@@ -1953,6 +2121,8 @@ function toggleBotChat() {
 // limpiar —hilo, adjuntos, sondeo— lo desmonta `LeadConversation` solo.
 watch(selectedLead, () => {
   showBotChat.value = false;
+  // Abrir otra ficha no puede arrastrar el formulario de la anterior.
+  cancelLeadEdit();
 });
 
 onMounted(() => {
@@ -1966,6 +2136,62 @@ onMounted(() => {
 </script>
 
 <style scoped>
+
+/* ── Edición de los datos del lead (dentro de su ficha) ── */
+.lead-edit-btn {
+  margin-left: 0.6rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-2);
+  color: var(--text-sub);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.lead-edit-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+.lead-edit-form {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--surface-1);
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.lead-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+}
+
+.lead-edit-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.lead-edit-field--wide { grid-column: 1 / -1; }
+
+.lead-edit-field > span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.lead-edit-error {
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--accent-rose);
+}
+
+.lead-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .lead-edit-grid { grid-template-columns: 1fr; }
+}
 /* Contenedor Principal de la Página */
 .kanban-page-wrapper {
   padding: var(--page-py) var(--page-px) var(--page-pb);
