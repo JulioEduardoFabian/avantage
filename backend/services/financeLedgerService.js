@@ -1047,11 +1047,21 @@ export class FinanceLedgerService {
    * por banco (BCP, Interbank, Efectivo).
    *
    *  - Ingresos = `finance_income` + asientos positivos del libro diario (en soles).
-   *  - Egresos  = asientos negativos del libro diario (en soles, en valor absoluto).
+   *  - Egresos  = asientos negativos del libro diario + **salarios pagados**
+   *               + **comisiones pagadas** (en soles, en valor absoluto).
    *
-   * Solo cuenta el dinero confirmado: los ingresos verificados por finanzas y
-   * los asientos del libro diario ya pagados. Lo pendiente (o pagado pero sin
-   * verificar) todavía no es dinero en caja y falsearía el balance.
+   * Salarios y comisiones nacieron fuera de la contabilidad (ver la cabecera de
+   * `finance_salaries` y de `sales_commissions`) y por eso no entraban acá,
+   * pero son plata que sale: sin ellos el Balance Neto en Caja daba de más —
+   * todo lo cobrado menos los gastos del libro, sin la planilla ni lo que se le
+   * paga al equipo por vender. `totals.egresosPorOrigen` devuelve el desglose,
+   * porque el total ahora mezcla tres pestañas distintas.
+   *
+   * Solo cuenta el dinero confirmado: los ingresos verificados por finanzas,
+   * los asientos del libro ya pagados y los salarios/comisiones ya pagados. Lo
+   * pendiente (o pagado pero sin verificar) todavía no es dinero en caja y
+   * falsearía el balance; lo devengado y sin pagar viaja aparte en
+   * `totals.pendientes` para poder mostrarlo como obligación.
    *
    * La ventana de meses es del GRÁFICO (la evolución mensual) y nada más. El
    * saldo de cada cuenta y los totales se calculan sobre TODO el dinero
@@ -1099,8 +1109,64 @@ export class FinanceLedgerService {
       .where('estado', 'pagado')
       .groupBy('banco', 'month');
 
+    /*
+     * Salarios y comisiones PAGADOS: son plata que salió de la empresa, así
+     * que desde ahora restan en el resumen. Hasta acá los dos módulos vivían
+     * fuera de la contabilidad (ver la cabecera de `finance_salaries` y de
+     * `sales_commissions`) y el Balance Neto en Caja daba de más: mostraba lo
+     * cobrado menos los gastos del libro diario, sin la planilla ni lo que se
+     * le paga al equipo por vender.
+     *
+     * Solo lo PAGADO entra, igual que todo lo demás en esta pantalla: lo
+     * pendiente no salió de ninguna cuenta y falsearía el saldo. Se devuelve
+     * aparte (`totals.pendientes`) para poder mostrarlo como obligación.
+     *
+     * Las comisiones no se descuentan dos veces: acá se pagan por fuera de la
+     * planilla, así que no hay una fila de `finance_salaries` que repita ese
+     * mismo egreso. Si algún día se empiezan a anotar en Salarios, ESTE es el
+     * lugar donde hay que dejar de sumarlas.
+     *
+     * `moneda` se filtra a soles como en el libro diario — el resumen entero
+     * está en soles—, y el monto va en valor absoluto porque la planilla
+     * guarda los egresos en negativo.
+     */
+    const salaryRows = await db('finance_salaries')
+      .select('banco')
+      .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('fecha', '>=', earliest)
+      .where('fecha', '<', afterLast)
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .groupBy('banco', 'month');
+
+    /*
+     * La fecha del egreso de una comisión es `paid_at` (el día en que se le
+     * pagó) y no `created_at` (el día en que se devengó): una comisión de una
+     * venta de agosto que se paga en octubre salió de caja en octubre. Sin
+     * `paid_at` no hay mes al que asignarla, así que esa fila no entra en la
+     * evolución mensual aunque sí en el total.
+     */
+    const commissionRows = await db('sales_commissions')
+      .select(db.raw("DATE_FORMAT(paid_at, '%Y-%m') as month"))
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('estado', 'pagado')
+      .whereNotNull('paid_at')
+      .where('paid_at', '>=', earliest)
+      .where('paid_at', '<', afterLast)
+      .groupBy('month');
+
+    /*
+     * Una comisión no tiene cuenta bancaria y un salario puede no tenerla, y
+     * la grilla mensual está indexada por cuenta: sin este cajón, ese dinero
+     * se caía del gráfico en silencio (es la misma razón por la que el TOTAL
+     * cuenta lo que no tiene banco asignado). No entra en `banks` ni en las
+     * tarjetas por cuenta, que reparten solo lo que sí cayó en una conocida.
+     */
+    const SIN_CUENTA = 'Sin cuenta';
+    const seriesKeys = [...BANCOS, SIN_CUENTA];
     const emptyGrid = () => Object.fromEntries(
-      BANCOS.map((b) => [b, Object.fromEntries(monthKeys.map((m) => [m, 0]))])
+      seriesKeys.map((b) => [b, Object.fromEntries(monthKeys.map((m) => [m, 0]))])
     );
     const ingresos = emptyGrid();
     const egresos = emptyGrid();
@@ -1118,8 +1184,21 @@ export class FinanceLedgerService {
         egresos[r.banco][r.month] += Number(r.egreso) || 0;
       }
     }
+    /** La cuenta de la fila, o el cajón de lo que no cayó en ninguna conocida. */
+    const cuentaDe = (banco) => (banco && egresos[banco] ? banco : SIN_CUENTA);
+    for (const r of salaryRows) {
+      const cuenta = cuentaDe(r.banco);
+      if (egresos[cuenta]?.[r.month] !== undefined) {
+        egresos[cuenta][r.month] += Number(r.egreso) || 0;
+      }
+    }
+    for (const r of commissionRows) {
+      if (egresos[SIN_CUENTA]?.[r.month] !== undefined) {
+        egresos[SIN_CUENTA][r.month] += Number(r.egreso) || 0;
+      }
+    }
 
-    const toSeries = (grid) => BANCOS.map((banco) => ({
+    const toSeries = (grid) => seriesKeys.map((banco) => ({
       banco,
       values: monthKeys.map((m) => Math.round(grid[banco][m] * 100) / 100)
     }));
@@ -1158,9 +1237,52 @@ export class FinanceLedgerService {
       acumular(r.banco, Number(r.ingreso) || 0, Number(r.egreso) || 0);
     }
 
+    // El egreso del libro, apartado antes de sumarle la planilla y las
+    // comisiones: el desglose de la tarjeta de Egresos sale de acá, y sin
+    // separarlo no habría forma de ver de dónde viene cada parte del total.
+    const egresoLibro = sumaEgresos;
+
+    // Un salario pagado desde BCP es plata que salió de BCP: resta también en
+    // la tarjeta de esa cuenta, no solo en el total.
+    const salaryByBank = await db('finance_salaries')
+      .select('banco')
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .groupBy('banco');
+    for (const r of salaryByBank) acumular(r.banco, 0, Number(r.egreso) || 0);
+    const egresoSalarios = sumaEgresos - egresoLibro;
+
+    // Las comisiones no tienen cuenta: restan del total, no de una tarjeta.
+    const comisionesPagadas = await db('sales_commissions')
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('estado', 'pagado')
+      .first();
+    const egresoComisiones = Number(comisionesPagadas?.egreso) || 0;
+    acumular(null, 0, egresoComisiones);
+
+    /*
+     * Lo que se debe y todavía no salió. NO toca el balance —esta pantalla
+     * cuenta dinero confirmado y un salario pendiente sigue en la cuenta—,
+     * pero se devuelve para poder mostrarlo al lado: un balance en verde con
+     * media planilla sin pagar es el número que hace tomar la decisión
+     * equivocada.
+     */
+    const salariosPendientes = await db('finance_salaries')
+      .select(db.raw('SUM(ABS(monto)) as total'))
+      .where('moneda', 'soles')
+      .where('estado', 'pendiente')
+      .first();
+    const comisionesPendientes = await db('sales_commissions')
+      .select(db.raw('SUM(ABS(monto)) as total'))
+      .where('estado', 'pendiente')
+      .first();
+
     const redondear = (n) => Math.round(n * 100) / 100;
     const totalIngresos = redondear(sumaIngresos);
     const totalEgresos = redondear(sumaEgresos);
+    const pendienteSalarios = redondear(Number(salariosPendientes?.total) || 0);
+    const pendienteComisiones = redondear(Number(comisionesPendientes?.total) || 0);
 
     // Se cuenta el mismo universo que suman los totales (todo lo confirmado):
     // un conteo con otra ventana es justo la clase de cifra que no cuadra con
@@ -1172,7 +1294,17 @@ export class FinanceLedgerService {
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .count('id as cnt');
-    const totalTransactions = (Number(incomeCount?.cnt) || 0) + (Number(journalCount?.cnt) || 0);
+    const [salaryCount] = await db('finance_salaries')
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .count('id as cnt');
+    const [commissionCount] = await db('sales_commissions')
+      .where('estado', 'pagado')
+      .count('id as cnt');
+    const totalTransactions = (Number(incomeCount?.cnt) || 0)
+      + (Number(journalCount?.cnt) || 0)
+      + (Number(salaryCount?.cnt) || 0)
+      + (Number(commissionCount?.cnt) || 0);
 
     const recentIncome = await db('finance_income')
       .leftJoin('leads', 'leads.id', 'finance_income.lead_id')
@@ -1195,6 +1327,25 @@ export class FinanceLedgerService {
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .orderBy('fecha', 'desc')
+      .orderBy('id', 'desc')
+      .limit(8);
+
+    // Los dos entran también en "últimos movimientos": un egreso que mueve el
+    // balance y no aparece en la lista de al lado obliga a buscarlo de pestaña
+    // en pestaña para entender por qué bajó el saldo.
+    const recentSalaries = await db('finance_salaries')
+      .select('id', 'persona', 'cargo', 'fecha', 'monto', 'banco', 'periodo')
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .orderBy('fecha', 'desc')
+      .orderBy('id', 'desc')
+      .limit(8);
+
+    const recentCommissions = await db('sales_commissions')
+      .select('id', 'beneficiary_name', 'paid_at', 'monto', 'role', 'percent')
+      .where('estado', 'pagado')
+      .whereNotNull('paid_at')
+      .orderBy('paid_at', 'desc')
       .orderBy('id', 'desc')
       .limit(8);
 
@@ -1223,7 +1374,29 @@ export class FinanceLedgerService {
           type: num >= 0 ? 'in' : 'out',
           source: 'journal'
         };
-      })
+      }),
+      ...recentSalaries.map((r) => ({
+        id: `sal-${r.id}`,
+        code: null,
+        fecha: r.fecha,
+        title: r.persona,
+        subtitle: [r.cargo, r.periodo].filter(Boolean).join(' · ') || 'Salario',
+        banco: r.banco,
+        amount: Math.abs(Number(r.monto) || 0),
+        type: 'out',
+        source: 'salary'
+      })),
+      ...recentCommissions.map((r) => ({
+        id: `com-${r.id}`,
+        code: null,
+        fecha: r.paid_at,
+        title: r.beneficiary_name,
+        subtitle: `Comisión ${r.role} (${Number(r.percent) || 0}%)`,
+        banco: null,
+        amount: Math.abs(Number(r.monto) || 0),
+        type: 'out',
+        source: 'commission'
+      }))
     ]
       .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
       .slice(0, 8);
@@ -1237,6 +1410,22 @@ export class FinanceLedgerService {
         ingresos: totalIngresos,
         egresos: totalEgresos,
         balance: redondear(totalIngresos - totalEgresos),
+        // De dónde sale el total de egresos. Va desglosado y no solo sumado
+        // porque es un número que ahora mezcla tres orígenes que se manejan en
+        // tres pestañas distintas: sin el desglose, "¿por qué subió?" solo se
+        // contesta revisando las tres a mano.
+        egresosPorOrigen: {
+          libro: redondear(egresoLibro),
+          salarios: redondear(egresoSalarios),
+          comisiones: redondear(egresoComisiones)
+        },
+        // Devengado y sin pagar: no entra en el balance (no salió de ninguna
+        // cuenta), pero se muestra al lado.
+        pendientes: {
+          salarios: pendienteSalarios,
+          comisiones: pendienteComisiones,
+          total: redondear(pendienteSalarios + pendienteComisiones)
+        },
         totalTransactions,
         byBank: BANCOS.map((banco) => ({
           banco,

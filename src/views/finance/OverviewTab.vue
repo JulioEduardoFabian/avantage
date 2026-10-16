@@ -5,8 +5,9 @@
       <div class="ov-title-group">
         <h2 class="ov-title">Visión General de Tesorería</h2>
         <p class="ov-subtitle">
-          Consolidado en tiempo real de ingresos confirmados y asientos del libro diario en soles.
-          Los saldos son de todas las cuentas; el rango de meses solo recorta la gráfica de evolución.
+          Consolidado en tiempo real, en soles: ingresos verificados menos asientos del libro diario,
+          salarios y comisiones ya pagados. Los saldos son de todas las cuentas; el rango de meses
+          solo recorta la gráfica de evolución.
         </p>
       </div>
 
@@ -68,8 +69,17 @@
         <div class="kpi-card-value">
           <span class="kpi-cur">S/</span> {{ fmt(data.totals.egresos) }}
         </div>
+        <!--
+          Desglosado y no solo sumado: este total mezcla tres pestañas (libro
+          diario, Salarios y Comisiones), así que sin el desglose "¿por qué
+          subió?" solo se contesta revisando las tres a mano.
+        -->
         <div class="kpi-card-footer">
-          <span class="kpi-hint">Pagos operativos y gastos acumulados</span>
+          <span class="kpi-breakdown">
+            <span>Libro <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.libro) }}</b></span>
+            <span>Salarios <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.salarios) }}</b></span>
+            <span>Comisiones <b>S/ {{ fmtShort(data.totals.egresosPorOrigen.comisiones) }}</b></span>
+          </span>
         </div>
       </div>
 
@@ -108,9 +118,30 @@
           <span class="kpi-unit">movs</span>
         </div>
         <div class="kpi-card-footer">
-          <span class="kpi-hint">Operaciones confirmadas en libro</span>
+          <span class="kpi-hint">Cobros, asientos, salarios y comisiones</span>
         </div>
       </div>
+    </section>
+
+    <!--
+      Lo devengado y sin pagar. Va en una banda aparte y NO descontado del
+      balance, porque esta pantalla cuenta dinero confirmado y un salario
+      pendiente sigue en la cuenta. Pero tiene que estar a la vista: un balance
+      en verde con media planilla sin pagar es el número que hace tomar la
+      decisión equivocada. Solo aparece si hay algo pendiente.
+    -->
+    <section v-if="data.totals.pendientes.total > 0" class="ov-pending-band">
+      <span class="ov-pending-label">⏳ Por pagar</span>
+      <span v-if="data.totals.pendientes.salarios" class="ov-pending-item">
+        Salarios <b>S/ {{ fmt(data.totals.pendientes.salarios) }}</b>
+      </span>
+      <span v-if="data.totals.pendientes.comisiones" class="ov-pending-item">
+        Comisiones <b>S/ {{ fmt(data.totals.pendientes.comisiones) }}</b>
+      </span>
+      <span class="ov-pending-total">
+        Total <b>S/ {{ fmt(data.totals.pendientes.total) }}</b>
+      </span>
+      <span class="ov-pending-note">No está descontado del balance: todavía no salió de ninguna cuenta.</span>
     </section>
 
     <!-- Loading / Empty states -->
@@ -499,18 +530,22 @@
                   </div>
                   <div class="tx-info">
                     <span class="tx-title" :title="tx.title">{{ tx.title }}</span>
-                    <span class="tx-sub">{{ tx.subtitle }} · {{ tx.code }}</span>
+                    <!-- Un salario y una comisión no tienen código: sin esto la
+                         fila terminaba en un " · " suelto. -->
+                    <span class="tx-sub">{{ tx.subtitle }}<template v-if="tx.code"> · {{ tx.code }}</template></span>
                   </div>
                 </td>
                 <td class="tx-date-cell">
                   {{ formatTxDate(tx.fecha) }}
                 </td>
                 <td class="tx-bank-cell">
+                  <!-- Una comisión no sale de una cuenta del panel: se dice,
+                       en vez de dejar la celda con una píldora vacía. -->
                   <span
                     class="bank-badge-pill"
                     :class="`badge-bank-${bankSlug(tx.banco)}`"
                   >
-                    {{ tx.banco }}
+                    {{ tx.banco || 'Sin cuenta' }}
                   </span>
                 </td>
                 <td
@@ -671,6 +706,11 @@ const data = ref({
     ingresos: 0,
     egresos: 0,
     balance: 0,
+    // Mismos nombres y misma forma que devuelve `getOverview()`: la plantilla
+    // los lee antes de la primera respuesta, y un `undefined` acá se ve como
+    // una tarjeta vacía en la primera pintada.
+    egresosPorOrigen: { libro: 0, salarios: 0, comisiones: 0 },
+    pendientes: { salarios: 0, comisiones: 0, total: 0 },
     totalTransactions: 0,
     byBank: BANCOS.map((banco) => ({ banco, ingresos: 0, egresos: 0 }))
   },
@@ -1177,6 +1217,43 @@ onMounted(fetchOverview);
   font-size: 0.72rem;
   color: var(--text-muted);
 }
+
+/* Desglose del total de egresos, dentro de su tarjeta. */
+.kpi-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.6rem;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.kpi-breakdown b { color: var(--text-sub); font-weight: 600; }
+
+/*
+ * Banda de lo pendiente. Ámbar como los egresos, pero en una banda y no en una
+ * tarjeta: no es parte del balance y no tiene que competir con las cuatro
+ * cifras que sí lo son.
+ */
+.ov-pending-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  margin-top: 1rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 0.78rem;
+  color: var(--text-sub);
+}
+
+.ov-pending-label { font-weight: 700; color: #B45309; }
+.ov-pending-item b, .ov-pending-total b { font-weight: 700; color: var(--text-main); }
+.ov-pending-total { padding-left: 0.2rem; border-left: 1px solid rgba(245, 158, 11, 0.35); }
+.ov-pending-note { font-size: 0.72rem; color: var(--text-muted); margin-left: auto; }
+
+:root[data-theme="dark"] .ov-pending-label { color: #FBBF24; }
 
 .text-positive { color: #10B981; }
 .text-negative { color: #EF4444; }

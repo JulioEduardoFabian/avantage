@@ -277,12 +277,16 @@ antes de tocar el arranque de producción.
   que es lo que la mantiene indistinguible de una píldora de solo lectura. La misma pareja la usa
   la pestaña de Salarios.
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
-  registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
-  `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los
-  totales ni en el flujo de caja de `getOverview()`. Guarda la persona como texto libre (se paga a
+  registro de pagos al personal **sin llaves hacia la contabilidad**: no se relaciona con
+  `finance_income` ni con `finance_journal`. Guarda la persona como texto libre (se paga a
   gente sin cuenta en el panel) y la fecha del pago es el dato que ordena la planilla. Cada fila
   tiene `estado` (`pagado`/`pendiente`) y el `monto` se guarda en **negativo** por ser un egreso
   (el formulario lo pide en positivo y `normalize()` le pone el signo).
+  **Sí resta en el Resumen Financiero**, desde el 16/10/2026 y por decisión del equipo: lo que sale
+  por planilla es plata que sale, y sin ella el Balance Neto en Caja daba de más. Entra solo lo
+  `pagado` y solo en soles, el mismo criterio que el resto de `getOverview()` — lo `pendiente` no
+  salió de ninguna cuenta y viaja aparte en `totals.pendientes`. La tabla sigue sin llaves hacia la
+  contabilidad: lo que se agregó es una **lectura** en `getOverview()`, no una relación.
 - Los **documentos de marca** (cotización, contrato, comprobante de pago) comparten paleta, logo e
   iconos desde `quotationDocument.js`: si cambia la marca, cambian los tres juntos. El comprobante
   tiene además una versión **PDF** (`paymentReceiptPdf.js`, dibujada con `pdf-lib` en JavaScript
@@ -753,9 +757,14 @@ antes de tocar el arranque de producción.
   volver a cerrar no paga dos veces. La etapa ganadora se pregunta con `loadWinningStatuses()`
   (`ganado` + la columna marcada `final`), no comparando contra una constante: el que renombra la
   columna no sabe que de eso cuelga la comisión. El porcentaje y la base se guardan en cada fila:
-  cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago — cuando se le abone,
-  ese egreso se registra en Salarios, y por eso las comisiones no entran en `finance_journal` ni en
-  los totales de Finanzas.
+  cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago, y sigue sin entrar en
+  `finance_journal`.
+  En el **Resumen Financiero sí resta**, desde el 16/10/2026: la comisión `pagada` cuenta como
+  egreso (fechada en `paid_at`, el día en que salió, no en el que se devengó) y la `pendiente` va
+  aparte en `totals.pendientes`, sin tocar el balance. **No se descuenta dos veces** porque acá las
+  comisiones se pagan por fuera de la planilla, así que no hay una fila de `finance_salaries` que
+  repita ese mismo egreso — si algún día se empiezan a anotar en Salarios, el único lugar donde hay
+  que dejar de sumarlas es `getOverview()`, donde está dicho en un comentario.
 - La **bandeja de WhatsApp** (`/api/whatsapp/conversations`) está **paginada**: devolvía las 100 más
   recientes y el resto no existía para el panel, y además leía la tabla entera de mensajes en cada
   refresco para plegarla en memoria (crece con cada mensaje de cada conversación). Ahora primero se
