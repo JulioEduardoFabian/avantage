@@ -789,9 +789,14 @@ antes de tocar el arranque de producción.
   Comparte el marcador `paused_alert_at` con `_alertPausedInbound` porque los dos avisan del mismo
   silencio y dos avisos son ruido.
   Cinco reglas de UX conversacional salieron de revisar las conversaciones del 01/10/2026 (1 cita de
-  25 contactos) y conviene no deshacerlas: (1) la apertura pide **solo la carrera**, y la universidad
-  en el turno siguiente — pedirlas juntas abandonaba 9 de 25 ahí (`nextDataQuestion()` es el único
-  sitio donde vive ese orden); (2) la franja de silencio es **22:00–08:00** y lo acumulado sale
+  25 contactos) y conviene no deshacerlas: (1) la apertura pide la **carrera y la universidad juntas**,
+  en una sola pregunta — son el mismo dato, dónde estudia qué, y se contestan de corrido en una línea
+  ("Sistemas, UNCP"), así que separarlas gastaba un turno en algo que ya venía en la misma respuesta
+  (decisión del equipo comercial, 16/10/2026, que revierte la separación que se había hecho por el
+  abandono del 01/10: 9 de 25 contactos no contestaron nada en esa primera pregunta — si el embudo
+  vuelve a caer ahí, es lo primero a mirar). `nextDataQuestion()` es el único sitio donde vive ese
+  orden, y el prompt (`describeMissingPriority` + la regla 1 de `ollamaService.js`) tiene que decir
+  lo mismo; (2) la franja de silencio es **22:00–08:00** y lo acumulado sale
   escalonado (`NUDGE_BURST_LIMIT`), porque antes era 01:00–05:00 y tres contactos recibieron su
   recordatorio a las 05:06 en el mismo minuto; (3) un contacto que escribe con el **bot pausado**
   dispara un aviso al equipo (`_alertPausedInbound`, espaciado por `paused_alert_at`): antes solo
@@ -825,6 +830,22 @@ antes de tocar el arranque de producción.
   cortesía como "gracias" no). "No hay problema", "sin problema" y los dedazos de "sí" ("Dii") son un
   sí, y una respuesta ambigua al "¿Confirmo…?" repregunta una vez por el mismo horario
   (`confirmReasked`) en vez de soltarlo y preguntar "¿qué día te viene mejor?".
+- **El ritmo con el que contesta el bot es parte del producto.** `nextSendAt()` decide cuándo sale
+  cada mensaje: la espera normal es el mínimo antispam configurado
+  (`whatsapp_bot_settings.message_gap_seconds`) o lo que tardaría alguien en teclear ese texto
+  (`typingTimeFor`), lo que sea más largo; y cuando ese gap ya venció —lo normal después de cada
+  llamada al LLM, que tarda 10-20 s— queda el **piso**, que también escala con el largo del texto.
+  El piso era una constante de 2,5 s y ahí se perdía todo: la respuesta más larga de la conversación
+  salía tan rápido como un "Perfecto 👀", que es de las cosas que más delatan a un bot. La regla está
+  afuera de la clase, pura y exportada, para poder probarla (`botPacing.test.js`).
+  La burbuja de **"escribiendo..."** no se puede activar sola: WhatsApp exige referenciar un mensaje
+  del contacto (es la misma llamada que lo marca como leído). Ese id vivía solo en memoria y solo se
+  escribía al atender un entrante, así que la burbuja se saltaba justo en los mensajes que más
+  parecen de robot —los que el bot empieza por su cuenta (recordatorios, disculpa por el turno
+  perdido) y todos los de cualquier conversación después de un reinicio—. `_typingAnchorFor()` cae a
+  la base a buscar el último entrante de ese contacto. De esa burbuja depende el tope de
+  `MAX_TYPING_MS`: con ella a la vista una espera larga se lee como alguien redactando, sin ella se
+  lee como que nadie contesta.
 - El **conteo de seguidores de la página de Meta** se sondea periódicamente
   (`FOLLOWER_POLL_INTERVAL_MS` en `server.js`) porque Meta no lo notifica vía webhook.
 - Los **webhooks de Meta/WhatsApp** validan la firma `X-Hub-Signature-256` contra `req.rawBody`

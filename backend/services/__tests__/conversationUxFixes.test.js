@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { WhatsappBotService } from '../whatsappBotService.js';
+import { WhatsappBotService, INACTIVITY_NUDGE_TEXTS } from '../whatsappBotService.js';
 import { criticalSignal, isWaitingInMeeting } from '../leadSignals.js';
 import { unreadableMessage } from '../../copy/whatsappBotCopy.js';
 
@@ -112,17 +112,17 @@ test('en conversación libre el recordatorio nombra el dato que falta', async ()
   const texto = await bot._inactivityNudgeText(sessionWith({ field: 'Enfermería' }), 0);
 
   assert.match(texto, /universidad/i);
-  assert.doesNotMatch(texto, /Sigues por ahí/i);
+  assert.notEqual(texto, INACTIVITY_NUDGE_TEXTS[0]);
   assert.match(texto, /horarios/i, 'tiene que decir para qué sirve contestar');
 });
 
 test('el recordatorio con el dato pendiente no arranca en mayúscula a mitad de frase', async () => {
   // Las preguntas vienen con "¡Perfecto! ¿De qué carrera...?" y se incrustan
-  // dentro de otra oración: pegarlas tal cual dejaba "...una sola cosa: ¿De qué".
+  // dentro de otra oración: pegarlas tal cual dejaba "...del asesor: ¿De qué".
   const bot = makeNudgeBot();
   const texto = await bot._inactivityNudgeText(sessionWith({}), 0);
 
-  assert.match(texto, /una sola cosa: ¿de qué carrera/);
+  assert.match(texto, /del asesor: ¿de qué carrera/);
   assert.doesNotMatch(texto, /¡Perfecto!/);
 });
 
@@ -133,7 +133,7 @@ test('si ya no falta ningún dato, vuelve al recordatorio genérico', async () =
   const sesion = sessionWith({ field: 'Derecho', university: 'UNMSM', problem: 'tesis de grado' });
   const texto = await bot._inactivityNudgeText(sesion, 0);
 
-  assert.match(texto, /Sigues por ahí/i);
+  assert.equal(texto, INACTIVITY_NUDGE_TEXTS[0]);
 });
 
 test('el recordatorio de quien se quedó mudo frente a los horarios sigue nombrando un bloque', async () => {

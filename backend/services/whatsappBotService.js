@@ -52,22 +52,51 @@ const EXTRA_MESSAGE_DELAY_MS = (Number(process.env.WHATSAPP_BOT_EXTRA_DELAY_SECO
 // persona: un mensaje largo tarda más en llegar que un "Perfecto 👀", porque
 // escribirlo toma más. Recibir cuatro renglones al mismo tiempo que un acuse
 // de dos palabras es de las cosas que más delatan a un bot.
-const WORD_TYPING_MS = 180;
-const MIN_TYPING_MS = 900;
+// Subidos el 16/10: a este ritmo las respuestas salían demasiado seguidas y
+// se notaba la máquina. El tope se puede estirar porque ahora la burbuja de
+// "escribiendo..." sale SIEMPRE (ver `_typingAnchorFor`): con la burbuja a la
+// vista, una espera larga se lee como alguien redactando; sin ella, se lee
+// como que nadie contesta, que es lo que limitaba este número.
+const WORD_TYPING_MS = 260;
+const MIN_TYPING_MS = 1800;
 // Tope: pasado cierto punto la espera deja de leerse como que alguien está
 // escribiendo y empieza a leerse como que nadie contesta.
-const MAX_TYPING_MS = 4500;
+const MAX_TYPING_MS = 9000;
 
 /**
  * Tiempo verosímil de tecleo para un texto, con una variación aleatoria de
  * ±15% para que dos mensajes del mismo largo no lleguen con el mismo retraso
  * exacto — la regularidad milimétrica es, en sí misma, una señal de bot.
  */
-function typingTimeFor(text) {
+export function typingTimeFor(text) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
   const jitter = 0.85 + Math.random() * 0.3;
   const ms = Math.round(words * WORD_TYPING_MS * jitter);
   return Math.min(Math.max(ms, MIN_TYPING_MS), MAX_TYPING_MS);
+}
+
+/**
+ * Cuándo sale el próximo mensaje a un contacto. Es la regla del RITMO del bot,
+ * y está acá afuera —pura, sin red ni base— para que se pueda probar: es la
+ * que decide si una respuesta se lee como escrita por alguien o como disparada
+ * por una máquina.
+ *
+ *  - `reserved` es el momento ya reservado para el último envío a ese contacto
+ *    (0 si es el primero). Se compara contra él, no contra el último envío
+ *    REAL, para que dos mensajes seguidos se encolen en vez de salir juntos.
+ *  - `gapMs` es la espera normal: el mínimo antispam configurado o lo que
+ *    tardaría alguien en teclear este texto, lo que sea más largo.
+ *  - `floorMs` es la espera cuando el gap ya venció de sobra, que es lo que
+ *    pasa después de cada llamada al LLM (tarda 10-20 s). Acá estaba el bug
+ *    del 16/10: el piso era `TYPING_PAUSE_MS` fijo, o sea 2,5 s para CUALQUIER
+ *    mensaje, así que la respuesta más larga de la conversación salía tan
+ *    rápido como un "Perfecto 👀". El piso también tiene que escalar con el
+ *    largo del texto: nadie escribe cuatro renglones en dos segundos y medio.
+ */
+export function nextSendAt({ now, reserved = 0, configuredGapMs, typingMs }) {
+  const gapMs = Math.max(configuredGapMs, typingMs) + EXTRA_MESSAGE_DELAY_MS;
+  const floorMs = Math.max(TYPING_PAUSE_MS, typingMs) + EXTRA_MESSAGE_DELAY_MS;
+  return reserved === 0 ? now + gapMs : Math.max(now + floorMs, reserved + gapMs);
 }
 
 // Asesor cuyo Google Calendar usa el bot para agendar las llamadas que
@@ -200,12 +229,17 @@ export function isAffirmative(text) {
 const EXPLICIT_NO_RE = /^(?:(?:por\s*)?(?:ahora|hoy|ahorita)\s*)?no+(?:\s*(?:gracias|por\s*ahora|por\s*el\s*momento|ahora|ahorita|todav[ií]a|quiero|me\s*interesa))?$/i;
 
 /**
- * La siguiente pregunta que falta hacer, en el orden del prompt: carrera,
- * universidad y después el tema. Devuelve `null` cuando ya no falta ninguna.
+ * La siguiente pregunta que falta hacer, en el orden del prompt: carrera y
+ * universidad juntas, y después el tema. Devuelve `null` cuando ya no falta
+ * ninguna.
  *
- * Carrera y universidad van de UNA EN UNA: pedirlas juntas era pedir dos
- * cosas, y ahí se caía el embudo (el 01/10, 9 de 25 contactos abandonaron sin
- * contestar nada en esa primera pregunta).
+ * Carrera y universidad se piden en UN SOLO mensaje (decisión del equipo
+ * comercial, 16/10). Estuvieron separadas un tiempo por el abandono del 01/10
+ * —9 de 25 contactos no contestaron nada en esa primera pregunta—, pero las
+ * dos son el mismo dato, dónde estudia qué, y se contestan de corrido en una
+ * línea ("Sistemas, UNCP"): preguntarlas por turnos gasta un turno entero en
+ * algo que ya venía en la misma respuesta. Si contesta solo una, las dos
+ * ramas de abajo piden la que falta.
  *
  * Vive acá, en una sola función, porque hacen falta las mismas preguntas en
  * dos sitios —cuando el LLM repite algo ya contestado y cuando el contacto
@@ -213,9 +247,10 @@ const EXPLICIT_NO_RE = /^(?:(?:por\s*)?(?:ahora|hoy|ahorita)\s*)?no+(?:\s*(?:gra
  * un día digan cosas distintas.
  */
 export function nextDataQuestion(answers = {}) {
+  if (!answers.field && !answers.university) return '¡Perfecto! ¿De qué carrera es tu tesis y en qué universidad estudias?';
   if (!answers.field) return '¡Perfecto! ¿De qué carrera es tu tesis?';
   if (!answers.university) return '¡Perfecto! ¿Y en qué universidad estudias?';
-  if (!answers.problem) return '¡Perfecto! ¿Ya tienes un tema o una idea para tu tesis, o empiezas desde cero?';
+  if (!answers.problem) return '¡Perfecto! ¿Ya tienes un tema para tu tesis o empiezas desde cero?';
   return null;
 }
 
@@ -406,8 +441,10 @@ const INACTIVITY_FREEZE_MS = 60 * 60 * 1000;
 // MAX_INACTIVITY_NUDGES sale del largo de esta lista, y el mensaje debe ser
 // DISTINTO del primero — repetir el mismo palabra por palabra es justo lo que
 // delata a un bot.
-const INACTIVITY_NUDGE_TEXTS = [
-  '¿Sigues por ahí? Cuando tengas un momento me cuentas 👀'
+// Se exporta para que las pruebas pregunten "¿salió el genérico?" sin copiar
+// el texto: lo que importa de este recordatorio es CUÁNDO sale, no su redacción.
+export const INACTIVITY_NUDGE_TEXTS = [
+  '¿Seguimos? Cuando puedas me cuentas 👀'
 ];
 
 // Tras este número de recordatorios en la MISMA conversación el bot deja de
@@ -1850,6 +1887,43 @@ export class WhatsappBotService {
    * mensaje anterior al mismo contacto (message_gap_seconds), para no caer en
    * comportamiento de spam.
    */
+  /**
+   * El id del mensaje entrante contra el que se muestra "escribiendo...".
+   * WhatsApp no deja activar la burbuja a secas: hay que referenciar un
+   * mensaje del contacto (es la misma llamada que lo marca como leído).
+   *
+   * Hasta ahora ese id vivía SOLO en memoria y solo se escribía al atender un
+   * mensaje entrante, así que la burbuja se saltaba justo en los mensajes que
+   * más parecen de robot: los que el bot empieza por su cuenta (recordatorio
+   * de inactividad, disculpa por el turno perdido, recordatorio de reunión) y
+   * TODOS los de cualquier conversación después de un reinicio del servidor,
+   * hasta que el contacto volviera a escribir. El mensaje aparecía de golpe,
+   * sin el aviso de que alguien estaba escribiéndolo.
+   *
+   * El respaldo es la base, que es donde el dato ya estaba: el último entrante
+   * de ese contacto. Se cachea para no repetir la consulta en cada mensaje de
+   * una misma ráfaga.
+   */
+  async _typingAnchorFor(waId) {
+    const cached = this.lastInboundMessageId.get(waId);
+    if (cached) return cached;
+
+    try {
+      const [row] = await db('whatsapp_messages')
+        .where({ wa_id: waId, direction: 'inbound' })
+        .orderBy('id', 'desc')
+        .limit(1)
+        .select('message_id');
+      const messageId = row?.message_id || null;
+      if (messageId) this.lastInboundMessageId.set(waId, messageId);
+      return messageId;
+    } catch (error) {
+      // Sin ancla no hay burbuja, y eso no puede impedir el envío.
+      this.logActivity({ type: 'typing_anchor_failed', waId, error: error.message });
+      return null;
+    }
+  }
+
   async send(waId, text, { requireOpenWindow = false } = {}) {
     // Red de último momento del interruptor global. Los caminos que hablan ya
     // están frenados arriba (handleIncomingMessage y los dos barridos vuelven
@@ -1896,23 +1970,19 @@ export class WhatsappBotService {
     // se hace esperar más que un acuse corto, que es como se comporta alguien
     // del otro lado. El indicador de "escribiendo..." se manda justo abajo,
     // antes de la espera, para que ese rato se vea como lo que simula ser.
-    const gapMs = Math.max(configuredGapMs, typingTimeFor(text)) + EXTRA_MESSAGE_DELAY_MS;
-
     // Reserva el momento del próximo envío ANTES de esperar: si dos send()
     // corren casi a la vez, el segundo ve el timestamp reservado por el
     // primero y se encola detrás con el gap completo (en vez de que ambos
     // calculen la espera sobre el mismo "último envío" y salgan juntos).
     const now = Date.now();
     const reserved = this.lastSentAt.get(waId) || 0;
-    const sendAt = reserved === 0
-      ? now + gapMs
-      : Math.max(now + TYPING_PAUSE_MS + EXTRA_MESSAGE_DELAY_MS, reserved + gapMs);
+    const sendAt = nextSendAt({ now, reserved, configuredGapMs, typingMs: typingTimeFor(text) });
     this.lastSentAt.set(waId, sendAt);
     const waitMs = sendAt - now;
 
     const typingEnabled = settings.typing_indicator_enabled == null ? true : !!settings.typing_indicator_enabled;
     if (typingEnabled) {
-      const inboundId = this.lastInboundMessageId.get(waId);
+      const inboundId = await this._typingAnchorFor(waId);
       if (inboundId) {
         try {
           await this.whatsappMessageService.sendTypingIndicator(inboundId);
@@ -2857,9 +2927,9 @@ export class WhatsappBotService {
     } else if (result.ready && answers.problem && missingAcademic) {
       // El LLM quiso cerrar sin todos los datos: se pide el que falte.
       const askMissing = {
-        both: 'Perfecto 🙌 Antes de coordinar la reunión: ¿de qué carrera es tu tesis y en qué universidad estudias?',
-        field: 'Perfecto 🙌 Antes de coordinar la reunión, cuéntame: ¿de qué carrera es tu tesis?',
-        university: 'Perfecto 🙌 Una última cosa antes de coordinar la reunión: ¿en qué universidad estudias?'
+        both: 'Perfecto 🙌 Antes de coordinar: ¿de qué carrera es tu tesis y en qué universidad estudias?',
+        field: 'Perfecto 🙌 Antes de coordinar: ¿de qué carrera es tu tesis?',
+        university: 'Perfecto 🙌 Una última cosa: ¿en qué universidad estudias?'
       };
       await this.send(waId, askMissing[missingAcademic]);
     } else if (lateBatch && !missingBefore.some((key) => answers[key]) && !looksLikeQuestion(incomingText)) {
@@ -2888,9 +2958,9 @@ export class WhatsappBotService {
 
     if (lastBot && messageSimilarity(reply, lastBot) >= 0.6) {
       const rephrase = !answers.problem
-        ? 'Para seguir necesito una idea de tu tema: ¿de qué trataría tu tesis, aunque sea en una frase?'
+        ? '¿De qué trataría tu tesis, aunque sea en una frase?'
         : (!answers.field && !answers.university
-          ? 'Me falta ubicarte: ¿qué carrera llevas y en qué universidad estudias?'
+          ? '¿Qué carrera llevas y en qué universidad estudias?'
           : (!answers.field
             ? '¿Qué carrera estás llevando?'
             : (!answers.university ? '¿Y en qué universidad estudias?' : null)));
@@ -3039,13 +3109,12 @@ export class WhatsappBotService {
       const question = pending
         .replace(/^¡Perfecto!\s*/, '')
         // El "Y" de "¿Y en qué universidad estudias?" encadena con la pregunta
-        // anterior, que acá no existe: sin quitarlo queda "una sola cosa: ¿y
-        // en qué...", que suena a que viene de otra frase.
+        // anterior, que acá no existe: sin quitarlo queda "del asesor: ¿y en
+        // qué...", que suena a que viene de otra frase.
         .replace(/^¿\s*[yY]\s+/, '¿')
         .replace(/\p{L}/u, (letra) => letra.toLowerCase());
       this.logActivity({ type: 'inactivity_nudge_pending_data', waId: session.wa_id });
-      return `¿Seguimos? Me quedó pendiente una sola cosa: ${question} `
-        + 'Con eso te paso los horarios libres del asesor 🙌';
+      return `¿Seguimos? Con esto te paso los horarios del asesor: ${question}`;
     }
 
     if (!isWarmup && !['scheduling_date', 'scheduling_time'].includes(session.status)) return generic;
@@ -3077,8 +3146,8 @@ export class WhatsappBotService {
       }
       this.logActivity({ type: 'inactivity_nudge_slot_offer', waId: session.wa_id, slot: slot.label, step: session.status });
 
-      return `¿Te reservo *${slot.label}* con el asesor? Respóndeme *sí* y te llega la confirmación 🙌 ` +
-        'Si te viene mejor otro día u hora, dímelo y lo busco.';
+      return `¿Te reservo *${slot.label}* con el asesor? Respóndeme *sí* 🙌 ` +
+        'Si te viene mejor otro día, dímelo.';
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] No se pudo armar el recordatorio con horario para ${session.wa_id}:`, error.message);
       return generic;
@@ -3458,7 +3527,7 @@ Enlace: ${meeting.meet_link}` : '';
     // que el bot lo resolviera) seguía pidiendo "apaga tu bot, quiero hablar
     // con alguien" justo después de este mensaje, sin darse cuenta de que ya
     // se le había transferido.
-    await this.send(waId, 'Te paso con un asesor para que te ayude directamente 🙌 En breve te escribe por aquí para coordinar todo.');
+    await this.send(waId, 'Te paso con un asesor 🙌 En breve te escribe por aquí.');
     await this.notifySalesperson(waId, reason);
   }
 
