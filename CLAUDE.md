@@ -836,10 +836,16 @@ antes de tocar el arranque de producción.
   comisiones se pagan por fuera de la planilla, así que no hay una fila de `finance_salaries` que
   repita ese mismo egreso — si algún día se empiezan a anotar en Salarios, el único lugar donde hay
   que dejar de sumarlas es `getOverview()`, donde está dicho en un comentario.
-- En la bandeja de WhatsApp, **al lado del nombre va la etapa del funnel** del lead
-  (`funnel_stage` en cada conversación, resuelto en `funnelStageLabel.js`): quien contesta un
-  mensaje no tenía forma de saber si del otro lado hay un contacto recién llegado o un cliente al
-  que ya se le cotizó, y de eso depende cómo se le escribe. Traducir un `leads.status` a algo
+- En la bandeja de WhatsApp, cada conversación muestra la **etapa del funnel** del lead
+  (`funnel_stage`, resuelto en `funnelStageLabel.js`): quien contesta un mensaje no tenía forma de
+  saber si del otro lado hay un contacto recién llegado o un cliente al que ya se le cotizó, y de
+  eso depende cómo se le escribe. En la lista va en su **propio renglón**, bajo el nombre y el
+  último mensaje, y no pegada al nombre: puesta ahí (primer intento, 16/10/2026) se quedaba con el
+  ancho y el nombre desaparecía — filas enteras mostrando solo la etiqueta, y nombres reducidos a
+  "R..". En esa columna el nombre es lo único que identifica al contacto, así que es lo último que
+  se recorta: ceden primero el alias y después la propia píldora. La hora de la lista sigue la
+  convención de cualquier bandeja (la hora si es de hoy, "Ayer", el día de la semana, y la fecha más
+  atrás) en vez del "16/10, 10:21 a. m." que gastaba el ancho que le faltaba al nombre. Traducir un `leads.status` a algo
   legible necesita las dos tablas de columnas (`funnel_columns` y `setter_funnel_columns`) **y**
   saber a qué tablero pertenece el lead, que no se deduce del texto del status sino de
   `leadHasGraduated()` — por eso la traducción vive en un módulo y no copiada en cada pantalla.

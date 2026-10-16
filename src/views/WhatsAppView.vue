@@ -388,20 +388,6 @@
               <span class="contact-name">
                 <span v-if="c.handed_off_at" class="urgent-flag" title="Avan lo transfirió a un asesor">🆘</span>
                 <span class="contact-name-text">{{ displayName(c) }}</span>
-                <!-- En qué etapa del funnel está su ficha. Va pegada al nombre
-                     porque es lo que cambia cómo se le contesta: no es lo mismo
-                     escribirle a un contacto recién llegado que a un cliente al
-                     que ya se le cotizó. -->
-                <span
-                  v-if="c.funnel_stage"
-                  class="stage-badge"
-                  :class="`stage-${c.funnel_stage.board}`"
-                  :style="stageStyle(c.funnel_stage)"
-                  :title="stageTitle(c.funnel_stage)"
-                >
-                  <span v-if="c.funnel_stage.icon" aria-hidden="true">{{ c.funnel_stage.icon }}</span>
-                  {{ c.funnel_stage.label }}
-                </span>
                 <!-- El alias del perfil de WhatsApp, cuando no es el nombre
                      real: es como aparece en el celular de quien atiende. -->
                 <span v-if="aliasOf(c)" class="contact-alias" :title="'En WhatsApp aparece como ' + aliasOf(c)">
@@ -409,9 +395,27 @@
                 </span>
               </span>
               <span class="contact-preview">{{ c.direction === 'outbound' ? 'Tú: ' : '' }}{{ truncate(c.body, 42) }}</span>
+              <!--
+                En qué etapa del funnel está su ficha. Va en su PROPIO renglón y
+                no pegada al nombre: en una columna angosta las dos cosas no
+                entran, y la que se recortaba era el nombre — que es lo único
+                que identifica al contacto. Acá la etiqueta se lee entera y, si
+                aun así no entra, se recorta ella.
+              -->
+              <span v-if="c.funnel_stage" class="contact-stage">
+                <span
+                  class="stage-badge"
+                  :class="`stage-${c.funnel_stage.board}`"
+                  :style="stageStyle(c.funnel_stage)"
+                  :title="stageTitle(c.funnel_stage)"
+                >
+                  <span v-if="c.funnel_stage.icon" aria-hidden="true">{{ c.funnel_stage.icon }}</span>
+                  <span class="stage-label">{{ c.funnel_stage.label }}</span>
+                </span>
+              </span>
             </span>
             <span class="contact-side">
-              <span class="contact-time">{{ formatShortTime(c.received_at) }}</span>
+              <span class="contact-time" :title="formatFullTime(c.received_at)">{{ formatShortTime(c.received_at) }}</span>
               <span class="badge-row">
                 <span v-if="c.is_form_lead" class="form-lead-badge" title="Llegó desde el formulario de un anuncio">
                   <Form :size="11" :stroke-width="2.25" />
@@ -442,7 +446,7 @@
             </span>
             <div class="thread-identity">
               <strong class="thread-name">
-                {{ selectedContactName }}
+                <span class="thread-name-text">{{ selectedContactName }}</span>
                 <span
                   v-if="selectedStage"
                   class="stage-badge"
@@ -451,7 +455,7 @@
                   :title="stageTitle(selectedStage)"
                 >
                   <span v-if="selectedStage.icon" aria-hidden="true">{{ selectedStage.icon }}</span>
-                  {{ selectedStage.label }}
+                  <span class="stage-label">{{ selectedStage.label }}</span>
                 </span>
               </strong>
               <span class="thread-sub">
@@ -1516,10 +1520,46 @@ function formatTime(isoString) {
   });
 }
 
+/**
+ * La hora de la lista, con la convención de cualquier bandeja: la HORA si el
+ * último mensaje es de hoy, "Ayer", el día de la semana dentro de la semana, y
+ * la fecha más atrás.
+ *
+ * Antes salía siempre "16/10, 10:21 a. m." — diecinueve caracteres que en una
+ * columna angosta le comían el ancho justo al nombre, y que además obligan a
+ * leer la fecha para darse cuenta de que el mensaje es de hace diez minutos.
+ * La fecha completa queda en el `title`.
+ */
+const DIAS_SEMANA = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
 function formatShortTime(isoString) {
   if (!isoString) return '—';
-  return new Date(isoString).toLocaleString('es-PE', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const hoy = new Date();
+  const dia = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  if (dia(date) === dia(hoy)) {
+    return date.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  const ayer = new Date(hoy);
+  ayer.setDate(ayer.getDate() - 1);
+  if (dia(date) === dia(ayer)) return 'Ayer';
+
+  const dias = Math.round((hoy - date) / 86400000);
+  if (dias < 7) return DIAS_SEMANA[date.getDay()];
+
+  return date.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' });
+}
+
+/** La fecha y la hora completas, para el `title` de esa misma línea. */
+function formatFullTime(isoString) {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('es-PE', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
   });
 }
 
@@ -1940,7 +1980,9 @@ onUnmounted(() => {
 .contact-item {
   width: 100%;
   display: flex;
-  align-items: center;
+  /* Arriba y no al centro: con la etapa en su propio renglón, la hora tiene
+     que quedar a la altura del nombre, como en cualquier bandeja. */
+  align-items: flex-start;
   gap: 0.7rem;
   background: transparent;
   border: none;
@@ -1993,6 +2035,9 @@ onUnmounted(() => {
   width: 38px;
   height: 38px;
   flex-shrink: 0;
+  /* La fila ahora alinea arriba: un pelo de margen deja el avatar a la altura
+     del nombre y no pegado al borde superior. */
+  margin-top: 0.1rem;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -2010,23 +2055,35 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-/* Fila de identidad del contacto: nombre, etapa del funnel y alias. Es flex
-   para que lo único que se recorte sea el NOMBRE —la píldora de etapa no
-   encoge— y no al revés: una etapa a medias no dice nada, y un nombre cortado
-   se sigue reconociendo. */
+/* Renglón de identidad: la bandera de urgente, el nombre y su alias. La etapa
+   del funnel NO va acá — en una columna angosta no entran las dos cosas y la
+   que se recortaba era el nombre, que es lo único que identifica al contacto
+   (lo rompió así el primer intento, con el nombre reducido a "R.." y filas
+   enteras sin nombre). */
 .contact-name {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.3rem;
   min-width: 0;
   font-size: 0.85rem;
   font-weight: 600;
 }
 
+/* El nombre se queda con todo el espacio libre y es lo último que se recorta;
+   el alias cede primero. */
 .contact-name-text {
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* La etapa, en su propio renglón y alineada a la izquierda bajo el nombre. */
+.contact-stage {
+  display: flex;
+  min-width: 0;
+  margin-top: 0.15rem;
 }
 
 /* Alias del perfil de WhatsApp junto al nombre real: sirve para reconocerlo
@@ -2109,17 +2166,22 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.22rem;
-  flex-shrink: 0;
-  max-width: 8rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Encoge y se recorta ella antes que empujar a nadie fuera de la fila. */
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   font-size: 0.64rem;
   font-weight: 700;
-  line-height: 1.5;
+  line-height: 1.6;
   padding: 0 0.42rem;
   border: 1px solid transparent;
   border-radius: 999px;
+}
+
+.stage-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Sin color propio: el tablero igual se distingue. */
@@ -2275,9 +2337,18 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  min-width: 0;
   font-size: 0.95rem;
   font-weight: 600;
   line-height: 1.2;
+}
+
+/* Igual que en la lista: el nombre manda y la píldora cede. */
+.thread-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .thread-sub {
