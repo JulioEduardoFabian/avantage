@@ -66,6 +66,7 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261026000000_alter_leads_add_sales_funnel_at.js` | Agrega `leads.sales_funnel_at`: el sello de que el lead ya graduó al Funnel de Ventas y es del closer. Hasta ahora eso se **deducía** del texto de `leads.status`, y la deducción dejaba de funcionar en cuanto se borraba o recreaba una columna — por ahí volvían los leads cotizados al Setter Funnel. Rellena el sello para los que hoy son comerciales por su status y, además, para los que tienen cotización, proyecto o ingreso aunque su status diga otra cosa (son los que el bot ya había devuelto); excluye `descartado`, que es una decisión explícita de una persona. |
 | `20261026010000_create_lead_stage_changes_table.js` | Crea `lead_stage_changes`: la bitácora de movimientos de etapa de cada lead (de dónde, a dónde, quién — `user`/`bot`/`system` —, por qué y cuándo), **incluidos los intentos rechazados**, marcados con `blocked`. Sin ella, cada reporte de "este lead se regresó solo" había que reconstruirlo a mano, y un tope que funciona se veía igual que uno que nunca se activó. |
 | `20261116000000_create_lead_report_permission.js` | Agrega el permiso `leads.report` (módulo **Reporte de Leads**) y lo copia a quien ya administra el área comercial (`leads.manage_all`). **No crea tablas**: el reporte es `lead_stage_changes` leída de corrido —todos los leads con su trazabilidad, filtrable por persona, etapa y fechas— en vez de de a un lead desde su ficha. Permiso propio porque es una herramienta de supervisión y no de trabajar leads; no amplía la visibilidad, que sigue siendo la del funnel (`applyLeadVisibility()`). |
+| `20261117000000_create_meta_capi_tables.js` | Crea `meta_capi_stage_events` (qué etapa del funnel se le reporta a Meta y con qué nombre de evento) y `meta_capi_events` (la bitácora de lo enviado, con la respuesta de Meta). El mapeo es una tabla y no una constante porque las columnas del funnel las crea el equipo y sus claves se generan solas; la migración siembra las etapas clave resolviéndolas como el resto del sistema (el desenlace fijo, la columna marcada `final`, la de cotización por `quoted` o por su nombre). La bitácora cumple tres funciones: explicar por qué un evento no llegó, evitar mandar dos veces el mismo evento del mismo lead (reabrir y volver a ganar no es otra venta) y permitir reenviar lo que falló dentro de la ventana de 7 días que Meta acepta. Las credenciales NO están acá: son del `.env`. |
 | `20261027000000_create_deliverable_settings.js` | Crea `deliverable_settings` (fila única): la configuración del módulo de Entregables. Por ahora solo `notice_email`, el correo al que llega el aviso de cuota verificada. Es **uno solo** y no todos los usuarios con `deliverables.view`: de las entregas se encarga una persona, y repartir el aviso lo convierte en ruido que nadie mira. Está en la base y no en el `.env` porque el destinatario cambia cuando cambia quién ocupa el puesto, y eso tiene que poder hacerse desde el panel. |
 | `20261028000000_alter_tasks_add_deliverable_id.js` | Agrega `tasks.deliverable_id`: de qué entregable es cada tarea. Convierte un entregable en lo que de verdad es, un **paquete de trabajo** con su avance propio (hechas/total), y conecta las dos listas del proyecto —tareas y entregas— que hasta ahora no se hablaban. Es **opcional** (hay tareas internas que no corresponden a ninguna entrega) y va con ON DELETE SET NULL, no CASCADE: quitar un entregable del plan no puede borrar el trabajo ya registrado. |
 | `20261029000000_create_project_settings.js` | Crea `project_settings` (fila única): la configuración del módulo de Proyectos. Por ahora solo `notice_email`, el correo al que llega el aviso de "se creó un proyecto nuevo" — un proyecto nace casi siempre solo, al cerrarse una venta, así que nadie se enteraba hasta entrar a mirar. Mismo patrón y mismas razones que `deliverable_settings`: un solo destinatario y en la base, no en el `.env`, porque cambia cuando cambia quién ocupa el puesto. |
@@ -312,6 +313,24 @@ agrega ninguna tabla ni cambia la visibilidad: reusa la del funnel.
 Existe porque cada vez que el equipo reportaba un lead "regresado" había que reconstruir a mano qué
 pudo haberlo movido: `leads.status` solo guarda el valor actual. Un tope que funciona y un tope que
 nunca se activó también se veían idénticos hasta que `blocked` los separó.
+
+### `meta_capi_events`: lo que le devolvemos a Meta
+
+Meta nos manda leads (formularios instantáneos y anuncios Click-to-WhatsApp) y hasta ahora nunca se
+enteraba de lo que pasaba después, así que su optimización solo podía perseguir "más formularios
+llenados". `metaConversionsService` cierra el circuito: cuando un lead llega a una etapa mapeada en
+`meta_capi_stage_events`, le manda a la Conversions API un evento con la etapa y el momento.
+
+Un lead se reporta solo si Meta puede reconocerlo, y hay exactamente dos identificadores:
+`leads.meta_leadgen_id` (el `lead_id` del formulario) y el `ctwa_clid` que viaja en el `referral`
+del primer mensaje de la conversación, dentro de `whatsapp_messages`. El lead del evaluador público
+o cargado a mano no tiene ninguno y no se reporta. **No viaja ningún importe.**
+
+Cada intento queda en `meta_capi_events` con su estado (`enviado` / `error` / `omitido`) y el
+mensaje de Meta tal cual. De esa tabla cuelgan dos cosas que no son adornos: que un evento no se
+mande dos veces por lead, y el reenvío de los últimos 7 días (lo que no entre en esa ventana Meta ya
+no lo acepta). `stage_change_id` ata el envío al movimiento de `lead_stage_changes` que lo originó,
+así que de un evento rechazado se puede llegar al cambio exacto que se quiso reportar.
 
 ### El mismo contacto con dos teléfonos distintos
 

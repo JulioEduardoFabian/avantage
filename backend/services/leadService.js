@@ -11,6 +11,7 @@ import {
 } from './salesFunnelStage.js';
 import { CommissionService } from './commissionService.js';
 import { LeadRoutingService } from './leadRoutingService.js';
+import { MetaConversionsService } from './metaConversionsService.js';
 
 /**
  * Dígitos con los que se compara un teléfono.
@@ -277,11 +278,12 @@ export function duplicateLeadError(duplicates) {
  * del chatbot y prospectos capturados en la Base de Datos).
  */
 export class LeadService {
-  constructor({ stageChangeService, userService, commissionService, routingService } = {}) {
+  constructor({ stageChangeService, userService, commissionService, routingService, metaConversionsService } = {}) {
     this.stageChanges = stageChangeService || new LeadStageChangeService();
     this.users = userService || new UserService();
     this.commissions = commissionService || new CommissionService();
     this.routing = routingService || new LeadRoutingService({ userService: this.users });
+    this.metaConversions = metaConversionsService || new MetaConversionsService();
   }
 
   async createLead({
@@ -1081,11 +1083,29 @@ ${note}` : note;
     }
 
     await db('leads').where({ id }).update(patch);
-    await this.stageChanges.record(current.id, {
+    const stageChangeId = await this.stageChanges.record(current.id, {
       fromStatus: current.status,
       toStatus: status,
       actor,
       reason
+    });
+
+    /*
+     * Devolverle a Meta en qué etapa quedó el lead que nos mandó
+     * (`metaConversionsService`). Va acá por lo mismo que la comisión: hay
+     * varios caminos a cada etapa y todos pasan por este método.
+     *
+     * NO se espera a propósito. Es una llamada HTTP a la Graph API, y arrastrar
+     * una tarjeta en el Kanban no puede quedarse esperando a que Meta
+     * responda; el servicio se traga sus propios errores y deja cada intento en
+     * `meta_capi_events`, que es donde se revisa. Un evento que no salió se
+     * puede reenviar (botón "Reenviar últimos 7 días"); un movimiento de lead
+     * que se cayó por un timeout de Meta, no.
+     */
+    void this.metaConversions.reportStageChange({ ...current, status }, {
+      status,
+      movedAt: new Date(),
+      stageChangeId
     });
 
     /*

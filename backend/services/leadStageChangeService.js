@@ -19,14 +19,19 @@ const ACTOR_TYPES = ['user', 'bot', 'system'];
 
 export class LeadStageChangeService {
   /**
-   * Registra un cambio de etapa. Nunca lanza: la bitácora no puede impedir que
-   * el lead se mueva (ni que un tope lo frene), así que un fallo al escribirla
-   * se queda en el log del servidor.
+   * Registra un cambio de etapa y devuelve el id de la fila (o `null` si no se
+   * pudo escribir). Nunca lanza: la bitácora no puede impedir que el lead se
+   * mueva (ni que un tope lo frene), así que un fallo al escribirla se queda en
+   * el log del servidor.
+   *
+   * El id lo usa el reporte de conversiones hacia Meta para dejar atado su
+   * envío al movimiento que lo originó: así, de un evento que Meta rechazó se
+   * puede llegar al movimiento exacto que se quiso reportar.
    */
   async record(leadId, { fromStatus, toStatus, actor, reason, blocked = false } = {}) {
     try {
       const { type, id, name } = normalizeActor(actor);
-      await db('lead_stage_changes').insert({
+      const [rowId] = await db('lead_stage_changes').insert({
         lead_id: leadId,
         from_status: fromStatus || null,
         to_status: toStatus,
@@ -36,8 +41,10 @@ export class LeadStageChangeService {
         reason: reason ? String(reason).slice(0, 255) : null,
         blocked: Boolean(blocked)
       });
+      return rowId || null;
     } catch (error) {
       console.error(`❌ [Leads] No se pudo registrar el cambio de etapa del lead #${leadId}:`, error.message);
+      return null;
     }
   }
 

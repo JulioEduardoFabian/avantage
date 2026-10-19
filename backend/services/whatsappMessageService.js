@@ -31,7 +31,7 @@ function toE164(waId) {
  * Instagram/Facebook, tipo "PE.2249505489171169"), para no emparejar por
  * casualidad dos contactos que solo comparten sus últimos dígitos.
  */
-function phoneKey(value) {
+export function phoneKey(value) {
   const raw = String(value || '');
   // Cualquier letra descarta: es un BSUID, no un teléfono. Los separadores
   // (espacios, guiones, paréntesis) sí se toleran, que es como se escriben los
@@ -47,7 +47,7 @@ function phoneKey(value) {
  * separadores con los que la gente escribe un número. Las dos limpian lo mismo
  * a propósito — son la misma regla en los dos lados de la comparación.
  */
-const WA_ID_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(wa_id, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
+export const WA_ID_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(wa_id, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
 /** Fecha de hoy ("YYYY-MM-DD") en el calendario de Lima, sin importar la zona horaria del servidor. */
 function limaTodayIso() {

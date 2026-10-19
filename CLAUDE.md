@@ -602,6 +602,42 @@ antes de tocar el arranque de producción.
   dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
   El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
   y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
+- Lo que Meta nos manda **vuelve a Meta**: `metaConversionsService.js` le devuelve, por la
+  **Conversions API**, en qué etapa del funnel terminó cada lead que llegó de un anuncio
+  (`/api/meta-capi` bajo `webhooks.view`, pantalla en `MetaConversionsPanel.vue` dentro de
+  `/admin/webhooks`). Sin esa vuelta, la optimización de Meta solo puede perseguir "más
+  formularios llenados", que es justo la métrica que se llena de números equivocados y curiosos.
+  **No se hace a través de YCloud** aunque el WhatsApp pase por ahí: su reporte de conversiones
+  solo cubre las conversaciones nacidas de un Click-to-WhatsApp (los leads de formulario, que son
+  la mayoría, no pasan por YCloud), solo admite dos eventos (`Lead` y `Purchase`) y para saber que
+  un lead pasó a "Cotizado" habría que llamarlo igual desde acá — un salto extra para un dato que
+  el CRM ya tiene y el proveedor no.
+  Un lead se reporta solo si **Meta puede reconocerlo**, y hay dos caminos: su `lead_id`
+  (`leads.meta_leadgen_id`, formularios instantáneos → `action_source: 'system_generated'` +
+  `custom_data.event_source: 'crm'`) o su `ctwa_clid` (el click id que viaja en el `referral` del
+  primer mensaje y que `whatsapp_messages` ya guarda entero → `action_source:
+  'business_messaging'` + `messaging_channel: 'whatsapp'`). El del evaluador público o el cargado a
+  mano no se reportan: no hay anuncio al que atribuirlos. **No viaja ningún importe** — Meta recibe
+  la etapa, no cuánto facturó el cliente, misma regla que el resto del sistema.
+  Qué etapa se reporta y con qué nombre de evento vive en `meta_capi_stage_events` y **no** en una
+  constante: las columnas del funnel las crea el equipo y sus claves se generan solas
+  (`col_mtc2nwec_fij`), así que la migración siembra las etapas clave resolviéndolas como el resto
+  del sistema (el desenlace fijo, la columna marcada `final`, la de cotización por `quoted` o por
+  su nombre) y la pantalla deja editarlas. Dos etapas pueden compartir el nombre del evento
+  (`ganado` y la columna `final` son la misma venta) y entonces se manda **una sola vez por lead**:
+  reabrir y volver a ganar no es una segunda venta. Eso se decide con `meta_capi_events`, la
+  bitácora de envíos, que además es lo que hace posible el botón "Reenviar últimos 7 días" — Meta
+  solo acepta eventos con esa antigüedad, así que lo que no se mande en esa ventana ya no entra
+  nunca y no puede depender de que alguien se dé cuenta el mismo día. El `event_time` se compara
+  contra `meta_created_time` (cuándo se llenó el formulario en Meta) y no contra `created_at`
+  (cuándo entró acá): un lead recuperado por la conciliación tres días después tiene las dos fechas
+  muy separadas, y Meta descarta el evento anterior a la generación del lead.
+  El disparador es `leadService.updateLeadStatus()` —el punto único por el que cambia la etapa,
+  igual que la comisión de la setter— y se lanza **sin esperarlo**: arrastrar una tarjeta en el
+  Kanban no puede quedarse esperando a que responda la Graph API, y un envío que falla se reenvía
+  mientras un movimiento perdido no se recupera. Las credenciales son del `.env`
+  (`META_CAPI_DATASET_ID`, `META_CAPI_ACCESS_TOKEN`, que cae a `META_ADS_ACCESS_TOKEN` porque es el
+  que ya tiene `ads_management`); sin ellas la integración queda apagada y no se intenta nada.
 - **Cada quien ve sus leads.** Los dos tableros (y la Base de Datos) muestran solo los leads cuyo
   responsable es quien mira; `leads.manage_all` —"administrador del área comercial"— es el que ve el
   total y el **único** que puede asignar (`PATCH /api/leads/:id/assignee` lo exige, y el círculo de

@@ -24,6 +24,7 @@ import { buildPaymentReceiptPdf, receiptPdfFilename } from './services/paymentRe
 import { LeadNoteService } from './services/leadNoteService.js';
 import { LeadStageChangeService } from './services/leadStageChangeService.js';
 import { LeadReportService } from './services/leadReportService.js';
+import { MetaConversionsService } from './services/metaConversionsService.js';
 import { DocumentService } from './services/documentService.js';
 import { CampaignService } from './services/campaignService.js';
 import { MetaAdsService } from './services/metaAdsService.js';
@@ -132,7 +133,11 @@ const commissionService = new CommissionService();
 // Cobranzas no tiene tablas propias: es `finance_income` vista desde el trabajo
 // de cobrar, así que comparte el servicio del libro contable.
 const collectionService = new CollectionService({ commissionService });
-const leadService = new LeadService({ commissionService });
+// Conversiones hacia Meta: el lead que Meta nos mandó vuelve a Meta con la
+// etapa en la que terminó. Se inyecta en leadService porque el disparador es el
+// cambio de etapa, que tiene un único camino (`updateLeadStatus`).
+const metaConversionsService = new MetaConversionsService();
+const leadService = new LeadService({ commissionService, metaConversionsService });
 const funnelColumnService = new FunnelColumnService();
 // Las etapas del Setter Funnel: tabla aparte de las de Ventas a propósito, ver
 // la cabecera de `setterFunnelColumnService.js`.
@@ -2811,6 +2816,97 @@ app.get('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks.vi
 app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   metaWebhookService.clearRecentEvents();
   res.json({ success: true });
+});
+
+// =====================================================================
+// CONVERSIONES HACIA META (Conversions API) — /api/meta-capi
+// =====================================================================
+/*
+ * La vuelta del circuito con Meta: sus formularios y sus anuncios
+ * Click-to-WhatsApp nos dejan leads, y esto le devuelve en qué etapa terminó
+ * cada uno para que pueda optimizar por calidad de lead y no solo por
+ * "formularios llenados".
+ *
+ * Van bajo `webhooks.view` —el permiso de la pantalla de integración con
+ * Meta— y no bajo uno nuevo: es la misma plomería con el mismo proveedor,
+ * vista desde el otro sentido, y la configura la misma persona que conectó el
+ * webhook. El envío en sí no pasa por acá: lo dispara
+ * `leadService.updateLeadStatus()`.
+ */
+app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const { datasetId, accessToken, enabled, testEventCode, leadEventSource, version } =
+      metaConversionsService.config();
+    const [mapping, events, summary, stages] = await Promise.all([
+      metaConversionsService.mapping(),
+      metaConversionsService.recentEvents({ limit: 30 }),
+      metaConversionsService.summary(),
+      metaConversionsService.availableStages()
+    ]);
+
+    res.json({
+      // Del token solo viaja si está puesto: un secreto no se devuelve a la
+      // pantalla ni para mostrarlo tachado.
+      config: {
+        enabled,
+        datasetId: datasetId || null,
+        hasToken: Boolean(accessToken),
+        testEventCode,
+        leadEventSource,
+        version
+      },
+      mapping,
+      // Todas las etapas de los dos tableros, para poder mapear las que falten.
+      stages,
+      events,
+      summary
+    });
+  } catch (error) {
+    console.error('❌ Error al leer la configuración de conversiones de Meta:', error);
+    res.status(500).json({ error: 'Error al leer la configuración de conversiones.', details: error.message });
+  }
+});
+
+/** Guarda el mapeo etapa → nombre del evento. */
+app.put('/api/meta-capi/mapping', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.mapping) ? req.body.mapping : [];
+    const mapping = await metaConversionsService.saveMapping(rows);
+    res.json({ mapping });
+  } catch (error) {
+    console.error('❌ Error al guardar el mapeo de conversiones de Meta:', error);
+    res.status(500).json({ error: 'Error al guardar el mapeo.', details: error.message });
+  }
+});
+
+/**
+ * Evento de prueba. Usa un lead real con atribución de Meta porque un
+ * identificador inventado lo rechaza Meta, y entonces la prueba no probaría
+ * nada.
+ */
+app.post('/api/meta-capi/test', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const result = await metaConversionsService.sendTestEvent();
+    res.status(result.ok ? 200 : 422).json(result);
+  } catch (error) {
+    console.error('❌ Error al enviar el evento de prueba a Meta:', error);
+    res.status(500).json({ error: 'Error al enviar el evento de prueba.', details: error.message });
+  }
+});
+
+/**
+ * Reenvía los movimientos de los últimos 7 días que debían reportarse y no
+ * llegaron. Es un POST y no un efecto de abrir la pantalla: manda datos hacia
+ * afuera.
+ */
+app.post('/api/meta-capi/backfill', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const result = await metaConversionsService.backfill({ limit: 200 });
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Error al reenviar conversiones a Meta:', error);
+    res.status(500).json({ error: 'Error al reenviar las conversiones.', details: error.message });
+  }
 });
 
 /**
