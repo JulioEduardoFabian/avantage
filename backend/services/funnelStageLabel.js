@@ -59,6 +59,39 @@ export async function loadFunnelStageIndex() {
 }
 
 /**
+ * Devuelve `labelStatus(status, board)`: el nombre legible de UNA clave de
+ * status, prefiriendo la etiqueta del tablero que se le indique.
+ *
+ * Es la mitad de `buildStageResolver()` que no necesita un lead, y existe
+ * porque el Reporte de Leads tiene que nombrar también el status de DONDE
+ * SALIÓ el lead (`lead_stage_changes.from_status`): ese ya no es el de la
+ * ficha, así que no se puede resolver preguntándole al lead a qué tablero
+ * pertenece. Vive acá y no en la pantalla del reporte para que una columna
+ * renombrada se lea igual en el tablero, en la bandeja de WhatsApp y en el
+ * reporte.
+ */
+export function buildStatusLabeler({ salesColumns = [], setterColumns = [] } = {}) {
+  const porTablero = {
+    ventas: new Map(salesColumns.map((column) => [column.key, column])),
+    setter: new Map(setterColumns.map((column) => [column.key, column]))
+  };
+
+  return function labelStatus(status, board = 'setter') {
+    if (!status) return null;
+    const preferido = porTablero[board] ? board : 'setter';
+    const otro = preferido === 'ventas' ? 'setter' : 'ventas';
+    const column = porTablero[preferido].get(status) || porTablero[otro].get(status) || null;
+
+    return {
+      status,
+      label: column?.label || ESTADOS_FIJOS[status] || humanizar(status),
+      icon: column?.icon || null,
+      color: column?.color || null
+    };
+  };
+}
+
+/**
  * Devuelve `stageOf(lead)`: `{ status, label, board, icon, color }` o `null`
  * si no hay lead o no tiene status.
  *
@@ -68,25 +101,39 @@ export async function loadFunnelStageIndex() {
  * columna en los dos— se mostrara con la etiqueta del tablero equivocado.
  */
 export function buildStageResolver({ salesColumns = [], setterColumns = [], salesStatuses = new Set() } = {}) {
-  const porTablero = {
-    ventas: new Map(salesColumns.map((column) => [column.key, column])),
-    setter: new Map(setterColumns.map((column) => [column.key, column]))
-  };
+  const labelStatus = buildStatusLabeler({ salesColumns, setterColumns });
 
   return function stageOf(lead) {
     const status = lead?.status;
     if (!status) return null;
 
     const board = leadHasGraduated(lead, salesStatuses) ? 'ventas' : 'setter';
-    const otro = board === 'ventas' ? 'setter' : 'ventas';
-    const column = porTablero[board].get(status) || porTablero[otro].get(status) || null;
-
-    return {
-      status,
-      board,
-      label: column?.label || ESTADOS_FIJOS[status] || humanizar(status),
-      icon: column?.icon || null,
-      color: column?.color || null
-    };
+    return { ...labelStatus(status, board), board };
   };
+}
+
+/**
+ * Las etapas que puede ofrecer un filtro: las columnas de los dos tableros más
+ * los desenlaces fijos que pueden estar en `leads.status` sin ser columna de
+ * nadie.
+ *
+ * Se agrupan por clave y no por tablero porque el filtro compara contra
+ * `leads.status`, que es UNA columna compartida: `cita_agendada` existe en los
+ * dos tableros y filtrar por ella trae los leads de los dos, así que ofrecerla
+ * dos veces prometería una distinción que la consulta no hace.
+ */
+export function stageOptions({ salesColumns = [], setterColumns = [] } = {}) {
+  const options = [];
+  const vistas = new Set();
+  const agregar = (key, label, board) => {
+    if (!key || vistas.has(key)) return;
+    vistas.add(key);
+    options.push({ key, label, board });
+  };
+
+  for (const column of setterColumns) agregar(column.key, `${column.icon || ''} ${column.label}`.trim(), 'setter');
+  for (const column of salesColumns) agregar(column.key, `${column.icon || ''} ${column.label}`.trim(), 'ventas');
+  for (const [key, label] of Object.entries(ESTADOS_FIJOS)) agregar(key, label, null);
+
+  return options;
 }

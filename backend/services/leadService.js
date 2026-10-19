@@ -95,6 +95,36 @@ export const LEAD_PEOPLE_FIELDS = ['assigned_user_id', 'setter_user_id', 'closer
 /** Columna de `leads` que guarda a cada miembro del equipo del lead. */
 const LEAD_TEAM_COLUMNS = { setter: 'setter_user_id', closer: 'closer_user_id' };
 
+/**
+ * Acota una consulta sobre `leads` a lo que esta persona puede ver.
+ *
+ * Es la regla de "cada quien ve sus leads" escrita en SQL una sola vez, para
+ * que cualquier listado nuevo que lea la tabla —el Reporte de Leads fue el
+ * primero— no tenga que copiarla: una copia que se olvide de los tres roles o
+ * del Setter Funnel completo no es un filtro distinto, es una fuga.
+ *
+ * Sin `viewerId` no filtra nada (es el alcance `all`, el del administrador
+ * comercial). `setterFunnelStatuses` suma lo que todavía no graduó a Ventas y
+ * es el espejo en SQL de `leadHasGraduated()`: sin sello y con un status que no
+ * es comercial.
+ */
+export function applyLeadVisibility(query, { viewerId = null, setterFunnelStatuses = null } = {}) {
+  if (!viewerId) return query;
+
+  return query.where(function () {
+    this.where('leads.assigned_user_id', viewerId)
+      .orWhere('leads.setter_user_id', viewerId)
+      .orWhere('leads.closer_user_id', viewerId);
+    if (setterFunnelStatuses) {
+      this.orWhere(function () {
+        this.whereNull('leads.sales_funnel_at').andWhere(function () {
+          this.whereNull('leads.status').orWhereNotIn('leads.status', [...setterFunnelStatuses]);
+        });
+      });
+    }
+  });
+}
+
 /** Los mismos dígitos, calculados en SQL sobre la columna `phone`. */
 export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
 
@@ -609,21 +639,7 @@ export class LeadService {
       })
       .orderBy('leads.created_at', 'desc');
 
-    if (viewerId) {
-      query.where(function () {
-        this.where('leads.assigned_user_id', viewerId)
-          .orWhere('leads.setter_user_id', viewerId)
-          .orWhere('leads.closer_user_id', viewerId);
-        if (setterFunnelStatuses) {
-          this.orWhere(function () {
-            this.whereNull('leads.sales_funnel_at').andWhere(function () {
-              this.whereNull('leads.status').orWhereNotIn('leads.status', [...setterFunnelStatuses]);
-            });
-          });
-        }
-      });
-    }
-    return query;
+    return applyLeadVisibility(query, { viewerId, setterFunnelStatuses });
   }
 
   /**
@@ -641,12 +657,22 @@ export class LeadService {
     return { scope: 'mine', salesStatuses: null };
   }
 
+  /**
+   * El alcance de esta persona traducido a los argumentos con los que se acota
+   * una consulta sobre `leads` (`applyLeadVisibility()`). Lo usan el listado de
+   * los tableros y el Reporte de Leads: que `scope: 'all'` signifique "no
+   * filtres nada" se decide una vez acá y no en cada llamador.
+   */
+  async visibilityQueryFor(user) {
+    const { scope, salesStatuses } = await this.visibilityFor(user);
+    if (scope === 'all') return { scope, viewerId: null, setterFunnelStatuses: null };
+    return { scope, viewerId: user.id, setterFunnelStatuses: salesStatuses };
+  }
+
   /** Los leads que le tocan a esta persona según `visibilityFor()`. */
   async getLeadsVisibleTo(user) {
-    const { scope, salesStatuses } = await this.visibilityFor(user);
-    const leads = await this.getAllLeads(
-      scope === 'all' ? {} : { viewerId: user.id, setterFunnelStatuses: salesStatuses }
-    );
+    const { scope, viewerId, setterFunnelStatuses } = await this.visibilityQueryFor(user);
+    const leads = await this.getAllLeads({ viewerId, setterFunnelStatuses });
     return { leads, scope };
   }
 

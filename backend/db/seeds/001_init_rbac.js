@@ -21,6 +21,7 @@ const PERMISOS = [
   { key: 'leads.view', label: 'Funnel de Ventas' },
   { key: 'leads.manage_all', label: 'Ver y asignar todos los leads (jefe comercial)' },
   { key: 'leads.routing', label: 'Reparto automático de leads' },
+  { key: 'leads.report', label: 'Reporte de Leads (trazabilidad de etapas)' },
   { key: 'setter.view', label: 'Setter Funnel' },
   { key: 'setter.view_all', label: 'Ver todos los leads del Setter Funnel (no solo los asignados)' },
   { key: 'setter.filter_assignee', label: 'Filtrar el Setter Funnel por responsable (ver el tablero de cada persona)' },

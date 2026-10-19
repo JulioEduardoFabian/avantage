@@ -23,6 +23,7 @@ import { buildPaymentReceiptDocument } from './services/paymentReceiptDocument.j
 import { buildPaymentReceiptPdf, receiptPdfFilename } from './services/paymentReceiptPdf.js';
 import { LeadNoteService } from './services/leadNoteService.js';
 import { LeadStageChangeService } from './services/leadStageChangeService.js';
+import { LeadReportService } from './services/leadReportService.js';
 import { DocumentService } from './services/documentService.js';
 import { CampaignService } from './services/campaignService.js';
 import { MetaAdsService } from './services/metaAdsService.js';
@@ -156,6 +157,10 @@ const quoteService = new QuoteService();
 const contractTemplateService = new ContractTemplateService();
 const leadNoteService = new LeadNoteService();
 const leadStageChangeService = new LeadStageChangeService();
+// Reporte de Leads: no tiene tablas propias, es la bitácora de etapas leída
+// de corrido. Recibe leadService para reusar la regla de visibilidad del
+// funnel en vez de tener una propia.
+const leadReportService = new LeadReportService({ leadService, stageChangeService: leadStageChangeService });
 const campaignService = new CampaignService();
 const metaAdsService = new MetaAdsService();
 const tiktokAdsService = new TikTokAdsService();
@@ -2241,6 +2246,30 @@ app.get('/api/leads/:id/stage-history', requireAuth, requireAnyPermission('leads
   } catch (error) {
     console.error('❌ Error al obtener el historial de etapas del lead:', error);
     res.status(500).json({ error: 'Error al obtener el historial de etapas.', details: error.message });
+  }
+});
+
+/**
+ * Reporte de Leads: la misma bitácora de etapas, pero de todos los leads a la
+ * vez y filtrable — quién movió a cada uno, hacia qué etapa y cuándo.
+ *
+ * Tiene su propio permiso (`leads.report`) porque es una herramienta de
+ * supervisión y no una de trabajar leads, pero NO amplía lo que cada quien ve:
+ * el servicio reusa la regla de visibilidad del funnel, así que quien ve solo
+ * sus leads ve solo la trazabilidad de sus leads (`scope` viaja en la respuesta
+ * para que la pantalla pueda decirlo).
+ *
+ * Declarada después de `/api/leads/*` a propósito: es su propia ruta
+ * (`/api/lead-report`) y no `/api/leads/report`, que Express resolvería contra
+ * `/api/leads/:id` tomando "report" como un id.
+ */
+app.get('/api/lead-report', requireAuth, requirePermission('leads.report'), async (req, res) => {
+  try {
+    const report = await leadReportService.report(req.user, req.query);
+    res.json(report);
+  } catch (error) {
+    console.error('❌ Error al armar el Reporte de Leads:', error);
+    res.status(500).json({ error: 'Error al armar el Reporte de Leads.', details: error.message });
   }
 });
 

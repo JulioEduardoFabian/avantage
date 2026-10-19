@@ -436,6 +436,38 @@ antes de tocar el arranque de producción.
   ponerle una etapa fuera del funnel comercial — el bot y los automatismos reciben el lead sin
   cambios. Cada movimiento (y cada intento rechazado, con `blocked`) queda en `lead_stage_changes`,
   que se lee desde la ficha del lead en el Funnel de Ventas y por `GET /api/leads/:id/stage-history`.
+- El módulo **Reporte de Leads** (`/admin/reporte-leads`, `LeadReportView.vue`, permiso
+  `leads.report`, `leadReportService.js`, `GET /api/lead-report`) es esa misma bitácora leída de
+  corrido: todos los leads con su trazabilidad —quién movió a cada uno, hacia qué etapa y en qué
+  fecha y hora—, filtrable por persona (incluido el bot y el sistema), etapa actual, rango de
+  fechas de los movimientos y "solo intentos bloqueados". **No tiene tabla propia**, como
+  Cobranzas: inventarle una obligaría a escribir cada movimiento en dos lados, y el día que se
+  separen nadie sabría cuál dice la verdad. Hasta ahora `lead_stage_changes` solo se podía leer de
+  a un lead entrando a su ficha, así que "¿qué movió ayer cada persona?" se contestaba abriendo
+  fichas de una en una.
+  **La visibilidad es la del funnel y no una propia**: reusa `applyLeadVisibility()` —extraída de
+  `getAllLeads()` justamente para esto— vía `leadService.visibilityQueryFor()`, así que el reporte
+  no puede ser una puerta de atrás a los leads que alguien no ve en su tablero (`scope` viaja en la
+  respuesta para que la pantalla lo explique en vez de parecer vacía por error). El permiso es
+  propio porque es una herramienta de **supervisión**, no de trabajar leads, y la migración lo
+  siembra a quien ya administra el área comercial (`leads.manage_all`).
+  Dos reglas de la pantalla: (1) los **filtros eligen leads** (`whereExists` sobre la bitácora) y de
+  cada uno se muestra la historia **completa** — media historia, justo la mitad que el filtro dejó
+  afuera, es con lo que se saca una conclusión equivocada; (2) el **alta del lead es el primer hito**
+  de la línea de tiempo, derivado en cada lectura de `created_at`/`created_by`/`source` y marcado
+  con `derived: true`: la bitácora nace con su migración (26/10/2026), así que de los leads
+  anteriores no tiene una sola fila, y una trayectoria que arranca en la nada se lee como una
+  pantalla rota. Los nombres de etapa salen de `buildStatusLabeler()` en el servidor (la otra mitad
+  de `buildStageResolver()`, la que no necesita un lead: `from_status` ya no es el de la ficha) para
+  que el reporte, el tablero y la bandeja de WhatsApp digan lo mismo, y quién movió el lead lo
+  nombra `actorLabel()` en un solo sitio, porque lo dicen la línea de tiempo y el desplegable que
+  filtra por esa misma persona. El desplegable de actores sale de la bitácora y no del área
+  comercial: ahí figuran el bot, los automatismos y la gente que ya no está en el panel —a quien se
+  busca justamente cuando se investiga un movimiento viejo—, y no figura quien nunca movió nada.
+  Los filtros y la paginación se resuelven en el **servidor** (25 leads por página, y los
+  movimientos de esa página en UNA consulta, `listForLeads()`): filtrar en el navegador sobre lo
+  cargado es "busca entre los primeros 25", y el movimiento que se viene a investigar es el que no
+  está a mano.
 - `leadService.findByPhone()` cruza primero la cadena exacta y después los últimos 9 dígitos
   (`phoneMatchKey`): el `wa_id` del bot (`51987654321`) y lo que escribe la persona en el formulario
   de Meta (`+51 987 654 321`) son el mismo contacto, y compararlos tal cual hacía que el bot le

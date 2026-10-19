@@ -10,6 +10,7 @@ import DeliverablesView from '../views/DeliverablesView.vue';
 import RolesView from '../views/RolesView.vue';
 import CareersView from '../views/CareersView.vue';
 import LeadRoutingView from '../views/LeadRoutingView.vue';
+import LeadReportView from '../views/LeadReportView.vue';
 import MetaWebhookTestView from '../views/MetaWebhookTestView.vue';
 import SocialInteractionsView from '../views/SocialInteractionsView.vue';
 import WhatsAppView from '../views/WhatsAppView.vue';
@@ -46,6 +47,7 @@ const router = createRouter({
     { path: '/admin/database', name: 'database', component: DatabaseView, meta: { requiresAuth: true, permission: 'database.view' } },
     { path: '/admin/leads', name: 'leads', component: LeadsView, meta: { requiresAuth: true, permission: 'leads.view' } },
     { path: '/admin/setter-funnel', name: 'setter-funnel', component: SetterFunnelView, meta: { requiresAuth: true, permission: 'setter.view' } },
+    { path: '/admin/reporte-leads', name: 'lead-report', component: LeadReportView, meta: { requiresAuth: true, permission: 'leads.report' } },
     { path: '/admin/projects', name: 'projects', component: ProjectsView, meta: { requiresAuth: true, permission: 'projects.view' } },
     { path: '/admin/projects/:id', name: 'project-detail', component: ProjectDetailView, props: true, meta: { requiresAuth: true, permission: 'projects.view' } },
     { path: '/admin/entregables', name: 'deliverables', component: DeliverablesView, meta: { requiresAuth: true, permission: 'deliverables.view' } },
