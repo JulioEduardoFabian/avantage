@@ -78,6 +78,20 @@ export const BACKFILL_WINDOW_DAYS = 7;
 const DEFAULT_LEAD_EVENT_SOURCE = 'Avantage CRM';
 
 /**
+ * Versión de la Graph API para ESTE endpoint, aparte de la global
+ * (`META_GRAPH_API_VERSION`, hoy v21.0) y no cayendo a ella a propósito.
+ *
+ * La Conversions API crece por su cuenta: los campos de mensajería
+ * (`ctwa_clid`, `messaging_channel`) son recientes, y una versión vieja no los
+ * rechaza —acepta el evento y no atribuye nada—, que es la misma forma
+ * silenciosa de fallar que mandar el evento al conjunto de datos equivocado.
+ * Es la versión que el propio asistente de Events Manager entrega al crear el
+ * conjunto de datos. La global se queda donde está porque de ella cuelgan los
+ * webhooks, Instagram y las métricas de anuncios, que se probaron con esa.
+ */
+const DEFAULT_CAPI_VERSION = 'v26.0';
+
+/**
  * `lead_id` es un entero de 15 a 17 dígitos y Meta pide no hashearlo. El
  * problema es JavaScript: a partir de 2^53 un entero pierde los últimos
  * dígitos, así que convertir a número un id de 17 dígitos lo convierte en el id
@@ -212,7 +226,7 @@ export class MetaConversionsService {
       datasetId,
       messagingDatasetId,
       accessToken,
-      version: process.env.META_GRAPH_API_VERSION || 'v21.0',
+      version: String(process.env.META_CAPI_GRAPH_API_VERSION || '').trim() || DEFAULT_CAPI_VERSION,
       testEventCode: String(process.env.META_CAPI_TEST_EVENT_CODE || '').trim() || null,
       leadEventSource: String(process.env.META_CAPI_LEAD_EVENT_SOURCE || '').trim() || DEFAULT_LEAD_EVENT_SOURCE,
       enabled: Boolean(accessToken && (datasetId || messagingDatasetId))

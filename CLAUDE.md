@@ -645,6 +645,12 @@ antes de tocar el arranque de producción.
   mientras un movimiento perdido no se recupera. Las credenciales son del `.env`
   (`META_CAPI_DATASET_ID`, `META_CAPI_ACCESS_TOKEN`, que cae a `META_ADS_ACCESS_TOKEN` porque es el
   que ya tiene `ads_management`); sin ellas la integración queda apagada y no se intenta nada.
+  La **versión de la Graph API de este endpoint es propia** (`META_CAPI_GRAPH_API_VERSION`, v26.0
+  por defecto) y no cae a `META_GRAPH_API_VERSION` (v21.0, la que usan los webhooks, Instagram y
+  las métricas de anuncios): los campos de mensajería son recientes y una versión vieja no los
+  rechaza —acepta el evento y no atribuye nada—, el mismo fallo silencioso que el conjunto de
+  datos cruzado. Aparte: v21.0 **expira el 21/01/2027**, así que la versión global hay que subirla
+  igual, pero eso toca todas las integraciones y es un cambio con sus propias pruebas.
 - **Cada quien ve sus leads.** Los dos tableros (y la Base de Datos) muestran solo los leads cuyo
   responsable es quien mira; `leads.manage_all` —"administrador del área comercial"— es el que ve el
   total y el **único** que puede asignar (`PATCH /api/leads/:id/assignee` lo exige, y el círculo de
