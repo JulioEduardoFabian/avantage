@@ -645,6 +645,10 @@ antes de tocar el arranque de producción.
   mientras un movimiento perdido no se recupera. Las credenciales son del `.env`
   (`META_CAPI_DATASET_ID`, `META_CAPI_ACCESS_TOKEN`, que cae a `META_ADS_ACCESS_TOKEN` porque es el
   que ya tiene `ads_management`); sin ellas la integración queda apagada y no se intenta nada.
+  `backend/scripts/diagnosticarCtwa.js` (solo lee) contesta si el proveedor de WhatsApp está
+  reenviando el `ctwa_clid` y cuántos leads se reportarían por él: sin ese click id no hay conjunto
+  de datos ni configuración que arregle la mitad de Click-to-WhatsApp, y conviene medirlo antes de
+  salir a buscar el `META_CAPI_MESSAGING_DATASET_ID`.
   La **versión de la Graph API de este endpoint es propia** (`META_CAPI_GRAPH_API_VERSION`, v26.0
   por defecto) y no cae a `META_GRAPH_API_VERSION` (v21.0, la que usan los webhooks, Instagram y
   las métricas de anuncios): los campos de mensajería son recientes y una versión vieja no los
