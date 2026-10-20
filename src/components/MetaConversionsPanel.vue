@@ -273,6 +273,17 @@ function boardName(board) {
   return 'desenlace fijo';
 }
 
+/**
+ * El error del servidor con su detalle pegado. El `details` es casi siempre lo
+ * accionable ("falta correr las migraciones", el mensaje de Meta tal cual) y
+ * quedaba descartado: la pantalla mostraba solo el titular, que manda a buscar
+ * el problema donde no está.
+ */
+function errorText(data, fallback) {
+  const base = data?.error || fallback;
+  return data?.details ? `${base} ${data.details}` : base;
+}
+
 function flash(message) {
   okMessage.value = message;
   setTimeout(() => { okMessage.value = ''; }, 8000);
@@ -284,7 +295,7 @@ async function load() {
   try {
     const response = await apiFetch('/api/meta-capi');
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo leer la configuración de conversiones.');
+    if (!response.ok) throw new Error(errorText(data, 'No se pudo leer la configuración de conversiones.'));
     Object.assign(config, data.config || {});
     Object.assign(summary, { enviado: 0, error: 0, omitido: 0 }, data.summary || {});
     stages.value = data.stages || [];
@@ -314,7 +325,7 @@ async function save() {
       body: JSON.stringify({ mapping: payload })
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo guardar el mapeo.');
+    if (!response.ok) throw new Error(errorText(data, 'No se pudo guardar el mapeo.'));
     mapping.value = data.mapping || [];
     buildRows();
     flash('Mapeo guardado. Los próximos cambios de etapa se reportan así.');
@@ -331,7 +342,7 @@ async function sendTest() {
   try {
     const response = await apiFetch('/api/meta-capi/test', { method: 'POST' });
     const data = await response.json();
-    if (!data.ok) throw new Error(data.error || 'Meta rechazó el evento de prueba.');
+    if (!data.ok) throw new Error(errorText(data, 'Meta rechazó el evento de prueba.'));
     flash(
       `Evento de prueba aceptado por Meta (lead #${data.leadId}, ${kindLabel(data.identifierKind)})` +
       (data.testEventCode ? '. Míralo en Events Manager > Probar eventos.' : '.')
@@ -350,7 +361,7 @@ async function backfill() {
   try {
     const response = await apiFetch('/api/meta-capi/backfill', { method: 'POST' });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo reenviar.');
+    if (!response.ok) throw new Error(errorText(data, 'No se pudo reenviar.'));
     if (data.reason === 'sin_configurar') throw new Error('Falta el dataset o el token.');
     if (data.reason === 'sin_etapas') throw new Error('No hay ninguna etapa marcada para reportar.');
     flash(

@@ -2864,6 +2864,19 @@ app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async
     });
   } catch (error) {
     console.error('❌ Error al leer la configuración de conversiones de Meta:', error);
+    /*
+     * El fallo más probable de este módulo recién desplegado es que falten sus
+     * tablas: el código viaja con el despliegue y las migraciones se corren
+     * aparte. Decirlo con todas las letras ahorra el diagnóstico — "Error al
+     * leer la configuración" mandaría a buscar el problema en el token o en
+     * Meta, que es justo donde no está.
+     */
+    if (error.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(500).json({
+        error: 'Faltan las tablas de conversiones en esta base de datos.',
+        details: 'Ejecuta `npm run migrate` en este entorno y vuelve a cargar la pantalla.'
+      });
+    }
     res.status(500).json({ error: 'Error al leer la configuración de conversiones.', details: error.message });
   }
 });
