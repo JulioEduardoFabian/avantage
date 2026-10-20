@@ -645,6 +645,12 @@ antes de tocar el arranque de producción.
   mientras un movimiento perdido no se recupera. Las credenciales son del `.env`
   (`META_CAPI_DATASET_ID`, `META_CAPI_ACCESS_TOKEN`, que cae a `META_ADS_ACCESS_TOKEN` porque es el
   que ya tiene `ads_management`); sin ellas la integración queda apagada y no se intenta nada.
+  Buscar el `ctwa_clid` de un lead tiene los **dos** caminos de `resolveWaIdForPhone()`: primero la
+  coincidencia exacta del `wa_id` y después los últimos 9 dígitos. La exacta no es un atajo — hay
+  conversaciones cuyo identificador no es un teléfono sino un id de usuario de la empresa
+  (`PE.2379096279586501`, el 40% de los contactos de anuncio del período medido el 20/10/2026) y el
+  lead que nace de ellas guarda ESE texto en `phone`, donde `phoneKey()` devuelve null con razón:
+  no son teléfonos y cruzarlos por sus últimos dígitos emparejaría contactos distintos.
   `backend/scripts/diagnosticarCtwa.js` (solo lee) contesta si el proveedor de WhatsApp está
   reenviando el `ctwa_clid` y cuántos leads se reportarían por él: sin ese click id no hay conjunto
   de datos ni configuración que arregle la mitad de Click-to-WhatsApp, y conviene medirlo antes de

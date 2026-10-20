@@ -295,11 +295,35 @@ export class MetaConversionsService {
    * identificadores que no son teléfonos (los BSUID de Instagram).
    */
   async ctwaClidFor(lead) {
-    const key = phoneKey(lead?.phone);
-    if (!key) return null;
+    const identificador = String(lead?.phone || '').trim();
+    if (!identificador) return null;
 
-    const rows = await db('whatsapp_messages')
-      .whereRaw(`${WA_ID_MATCH_KEY_SQL} = ?`, [key])
+    /*
+     * Primero la coincidencia EXACTA y después los últimos 9 dígitos, el mismo
+     * orden que `resolveWaIdForPhone()`. La exacta no es una optimización: hay
+     * conversaciones cuyo `wa_id` no es un teléfono sino un identificador de
+     * usuario de la empresa (`PE.2379096279586501`), y el lead que nace de
+     * ellas guarda ESE texto en `phone`. Para esos, `phoneKey()` devuelve null
+     * —con razón: no son teléfonos y emparejarlos por sus últimos dígitos
+     * cruzaría contactos distintos—, así que sin este primer paso se quedaban
+     * sin reportar, y son una parte grande de los leads de Click-to-WhatsApp.
+     */
+    const clid = await this.#clidFromMessages((query) => query.where('wa_id', identificador));
+    if (clid) return clid;
+
+    const key = phoneKey(identificador);
+    if (!key) return null;
+    return this.#clidFromMessages((query) => query.whereRaw(`${WA_ID_MATCH_KEY_SQL} = ?`, [key]));
+  }
+
+  /**
+   * El primer `ctwa_clid` de los mensajes que elija `filtro`. Se miran los
+   * primeros con referral y no solo el primero: Meta manda el click id en el
+   * mensaje que abre la conversación, pero si esa fila quedó guardada sin él
+   * (un payload recortado) el del siguiente anuncio sirve igual.
+   */
+  async #clidFromMessages(filtro) {
+    const rows = await filtro(db('whatsapp_messages'))
       .whereNotNull('referral')
       .orderBy('received_at', 'asc')
       .limit(5)

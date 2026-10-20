@@ -81,25 +81,51 @@ for (const fila of conClid.slice(0, 5)) {
   );
 }
 
-// Cuántos de esos contactos son leads que el panel podría reportar: se cruza
-// por los últimos 9 dígitos, el mismo criterio de `ctwaClidFor()`.
-const sufijos = [...contactosConClid]
+/*
+ * Cuántos de esos contactos son leads que el panel puede reportar, con los
+ * MISMOS dos caminos que usa `ctwaClidFor()` y no con uno solo:
+ *
+ *   - exacto, para las conversaciones cuyo identificador no es un teléfono
+ *     sino un id de usuario de la empresa ("PE.2379096279586501"): el lead que
+ *     nace de ellas guarda ese texto en `phone`;
+ *   - por los últimos 9 dígitos, para los teléfonos, que cada puerta escribe
+ *     distinto.
+ *
+ * Los BSUID se separan a propósito: quitarles los puntos y quedarse con sus
+ * últimos 9 dígitos los haría parecer teléfonos y podrían cruzar con el lead
+ * equivocado. Por eso se cuentan aparte y se buscan por igualdad.
+ */
+const esBsuid = (waId) => /[a-z]/i.test(String(waId));
+const bsuids = [...contactosConClid].filter(esBsuid);
+const telefonos = [...contactosConClid].filter((waId) => !esBsuid(waId));
+const sufijos = telefonos
   .map((waId) => String(waId).replace(/\D/g, '').slice(-9))
   .filter((key) => key.length === 9);
 
-if (sufijos.length > 0) {
-  const leads = await db('leads')
+console.log(`\n▶ De los ${contactosConClid.size} contactos con ctwa_clid: ${telefonos.length} son teléfonos y ${bsuids.length} son identificadores de usuario (PE.…).`);
+
+const porTelefono = sufijos.length
+  ? await db('leads')
     .whereRaw(
       `RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9) IN (${sufijos.map(() => '?').join(',')})`,
       sufijos
     )
-    .select('id', 'full_name', 'status', 'meta_leadgen_id');
+    .select('id', 'meta_leadgen_id')
+  : [];
 
-  const soloCtwa = leads.filter((lead) => !lead.meta_leadgen_id);
-  console.log(`\n▶ Leads que cruzan con esos contactos: ${leads.length}`);
-  console.log(`   De ellos, SIN lead_id de formulario (o sea, los que se reportarían por ctwa_clid): ${soloCtwa.length}`);
-  console.log('\n   Con META_CAPI_MESSAGING_DATASET_ID configurado, esos son los que empezarían a');
-  console.log('   reportarse cuando cambien de etapa. Sin él, quedan sin reportar.');
+const porBsuid = bsuids.length
+  ? await db('leads').whereIn('phone', bsuids).select('id', 'meta_leadgen_id')
+  : [];
+
+const leads = [...porTelefono, ...porBsuid];
+const soloCtwa = leads.filter((lead) => !lead.meta_leadgen_id);
+console.log(`\n▶ Leads que cruzan con esos contactos: ${leads.length} (${porTelefono.length} por teléfono, ${porBsuid.length} por identificador de usuario)`);
+console.log(`   De ellos, SIN lead_id de formulario (o sea, los que se reportarían por ctwa_clid): ${soloCtwa.length}`);
+const sinLead = contactosConClid.size - leads.length;
+if (sinLead > 0) {
+  console.log(`   ${sinLead} contacto(s) con ctwa_clid no tienen lead que les corresponda: esos no se reportan.`);
 }
+console.log('\n   Con META_CAPI_MESSAGING_DATASET_ID configurado, esos son los que empezarían a');
+console.log('   reportarse cuando cambien de etapa. Sin él, quedan sin reportar.');
 
 await db.destroy();
