@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BACKFILL_WINDOW_DAYS,
   buildEvent,
+  datasetFor,
   eventTimeFor,
   leadIdValue,
   resolveIdentifier
@@ -138,4 +139,24 @@ test('una fecha futura se recorta a ahora', () => {
 test('sin fecha de movimiento no hay evento', () => {
   assert.equal(eventTimeFor({ movedAt: null, now: AHORA }).ok, false);
   assert.equal(eventTimeFor({ movedAt: 'cualquier cosa', now: AHORA }).ok, false);
+});
+
+test('cada origen va a SU conjunto de datos', () => {
+  // Cruzarlos no devuelve error: Meta acepta el evento y no lo atribuye a
+  // ningún anuncio, que es la peor forma de fallar porque nadie se entera.
+  const config = { datasetId: 'CRM-1', messagingDatasetId: 'WABA-2' };
+  assert.equal(datasetFor('lead_id', config), 'CRM-1');
+  assert.equal(datasetFor('ctwa_clid', config), 'WABA-2');
+});
+
+test('sin el conjunto de mensajería, el lead de Click-to-WhatsApp no se manda al de CRM', () => {
+  const config = { datasetId: 'CRM-1', messagingDatasetId: '' };
+  assert.equal(datasetFor('ctwa_clid', config), null);
+  assert.equal(datasetFor('lead_id', config), 'CRM-1');
+});
+
+test('sin ninguno configurado no hay destino', () => {
+  assert.equal(datasetFor('lead_id', {}), null);
+  assert.equal(datasetFor('ctwa_clid', {}), null);
+  assert.equal(datasetFor('lead_id'), null);
 });

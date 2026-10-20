@@ -29,9 +29,18 @@
       </div>
       <ul class="capi-config-list">
         <li>
-          Conjunto de datos (dataset):
+          Leads de formulario (conjunto de datos de CRM):
           <code v-if="config.datasetId">{{ config.datasetId }}</code>
-          <em v-else>falta <code>META_CAPI_DATASET_ID</code></em>
+          <em v-else>falta <code>META_CAPI_DATASET_ID</code> — no se reportan</em>
+        </li>
+        <!-- Son dos conjuntos distintos a propósito: el `ctwa_clid` solo se
+             atribuye al anuncio contra el conjunto ligado a la cuenta de
+             WhatsApp Business. Mandarlo al de CRM no da error, simplemente no
+             atribuye nada. -->
+        <li>
+          Leads de Click-to-WhatsApp (conjunto de la cuenta de WhatsApp):
+          <code v-if="config.messagingDatasetId">{{ config.messagingDatasetId }}</code>
+          <em v-else>falta <code>META_CAPI_MESSAGING_DATASET_ID</code> — no se reportan</em>
         </li>
         <li>
           Token de acceso:
@@ -179,6 +188,7 @@ import { formatLeadDate } from '../leadCardDate.js';
 const config = reactive({
   enabled: false,
   datasetId: null,
+  messagingDatasetId: null,
   hasToken: false,
   testEventCode: null,
   leadEventSource: '',

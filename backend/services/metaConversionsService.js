@@ -38,6 +38,15 @@ import { loadFunnelStageIndex, stageOptions } from './funnelStageLabel.js';
  *     `whatsapp_messages` ya guarda entero. Va con
  *     `action_source: 'business_messaging'` + `messaging_channel: 'whatsapp'`.
  *
+ * Y cada uno va a **su propio conjunto de datos**, que es la parte que no se
+ * adivina: el de CRM es el que se crea en Events Manager (Integraciones >
+ * Conectar un nuevo origen de datos > CRM) y el de mensajería es el que Meta
+ * tiene ligado a la cuenta de WhatsApp Business. Mandar los eventos de
+ * Click-to-WhatsApp al conjunto de CRM no da error: los acepta y no los
+ * atribuye a ningún anuncio, que es la peor forma de fallar. Por eso, sin
+ * `META_CAPI_MESSAGING_DATASET_ID`, esa mitad queda apagada y lo dice en
+ * pantalla, en vez de enviar a un destino que no sirve.
+ *
  * Un lead del evaluador público o cargado a mano **no tiene ninguno de los
  * dos** y no se reporta: no hay a qué anuncio atribuirlo, y mandar el evento
  * sin identificador es un evento que Meta descarta.
@@ -162,6 +171,20 @@ export function buildEvent({ eventName, eventTime, identifier, leadEventSource =
   };
 }
 
+/**
+ * A qué conjunto de datos va el evento según con qué se identifica el lead.
+ *
+ * Son dos destinos distintos y no es un detalle de configuración: el conjunto
+ * de CRM es el que lleva el flujo "Conversion Leads" y entiende un `lead_id`,
+ * y el de mensajería es el que Meta mantiene ligado a la cuenta de WhatsApp
+ * Business, que es el único contra el que un `ctwa_clid` se puede atribuir al
+ * anuncio. Cruzarlos no devuelve error: Meta acepta el evento y no lo atribuye
+ * a nada, así que la campaña sigue optimizando a ciegas y nadie se entera.
+ */
+export function datasetFor(identifierKind, { datasetId, messagingDatasetId } = {}) {
+  return (identifierKind === 'ctwa_clid' ? messagingDatasetId : datasetId) || null;
+}
+
 export class MetaConversionsService {
   constructor({ fetchImpl = null } = {}) {
     // Inyectable para las pruebas: nada en este servicio tiene que llamar a
@@ -181,16 +204,18 @@ export class MetaConversionsService {
    */
   config() {
     const datasetId = String(process.env.META_CAPI_DATASET_ID || '').trim();
+    const messagingDatasetId = String(process.env.META_CAPI_MESSAGING_DATASET_ID || '').trim();
     const accessToken = String(
       process.env.META_CAPI_ACCESS_TOKEN || process.env.META_ADS_ACCESS_TOKEN || ''
     ).trim();
     return {
       datasetId,
+      messagingDatasetId,
       accessToken,
       version: process.env.META_GRAPH_API_VERSION || 'v21.0',
       testEventCode: String(process.env.META_CAPI_TEST_EVENT_CODE || '').trim() || null,
       leadEventSource: String(process.env.META_CAPI_LEAD_EVENT_SOURCE || '').trim() || DEFAULT_LEAD_EVENT_SOURCE,
-      enabled: Boolean(datasetId && accessToken)
+      enabled: Boolean(accessToken && (datasetId || messagingDatasetId))
     };
   }
 
@@ -304,6 +329,18 @@ export class MetaConversionsService {
       const identifier = resolveIdentifier(lead, await this.ctwaClidFor(lead));
       if (!identifier) return { state: 'omitido', reason: 'sin_atribucion_meta' };
 
+      // Cada origen tiene su conjunto de datos. Si falta el que le toca, no se
+      // manda al otro: se omite, y la pantalla lo muestra como configuración
+      // incompleta (no se anota en la bitácora porque se repetiría en cada
+      // movimiento de cada lead hasta que alguien lo configure).
+      const dataset = datasetFor(identifier.kind, config);
+      if (!dataset) {
+        return {
+          state: 'omitido',
+          reason: identifier.kind === 'ctwa_clid' ? 'sin_dataset_de_mensajes' : 'sin_dataset_de_crm'
+        };
+      }
+
       if (await this.alreadySent(lead.id, stage.event_name)) {
         return { state: 'omitido', reason: 'ya_enviado' };
       }
@@ -325,7 +362,7 @@ export class MetaConversionsService {
         leadEventSource: config.leadEventSource
       });
 
-      const result = await this.sendEvents([event], config);
+      const result = await this.sendEvents([event], config, dataset);
       await this.#log({
         lead,
         stage,
@@ -355,10 +392,11 @@ export class MetaConversionsService {
    * memoria: Meta descarta el lote entero si una fila viene mal, así que un
    * evento con un id raro no puede arrastrar a los demás.
    */
-  async sendEvents(events, config = this.config()) {
-    if (!config.enabled) return { ok: false, error: 'Falta META_CAPI_DATASET_ID o el token.' };
+  async sendEvents(events, config = this.config(), datasetId = config.datasetId) {
+    if (!config.accessToken) return { ok: false, error: 'Falta el token de acceso de Meta.' };
+    if (!datasetId) return { ok: false, error: 'Falta el conjunto de datos (dataset) de Meta.' };
 
-    const url = `https://graph.facebook.com/${config.version}/${config.datasetId}/events`;
+    const url = `https://graph.facebook.com/${config.version}/${datasetId}/events`;
     const payload = { data: events, access_token: config.accessToken };
     if (config.testEventCode) payload.test_event_code = config.testEventCode;
 
@@ -432,16 +470,23 @@ export class MetaConversionsService {
    */
   async sendTestEvent() {
     const config = this.config();
-    if (!config.enabled) {
-      return { ok: false, error: 'Falta configurar META_CAPI_DATASET_ID y el token de acceso.' };
+    if (!config.accessToken) {
+      return { ok: false, error: 'Falta el token de acceso (META_CAPI_ACCESS_TOKEN o META_ADS_ACCESS_TOKEN).' };
     }
 
-    const lead = await db('leads').whereNotNull('meta_leadgen_id').orderBy('id', 'desc').first();
+    // Se prueba contra el conjunto de datos que esté configurado, con un lead
+    // de ESE origen: probar el de CRM con un lead de Click-to-WhatsApp no
+    // probaría la ruta que después se va a usar.
+    const lead = config.datasetId
+      ? await db('leads').whereNotNull('meta_leadgen_id').orderBy('id', 'desc').first()
+      : null;
     const identifier = lead ? resolveIdentifier(lead) : null;
     if (!identifier) {
       return {
         ok: false,
-        error: 'No hay ningún lead con atribución de Meta todavía (ni formulario ni Click-to-WhatsApp), así que no hay con qué probar.'
+        error: config.datasetId
+          ? 'No hay ningún lead con `lead_id` de un formulario de Meta todavía, así que no hay con qué probar el conjunto de datos de CRM.'
+          : 'Falta META_CAPI_DATASET_ID (el conjunto de datos de CRM): es el que se usa para la prueba.'
       };
     }
 
@@ -451,7 +496,7 @@ export class MetaConversionsService {
       identifier,
       leadEventSource: config.leadEventSource
     });
-    const result = await this.sendEvents([event], config);
+    const result = await this.sendEvents([event], config, datasetFor(identifier.kind, config));
     return {
       ok: result.ok,
       error: result.error || null,

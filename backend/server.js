@@ -2835,7 +2835,7 @@ app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks
  */
 app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
   try {
-    const { datasetId, accessToken, enabled, testEventCode, leadEventSource, version } =
+    const { datasetId, messagingDatasetId, accessToken, enabled, testEventCode, leadEventSource, version } =
       metaConversionsService.config();
     const [mapping, events, summary, stages] = await Promise.all([
       metaConversionsService.mapping(),
@@ -2850,6 +2850,7 @@ app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async
       config: {
         enabled,
         datasetId: datasetId || null,
+        messagingDatasetId: messagingDatasetId || null,
         hasToken: Boolean(accessToken),
         testEventCode,
         leadEventSource,

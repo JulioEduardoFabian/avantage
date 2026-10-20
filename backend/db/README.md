@@ -326,6 +326,11 @@ Un lead se reporta solo si Meta puede reconocerlo, y hay exactamente dos identif
 del primer mensaje de la conversación, dentro de `whatsapp_messages`. El lead del evaluador público
 o cargado a mano no tiene ninguno y no se reporta. **No viaja ningún importe.**
 
+Cada identificador va además a **su propio conjunto de datos** de Meta: el de CRM para el `lead_id`
+y el ligado a la cuenta de WhatsApp Business para el `ctwa_clid`. Cruzarlos no devuelve error —Meta
+acepta el evento y no lo atribuye a ningún anuncio—, así que sin el segundo configurado esa mitad
+queda apagada a propósito.
+
 Cada intento queda en `meta_capi_events` con su estado (`enviado` / `error` / `omitido`) y el
 mensaje de Meta tal cual. De esa tabla cuelgan dos cosas que no son adornos: que un evento no se
 mande dos veces por lead, y el reenvío de los últimos 7 días (lo que no entre en esa ventana Meta ya

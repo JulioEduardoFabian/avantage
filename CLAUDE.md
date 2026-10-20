@@ -617,7 +617,14 @@ antes de tocar el arranque de producción.
   `custom_data.event_source: 'crm'`) o su `ctwa_clid` (el click id que viaja en el `referral` del
   primer mensaje y que `whatsapp_messages` ya guarda entero → `action_source:
   'business_messaging'` + `messaging_channel: 'whatsapp'`). El del evaluador público o el cargado a
-  mano no se reportan: no hay anuncio al que atribuirlos. **No viaja ningún importe** — Meta recibe
+  mano no se reportan: no hay anuncio al que atribuirlos.
+  Y cada origen va a **su propio conjunto de datos** (`datasetFor()`): el de CRM
+  (`META_CAPI_DATASET_ID`, el que se crea en Events Manager > Integraciones > CRM) y el que Meta
+  mantiene ligado a la cuenta de WhatsApp Business (`META_CAPI_MESSAGING_DATASET_ID`, el único
+  contra el que un `ctwa_clid` se atribuye al anuncio). Cruzarlos **no da error**: Meta acepta el
+  evento y no lo atribuye a nada, así que la campaña sigue optimizando a ciegas y nadie se entera —
+  por eso, sin el de mensajería, esa mitad queda apagada y la pantalla lo dice, en vez de enviar a
+  un destino que no sirve. **No viaja ningún importe** — Meta recibe
   la etapa, no cuánto facturó el cliente, misma regla que el resto del sistema.
   Qué etapa se reporta y con qué nombre de evento vive en `meta_capi_stage_events` y **no** en una
   constante: las columnas del funnel las crea el equipo y sus claves se generan solas
