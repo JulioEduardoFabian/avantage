@@ -254,6 +254,24 @@
               <label class="form-label">Detalle</label>
               <input v-model="paymentForm.detalle" type="text" class="form-input" placeholder="Opcional" />
             </div>
+            <div class="form-group ledger-form-wide">
+              <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
+              <input
+                ref="paymentFileInput"
+                type="file"
+                accept="image/*,application/pdf"
+                multiple
+                class="form-input"
+                @change="onPaymentFileChange"
+              />
+              <p class="ledger-receipt-hint">
+                Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
+                <template v-if="paymentEditing">
+                  Se añaden a los {{ paymentEditing.receipts?.length || 0 }} que ya tiene; para
+                  quitar alguno usa la ✕ de su miniatura en la tabla.
+                </template>
+              </p>
+            </div>
           </div>
           <div class="salary-form-actions">
             <button type="submit" class="btn-primary ledger-submit-btn" :disabled="isSaving">
@@ -462,7 +480,47 @@
                     <span v-if="child.detalle" class="ledger-detalle" :title="child.detalle">{{ child.detalle }}</span>
                     <span v-else class="ledger-muted">—</span>
                   </td>
-                  <td></td>
+                  <td>
+                    <!-- El comprobante es de cada pago, no del acuerdo: es lo
+                         que respalda que ESA parte salió. -->
+                    <div class="receipt-cell">
+                      <span
+                        v-for="rcpt in child.receipts"
+                        :key="rcpt.id"
+                        class="receipt-thumb"
+                        :title="receiptTitle(rcpt)"
+                      >
+                        <a
+                          v-if="receiptUrls[rcpt.id]"
+                          :href="receiptUrls[rcpt.id]"
+                          target="_blank"
+                          rel="noopener"
+                          class="receipt-thumb-link"
+                        >
+                          <span v-if="isPdfReceipt(rcpt.mime_type, rcpt.original_name)" class="receipt-thumb-pdf">PDF</span>
+                          <img v-else :src="receiptUrls[rcpt.id]" alt="Comprobante" />
+                        </a>
+                        <span v-else-if="rcpt.missing" class="receipt-thumb-missing">!</span>
+                        <span v-else class="receipt-thumb-loading">…</span>
+                        <button
+                          type="button"
+                          class="receipt-remove"
+                          title="Eliminar comprobante"
+                          @click="removeReceipt(rcpt.id)"
+                        >✕</button>
+                      </span>
+                      <label class="receipt-add" title="Agregar comprobantes (imágenes o PDF)">
+                        <input
+                          type="file"
+                          accept="image/*,application/pdf"
+                          multiple
+                          hidden
+                          @change="(e) => uploadReceipts(child.id, e)"
+                        />
+                        +
+                      </label>
+                    </div>
+                  </td>
                   <td class="ledger-col-actions">
                     <div class="ledger-row-actions">
                       <button type="button" class="ledger-icon-btn" title="Editar pago" aria-label="Editar pago" @click="openPaymentForm(row, child)">
@@ -542,6 +600,8 @@ const paymentParent = ref(null);
 /** El pago que se está editando; null = se está registrando uno nuevo. */
 const paymentEditing = ref(null);
 const paymentPanel = ref(null);
+const paymentFileInput = ref(null);
+let pendingPaymentFiles = [];
 const paymentForm = reactive({
   fecha: new Date().toISOString().slice(0, 10), monto: '', estado: 'pagado', metodoPago: '', banco: '', detalle: ''
 });
@@ -607,6 +667,7 @@ const totals = computed(() => {
 
 function toggleExpand(id) {
   expanded[id] = !expanded[id];
+  if (expanded[id]) hydrateReceipts();
 }
 
 /** El estado de un acuerdo se DERIVA de sus pagos, no se guarda. */
@@ -716,9 +777,15 @@ function forgetReceiptUrl(id) {
   }
 }
 
-/** Solo se descargan las miniaturas de la página visible. */
+/**
+ * Solo se descargan las miniaturas de la página visible: las filas y, de los
+ * acuerdos desplegados, sus pagos (los plegados no se ven, no se piden).
+ */
 async function hydrateReceipts() {
-  await Promise.all(paged.value.map(async (row) => {
+  const visibles = paged.value.flatMap((row) => (
+    row.kind === 'acuerdo' && expanded[row.id] ? [row, ...(row.children || [])] : [row]
+  ));
+  await Promise.all(visibles.map(async (row) => {
     await Promise.all((row.receipts || []).map(async (rcpt) => {
       // `missing` lo marca el backend: el archivo ya no está en disco, así que
       // no tiene sentido pedirlo (la fila muestra el aviso en su lugar).
@@ -838,6 +905,8 @@ async function submitAgreement() {
 async function openPaymentForm(row, child = null) {
   paymentParent.value = row;
   paymentEditing.value = child;
+  pendingPaymentFiles = [];
+  if (paymentFileInput.value) paymentFileInput.value.value = '';
   if (child) {
     Object.assign(paymentForm, {
       fecha: dayOnly(child.fecha),
@@ -871,6 +940,11 @@ async function openPaymentForm(row, child = null) {
 function closePaymentForm() {
   paymentParent.value = null;
   paymentEditing.value = null;
+  pendingPaymentFiles = [];
+}
+
+function onPaymentFileChange(event) {
+  pendingPaymentFiles = Array.from(event.target.files || []).slice(0, MAX_RECEIPTS);
 }
 
 /** El % que representa lo que se está escribiendo, mientras se escribe. */
@@ -894,6 +968,9 @@ async function submitPayment() {
     fd.append('metodoPago', paymentForm.metodoPago);
     fd.append('banco', paymentForm.banco);
     fd.append('detalle', paymentForm.detalle);
+    // El mismo envío lleva los comprobantes: alta y edición los guardan en
+    // uploads/finance-receipts/, como los de los pagos sueltos.
+    for (const file of pendingPaymentFiles) fd.append('receipts', file);
     if (editing) {
       // La edición reescribe la fila entera: lo que este formulario no
       // muestra viaja tal como está para no borrarlo.
@@ -978,7 +1055,10 @@ async function removeRow(row) {
   try {
     const response = await apiFetch(`/api/finance/salaries/${row.id}`, { method: 'DELETE' });
     if (!response.ok) throw new Error('No se pudo eliminar el salario.');
-    for (const rcpt of row.receipts || []) forgetReceiptUrl(rcpt.id);
+    // Borrar un acuerdo se lleva sus pagos, y con ellos sus comprobantes.
+    for (const item of [row, ...(row.children || [])]) {
+      for (const rcpt of item.receipts || []) forgetReceiptUrl(rcpt.id);
+    }
     if (editingRow.value?.id === row.id) closeForm();
     if (paymentEditing.value?.id === row.id || paymentParent.value?.id === row.id) closePaymentForm();
     flashSuccess('Salario eliminado.');
