@@ -57,37 +57,43 @@ if (objetivos.length === 0) {
 }
 
 for (const { id, etiqueta } of objetivos) {
-  const url = new URL(`https://graph.facebook.com/${version}/${id}`);
-  url.searchParams.set('fields', 'id,name,owner_business{id,name}');
-  url.searchParams.set('access_token', token);
+  /*
+   * Se prueba el permiso de ENVÍO y no la lectura del objeto: un token
+   * generado desde el Administrador de eventos puede mandar eventos a un
+   * conjunto sin poder leer su ficha, así que un GET devuelve "(#100) Missing
+   * Permission" incluso para el conjunto que funciona. Se hace un POST al
+   * endpoint real con la lista de eventos VACÍA: no manda ninguna conversión
+   * y recorre el mismo permiso.
+   */
+  const url = `https://graph.facebook.com/${version}/${id}/events`;
 
-  console.log(`\n▶ ${id} — ${etiqueta}`);
+  console.log(`
+▶ ${id} — ${etiqueta}`);
   try {
-    const response = await fetch(url);
-    const body = await response.json();
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: [], access_token: token })
+    });
+    const body = await response.json().catch(() => ({}));
+    const error = body.error || {};
+    const code = Number(error.code) || null;
+    const mensaje = error.message || '';
+    const bloqueadoPorObjeto = code === 100 && /does not exist|missing permission|does not support/i.test(mensaje);
 
-    if (response.ok) {
-      console.log(`  ✅ El token LO VE: "${body.name || 'sin nombre'}"`);
-      if (body.owner_business) {
-        console.log(`     Negocio dueño: ${body.owner_business.name} (${body.owner_business.id})`);
-      }
-      console.log('     Si aun así rechaza los eventos, no es permiso: ese conjunto no admite');
-      console.log('     esta operación y hace falta uno creado como origen de mensajes.');
+    if (code === 190) {
+      console.log('  ❌ El token es inválido o caducó.');
+      console.log(`     ${mensaje}`);
+      console.log('     Genera uno nuevo (usuario del sistema con ads_management).');
+    } else if (bloqueadoPorObjeto) {
+      console.log(`  ❌ Por este conjunto NO se puede enviar (código ${code}).`);
+      console.log(`     ${mensaje}`);
+      console.log('     O el token no lo tiene asignado (Configuración del negocio > Orígenes de');
+      console.log('     datos > Conjuntos de datos), o el conjunto no admite la Conversions API y');
+      console.log('     hace falta uno creado como origen de mensajes.');
     } else {
-      const error = body.error || {};
-      console.log(`  ❌ El token NO LO VE (HTTP ${response.status}, código ${error.code}${error.error_subcode ? '/' + error.error_subcode : ''})`);
-      console.log(`     ${error.message || 'sin mensaje'}`);
-      // El 190 no es del conjunto sino del token: mandarlo a revisar permisos
-      // del conjunto sería mandarlo a buscar donde no está (y fallarían los
-      // dos conjuntos, no uno).
-      if (Number(error.code) === 190) {
-        console.log('     El token es inválido o caducó. Genera uno nuevo (usuario del sistema con');
-        console.log('     ads_management) y reemplázalo en META_CAPI_ACCESS_TOKEN.');
-      } else {
-        console.log('     Es permisos: asigna ese conjunto de datos al usuario del sistema del token');
-        console.log('     en Configuración del negocio > Orígenes de datos > Conjuntos de datos,');
-        console.log('     o genera el token desde ese mismo conjunto en el Administrador de eventos.');
-      }
+      console.log('  ✅ El token PUEDE enviar a este conjunto.');
+      if (mensaje) console.log(`     (Meta respondió "${mensaje}" a la petición vacía, que es lo esperable.)`);
     }
   } catch (error) {
     console.log(`  ⚠️ No se pudo consultar a Meta: ${error.message}`);

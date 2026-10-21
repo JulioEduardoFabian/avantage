@@ -143,7 +143,7 @@
         <button
           class="btn-action-ghost"
           :disabled="isDiagnosing || !config.hasToken"
-          title="Pregunta a Meta si el token ve cada conjunto de datos; no envía nada"
+          title="Prueba el permiso de envío de cada conjunto con una petición vacía; no manda ninguna conversión"
           @click="diagnose"
         >
           {{ isDiagnosing ? 'Revisando…' : 'Revisar acceso a los conjuntos' }}
@@ -154,10 +154,10 @@
            frase al rechazar un envío. Se muestra bajo los botones y no en un
            modal: se lee junto con el error que lo motivó. -->
       <ul v-if="diagnosis.length" class="capi-diagnosis">
-        <li v-for="item in diagnosis" :key="item.id" :class="item.visible ? 'is-ok' : 'is-bad'">
+        <li v-for="item in diagnosis" :key="item.id" :class="item.canSend ? 'is-ok' : 'is-bad'">
           <strong>{{ item.label }}</strong> · <code>{{ item.id }}</code>
-          <span v-if="item.visible"> — visible{{ item.name ? ` ("${item.name}")` : '' }}{{ item.ownerBusiness ? `, de ${item.ownerBusiness}` : '' }}</span>
-          <span v-else> — no visible{{ item.code ? ` (código ${item.code})` : '' }}: {{ item.message }}</span>
+          <span v-if="item.canSend"> — se puede enviar</span>
+          <span v-else> — bloqueado{{ item.code ? ` (código ${item.code})` : '' }}: {{ item.message }}</span>
           <p class="capi-diagnosis-fix">{{ item.verdict }}</p>
         </li>
       </ul>

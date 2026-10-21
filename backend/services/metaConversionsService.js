@@ -616,18 +616,25 @@ export class MetaConversionsService {
   }
 
   /**
-   * ¿El token puede ver cada conjunto de datos configurado?
+   * ¿El token puede ENVIAR a cada conjunto de datos configurado?
    *
-   * Cuando Meta rechaza un envío contesta "does not exist, cannot be loaded
-   * due to missing permissions, or does not support this operation": tres
-   * causas en una frase, y cada una se arregla distinto. Un GET al objeto las
-   * separa — si no se puede leer es permisos (o el token), y si se lee pero el
-   * envío igual falla, ese conjunto no admite la operación y hace falta otro.
+   * La pregunta es esa y no "¿puede leer la ficha del conjunto?": un token
+   * generado desde el Administrador de eventos está acotado a mandar eventos,
+   * así que un GET al objeto devuelve "(#100) Missing Permission" incluso para
+   * el conjunto en el que los envíos funcionan perfecto. Esa fue la primera
+   * versión de este diagnóstico y daba un diagnóstico falso — el de CRM
+   * aparecía roto mientras aceptaba eventos de verdad.
    *
-   * Vive acá y no solo en el script de diagnóstico porque el script corre en
-   * una terminal, donde las variables que el hosting inyecta en el proceso de
-   * la app NO están: el panel es el único sitio que siempre tiene el token a
-   * mano.
+   * Lo que se hace ahora es un POST al MISMO endpoint que usan los envíos, con
+   * la lista de eventos VACÍA: no manda ninguna conversión, pero recorre el
+   * permiso real. Si Meta contesta con un error del objeto
+   * ("does not exist, cannot be loaded due to missing permissions, or does not
+   * support this operation") es que por ahí no se puede enviar; cualquier otra
+   * respuesta —incluido un reclamo por la lista vacía— significa que el camino
+   * está abierto.
+   *
+   * Vive en el panel y no solo en el script porque el hosting inyecta el token
+   * en el proceso de la app, no en la terminal.
    */
   async diagnoseDatasets() {
     const config = this.config();
@@ -642,39 +649,32 @@ export class MetaConversionsService {
 
     const datasets = [];
     for (const objetivo of objetivos) {
-      const url = new URL(`https://graph.facebook.com/${config.version}/${objetivo.id}`);
-      url.searchParams.set('fields', 'id,name,owner_business{id,name}');
-      url.searchParams.set('access_token', config.accessToken);
+      const probe = await this.sendEvents([], config, objetivo.id);
+      const body = safeParse(probe.body) || {};
+      const error = body.error || {};
+      const code = Number(error.code) || null;
+      const mensaje = error.message || probe.error || '';
+      // El 190 es del token y no del conjunto; el 100 sobre el objeto es el
+      // que de verdad cierra el camino. Un reclamo por el `data` vacío
+      // significa que el permiso está bien y Meta llegó a mirar el contenido.
+      const bloqueadoPorObjeto = code === 100 && /does not exist|missing permission|does not support/i.test(mensaje);
+      const tokenCaducado = code === 190;
+      const puedeEnviar = probe.ok || (!bloqueadoPorObjeto && !tokenCaducado);
 
-      try {
-        const response = await this.fetchImpl(url.toString(), { method: 'GET' });
-        const body = safeParse(await response.text()) || {};
-        if (response.ok) {
-          datasets.push({
-            ...objetivo,
-            visible: true,
-            name: body.name || null,
-            ownerBusiness: body.owner_business?.name || null,
-            verdict: 'El token ve este conjunto. Si aun así rechaza los eventos, no es permiso: ese conjunto no admite la Conversions API y hace falta uno creado como origen de mensajes.'
-          });
-        } else {
-          const error = body.error || {};
-          datasets.push({
-            ...objetivo,
-            visible: false,
-            code: error.code || null,
-            message: error.message || `HTTP ${response.status}`,
-            verdict: Number(error.code) === 190
-              ? 'El token es inválido o caducó: genera uno nuevo (usuario del sistema con ads_management).'
-              : 'El token no tiene acceso a este conjunto: asígnaselo al usuario del sistema en Configuración del negocio > Orígenes de datos > Conjuntos de datos.'
-          });
-        }
-      } catch (error) {
-        datasets.push({ ...objetivo, visible: false, message: `No se pudo consultar a Meta: ${error.message}` });
-      }
+      datasets.push({
+        ...objetivo,
+        canSend: puedeEnviar,
+        code,
+        message: mensaje || null,
+        verdict: puedeEnviar
+          ? 'El token puede enviar a este conjunto.'
+          : tokenCaducado
+            ? 'El token es inválido o caducó: genera uno nuevo (usuario del sistema con ads_management).'
+            : 'Por este conjunto no se puede enviar: o el token no lo tiene asignado (Configuración del negocio > Orígenes de datos > Conjuntos de datos), o el conjunto no admite la Conversions API y hace falta uno creado como origen de mensajes.'
+      });
     }
 
-    return { ok: datasets.every((d) => d.visible), datasets };
+    return { ok: datasets.every((d) => d.canSend), datasets };
   }
 
   /** Los últimos envíos, para la pantalla. */
