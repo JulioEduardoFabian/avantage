@@ -140,27 +140,7 @@
         >
           {{ isBackfilling ? 'Reenviando…' : 'Reenviar últimos 7 días' }}
         </button>
-        <button
-          class="btn-action-ghost"
-          :disabled="isDiagnosing || !config.hasToken"
-          title="Prueba el permiso de envío de cada conjunto con una petición vacía; no manda ninguna conversión"
-          @click="diagnose"
-        >
-          {{ isDiagnosing ? 'Revisando…' : 'Revisar acceso a los conjuntos' }}
-        </button>
       </div>
-
-      <!-- El diagnóstico separa las tres causas que Meta mete en la misma
-           frase al rechazar un envío. Se muestra bajo los botones y no en un
-           modal: se lee junto con el error que lo motivó. -->
-      <ul v-if="diagnosis.length" class="capi-diagnosis">
-        <li v-for="item in diagnosis" :key="item.id" :class="item.canSend ? 'is-ok' : 'is-bad'">
-          <strong>{{ item.label }}</strong> · <code>{{ item.id }}</code>
-          <span v-if="item.canSend"> — se puede enviar</span>
-          <span v-else> — bloqueado{{ item.code ? ` (código ${item.code})` : '' }}: {{ item.message }}</span>
-          <p class="capi-diagnosis-fix">{{ item.verdict }}</p>
-        </li>
-      </ul>
     </div>
 
     <!-- Bitácora de envíos: el error de Meta se muestra tal cual, que es lo
@@ -222,8 +202,6 @@ const isLoading = ref(false);
 const isSaving = ref(false);
 const isTesting = ref(false);
 const isBackfilling = ref(false);
-const isDiagnosing = ref(false);
-const diagnosis = ref([]);
 const errorMessage = ref('');
 const okMessage = ref('');
 
@@ -405,27 +383,6 @@ async function backfill() {
   }
 }
 
-/**
- * Pregunta a Meta si el token ve cada conjunto. Se hace desde el panel y no
- * desde un script porque las variables que el hosting inyecta en el proceso de
- * la app no están en una terminal: acá el token siempre está a mano.
- */
-async function diagnose() {
-  isDiagnosing.value = true;
-  errorMessage.value = '';
-  try {
-    const response = await apiFetch('/api/meta-capi/diagnose');
-    const data = await response.json();
-    if (!response.ok) throw new Error(errorText(data, 'No se pudo revisar los conjuntos.'));
-    if (data.error) throw new Error(data.error);
-    diagnosis.value = data.datasets || [];
-  } catch (error) {
-    errorMessage.value = error.message;
-  } finally {
-    isDiagnosing.value = false;
-  }
-}
-
 onMounted(load);
 </script>
 
@@ -512,21 +469,6 @@ onMounted(load);
 .capi-switch { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.78rem; cursor: pointer; }
 
 .capi-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
-
-.capi-diagnosis { list-style: none; margin: 0.6rem 0 0; padding: 0; font-size: 0.8rem; }
-
-.capi-diagnosis li {
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border-color);
-  border-left: 3px solid var(--border-color);
-  border-radius: var(--radius-md);
-  margin-bottom: 0.35rem;
-  background: var(--surface-1);
-}
-
-.capi-diagnosis li.is-ok { border-left-color: var(--accent-emerald); }
-.capi-diagnosis li.is-bad { border-left-color: var(--accent-rose); }
-.capi-diagnosis-fix { margin: 0.15rem 0 0; font-size: 0.75rem; color: var(--text-muted); }
 
 .capi-log { list-style: none; margin: 0; padding: 0; }
 

@@ -2909,20 +2909,6 @@ app.post('/api/meta-capi/test', requireAuth, requirePermission('webhooks.view'),
 });
 
 /**
- * ¿El token ve cada conjunto de datos? Separa las tres causas que Meta mete en
- * la misma frase cuando rechaza un envío. Es un GET a la Graph API: no manda
- * nada, solo pregunta.
- */
-app.get('/api/meta-capi/diagnose', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
-  try {
-    res.json(await metaConversionsService.diagnoseDatasets());
-  } catch (error) {
-    console.error('❌ Error al diagnosticar los conjuntos de datos de Meta:', error);
-    res.status(500).json({ error: 'Error al diagnosticar los conjuntos de datos.', details: error.message });
-  }
-});
-
-/**
  * Reenvía los movimientos de los últimos 7 días que debían reportarse y no
  * llegaron. Es un POST y no un efecto de abrir la pantalla: manda datos hacia
  * afuera.

@@ -512,6 +512,15 @@ export class MetaConversionsService {
    *
    * Con `META_CAPI_TEST_EVENT_CODE` puesto, Meta los muestra en "Probar
    * eventos" sin contarlos en las métricas.
+   *
+   * Es la ÚNICA forma fiable de saber si un conjunto de datos acepta nuestros
+   * eventos, y conviene no reemplazarla por algo más barato. Hubo dos intentos
+   * de diagnóstico sin enviar nada y los dos mintieron: un GET al objeto
+   * devuelve "(#100) Missing Permission" hasta para el conjunto que funciona
+   * (el token del Administrador de eventos puede enviar pero no leer), y un
+   * POST con la lista de eventos vacía da por buena la ruta porque Meta valida
+   * el payload antes que el permiso. Solo un evento de verdad recorre el
+   * camino de verdad.
    */
   async sendTestEvent() {
     const config = this.config();
@@ -613,68 +622,6 @@ export class MetaConversionsService {
       if (porSufijo) return porSufijo;
     }
     return null;
-  }
-
-  /**
-   * ¿El token puede ENVIAR a cada conjunto de datos configurado?
-   *
-   * La pregunta es esa y no "¿puede leer la ficha del conjunto?": un token
-   * generado desde el Administrador de eventos está acotado a mandar eventos,
-   * así que un GET al objeto devuelve "(#100) Missing Permission" incluso para
-   * el conjunto en el que los envíos funcionan perfecto. Esa fue la primera
-   * versión de este diagnóstico y daba un diagnóstico falso — el de CRM
-   * aparecía roto mientras aceptaba eventos de verdad.
-   *
-   * Lo que se hace ahora es un POST al MISMO endpoint que usan los envíos, con
-   * la lista de eventos VACÍA: no manda ninguna conversión, pero recorre el
-   * permiso real. Si Meta contesta con un error del objeto
-   * ("does not exist, cannot be loaded due to missing permissions, or does not
-   * support this operation") es que por ahí no se puede enviar; cualquier otra
-   * respuesta —incluido un reclamo por la lista vacía— significa que el camino
-   * está abierto.
-   *
-   * Vive en el panel y no solo en el script porque el hosting inyecta el token
-   * en el proceso de la app, no en la terminal.
-   */
-  async diagnoseDatasets() {
-    const config = this.config();
-    if (!config.accessToken) {
-      return { ok: false, error: 'Falta el token de acceso.', datasets: [] };
-    }
-
-    const objetivos = [
-      { id: config.datasetId, role: 'crm', label: 'Leads de formulario (CRM)' },
-      { id: config.messagingDatasetId, role: 'messaging', label: 'Leads de Click-to-WhatsApp' }
-    ].filter((objetivo) => objetivo.id);
-
-    const datasets = [];
-    for (const objetivo of objetivos) {
-      const probe = await this.sendEvents([], config, objetivo.id);
-      const body = safeParse(probe.body) || {};
-      const error = body.error || {};
-      const code = Number(error.code) || null;
-      const mensaje = error.message || probe.error || '';
-      // El 190 es del token y no del conjunto; el 100 sobre el objeto es el
-      // que de verdad cierra el camino. Un reclamo por el `data` vacío
-      // significa que el permiso está bien y Meta llegó a mirar el contenido.
-      const bloqueadoPorObjeto = code === 100 && /does not exist|missing permission|does not support/i.test(mensaje);
-      const tokenCaducado = code === 190;
-      const puedeEnviar = probe.ok || (!bloqueadoPorObjeto && !tokenCaducado);
-
-      datasets.push({
-        ...objetivo,
-        canSend: puedeEnviar,
-        code,
-        message: mensaje || null,
-        verdict: puedeEnviar
-          ? 'El token puede enviar a este conjunto.'
-          : tokenCaducado
-            ? 'El token es inválido o caducó: genera uno nuevo (usuario del sistema con ads_management).'
-            : 'Por este conjunto no se puede enviar: o el token no lo tiene asignado (Configuración del negocio > Orígenes de datos > Conjuntos de datos), o el conjunto no admite la Conversions API y hace falta uno creado como origen de mensajes.'
-      });
-    }
-
-    return { ok: datasets.every((d) => d.canSend), datasets };
   }
 
   /** Los últimos envíos, para la pantalla. */
