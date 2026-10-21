@@ -199,6 +199,16 @@ export function datasetFor(identifierKind, { datasetId, messagingDatasetId } = {
   return (identifierKind === 'ctwa_clid' ? messagingDatasetId : datasetId) || null;
 }
 
+/**
+ * Y con qué token se le habla a ese conjunto. Viajan juntos porque un token
+ * del Administrador de eventos solo vale para el conjunto que lo emitió:
+ * mandar el evento al conjunto correcto con el token del otro es el mismo
+ * rechazo que no tener permiso.
+ */
+export function tokenFor(identifierKind, { accessToken, messagingAccessToken } = {}) {
+  return (identifierKind === 'ctwa_clid' ? messagingAccessToken : accessToken) || accessToken || null;
+}
+
 export class MetaConversionsService {
   constructor({ fetchImpl = null } = {}) {
     // Inyectable para las pruebas: nada en este servicio tiene que llamar a
@@ -222,10 +232,23 @@ export class MetaConversionsService {
     const accessToken = String(
       process.env.META_CAPI_ACCESS_TOKEN || process.env.META_ADS_ACCESS_TOKEN || ''
     ).trim();
+    /*
+     * Un token propio para el conjunto de mensajería, opcional.
+     *
+     * Los tokens que entrega el Administrador de eventos están acotados al
+     * conjunto desde el que se generan, así que el de CRM no sirve para el de
+     * WhatsApp y viceversa. Lo ideal es un usuario del sistema con los dos
+     * conjuntos asignados —un token para todo—, pero eso depende de permisos
+     * del negocio que no siempre están a mano: con esta variable se puede
+     * avanzar pegando el token que el propio asistente da para cada conjunto.
+     * Vacía, se usa el principal.
+     */
+    const messagingAccessToken = String(process.env.META_CAPI_MESSAGING_ACCESS_TOKEN || '').trim() || accessToken;
     return {
       datasetId,
       messagingDatasetId,
       accessToken,
+      messagingAccessToken,
       version: String(process.env.META_CAPI_GRAPH_API_VERSION || '').trim() || DEFAULT_CAPI_VERSION,
       testEventCode: String(process.env.META_CAPI_TEST_EVENT_CODE || '').trim() || null,
       leadEventSource: String(process.env.META_CAPI_LEAD_EVENT_SOURCE || '').trim() || DEFAULT_LEAD_EVENT_SOURCE,
@@ -400,7 +423,7 @@ export class MetaConversionsService {
         leadEventSource: config.leadEventSource
       });
 
-      const result = await this.sendEvents([event], config, dataset);
+      const result = await this.sendEvents([event], config, dataset, tokenFor(identifier.kind, config));
       await this.#log({
         lead,
         stage,
@@ -430,12 +453,12 @@ export class MetaConversionsService {
    * memoria: Meta descarta el lote entero si una fila viene mal, así que un
    * evento con un id raro no puede arrastrar a los demás.
    */
-  async sendEvents(events, config = this.config(), datasetId = config.datasetId) {
-    if (!config.accessToken) return { ok: false, error: 'Falta el token de acceso de Meta.' };
+  async sendEvents(events, config = this.config(), datasetId = config.datasetId, accessToken = config.accessToken) {
+    if (!accessToken) return { ok: false, error: 'Falta el token de acceso de Meta.' };
     if (!datasetId) return { ok: false, error: 'Falta el conjunto de datos (dataset) de Meta.' };
 
     const url = `https://graph.facebook.com/${config.version}/${datasetId}/events`;
-    const payload = { data: events, access_token: config.accessToken };
+    const payload = { data: events, access_token: accessToken };
     if (config.testEventCode) payload.test_event_code = config.testEventCode;
 
     try {
@@ -578,7 +601,7 @@ export class MetaConversionsService {
         identifier,
         leadEventSource: config.leadEventSource
       });
-      const result = await this.sendEvents([event], config, datasetFor(identifier.kind, config));
+      const result = await this.sendEvents([event], config, datasetFor(identifier.kind, config), tokenFor(identifier.kind, config));
       results.push({
         origin: candidato.origin,
         label: candidato.label,

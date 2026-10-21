@@ -6,7 +6,8 @@ import {
   datasetFor,
   eventTimeFor,
   leadIdValue,
-  resolveIdentifier
+  resolveIdentifier,
+  tokenFor
 } from '../metaConversionsService.js';
 
 /**
@@ -159,4 +160,19 @@ test('sin ninguno configurado no hay destino', () => {
   assert.equal(datasetFor('lead_id', {}), null);
   assert.equal(datasetFor('ctwa_clid', {}), null);
   assert.equal(datasetFor('lead_id'), null);
+});
+
+test('cada conjunto se habla con su propio token cuando hay uno aparte', () => {
+  // Un token del Administrador de eventos solo vale para el conjunto que lo
+  // emitió: mandar al conjunto correcto con el token del otro es el mismo
+  // rechazo que no tener permiso.
+  const config = { accessToken: 'T-CRM', messagingAccessToken: 'T-WABA' };
+  assert.equal(tokenFor('lead_id', config), 'T-CRM');
+  assert.equal(tokenFor('ctwa_clid', config), 'T-WABA');
+});
+
+test('sin token propio de mensajería se usa el principal', () => {
+  const config = { accessToken: 'T-UNICO', messagingAccessToken: 'T-UNICO' };
+  assert.equal(tokenFor('ctwa_clid', config), 'T-UNICO');
+  assert.equal(tokenFor('ctwa_clid', { accessToken: 'T-UNICO' }), 'T-UNICO');
 });

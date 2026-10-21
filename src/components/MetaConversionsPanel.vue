@@ -46,6 +46,7 @@
           Token de acceso:
           <span v-if="config.hasToken">configurado</span>
           <em v-else>falta <code>META_CAPI_ACCESS_TOKEN</code> (o <code>META_ADS_ACCESS_TOKEN</code>)</em>
+          <span v-if="config.hasOwnMessagingToken"> · Click-to-WhatsApp usa su propio token</span>
         </li>
         <li v-if="config.testEventCode" class="capi-test-warning">
           Modo prueba activo (<code>{{ config.testEventCode }}</code>): los eventos se ven en
@@ -190,6 +191,7 @@ const config = reactive({
   datasetId: null,
   messagingDatasetId: null,
   hasToken: false,
+  hasOwnMessagingToken: false,
   testEventCode: null,
   leadEventSource: '',
   version: ''
