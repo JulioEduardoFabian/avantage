@@ -483,14 +483,23 @@ export class MetaConversionsService {
       .where('c.created_at', '>=', desde)
       .orderBy('c.created_at', 'asc')
       .limit(limit)
-      .select('c.id', 'c.lead_id', 'c.to_status', 'c.created_at', 'leads.*');
+      /*
+       * Los campos del movimiento van ALIASADOS porque `leads.*` viene después
+       * y pisa los que se llaman igual. Sin el alias, `created_at` terminaba
+       * siendo el del LEAD y no el del movimiento: en el primer reenvío real
+       * (20/10/2026) eso descartó como "tiene más de 7 días" a movimientos de
+       * esa misma semana —lo viejo era la ficha, no el cambio de etapa— y el
+       * `id` del movimiento era en realidad el del lead, así que la bitácora
+       * quedaba atada al movimiento equivocado.
+       */
+      .select('c.id as change_id', 'c.to_status', 'c.created_at as moved_at', 'leads.*');
 
     const resumen = { sent: 0, skipped: 0, failed: 0 };
     for (const fila of movimientos) {
       const { state } = await this.reportStageChange(fila, {
         status: fila.to_status,
-        movedAt: fila.created_at,
-        stageChangeId: fila.id
+        movedAt: fila.moved_at,
+        stageChangeId: fila.change_id
       });
       if (state === 'enviado') resumen.sent += 1;
       else if (state === 'error') resumen.failed += 1;
