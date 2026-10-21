@@ -668,6 +668,19 @@ export class MetaConversionsService {
         continue;
       }
 
+      // La misma puerta que el envío real: sin la identidad del canal, Meta
+      // rechaza seguro, y es mejor decirlo acá —donde se arregla— que
+      // reenviar el error de Meta, que manda a buscar el problema afuera.
+      if (identifier.kind === 'ctwa_clid' && !config.messagingPageId && !config.messagingWabaId) {
+        results.push({
+          origin: candidato.origin,
+          label: candidato.label,
+          ok: false,
+          error: 'Falta META_CAPI_PAGE_ID (o META_PAGE_ID): Meta exige el page_id del conjunto en los eventos de Click-to-WhatsApp.'
+        });
+        continue;
+      }
+
       const event = buildEvent({
         // En Click-to-WhatsApp el nombre tiene que ser uno de los estándar de
         // Meta: una prueba con nombre propio falla por el nombre y no diría
