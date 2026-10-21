@@ -166,14 +166,28 @@ export function eventTimeFor({ movedAt, metaCreatedAt = null, createdAt = null, 
  * mandarle a Meta cuánto facturó cada cliente: para optimizar por calidad de
  * lead alcanza con la etapa.
  */
-export function buildEvent({ eventName, eventTime, identifier, leadEventSource = DEFAULT_LEAD_EVENT_SOURCE }) {
+export function buildEvent({ eventName, eventTime, identifier, leadEventSource = DEFAULT_LEAD_EVENT_SOURCE, messagingIdentity = {} }) {
   if (identifier.kind === 'ctwa_clid') {
+    /*
+     * El `ctwa_clid` no alcanza: Meta exige además, dentro de `user_data`, el
+     * `page_id` o el `whatsapp_business_account_id` del conjunto de datos al
+     * que se envía ("no tiene ni page_id ni whatsapp_business_account_id", su
+     * error del 20/10/2026). Tiene sentido: el click id identifica el clic, no
+     * el negocio que lo recibió. Se manda el de la Página cuando está, que es
+     * a lo que quedó vinculado el conjunto al crearlo desde "Mensajes >
+     * Página de Facebook"; el de la cuenta de WhatsApp es la alternativa.
+     */
+    const { pageId = null, wabaId = null } = messagingIdentity;
     return {
       event_name: eventName,
       event_time: eventTime,
       action_source: 'business_messaging',
       messaging_channel: 'whatsapp',
-      user_data: { ctwa_clid: identifier.value }
+      user_data: {
+        ctwa_clid: identifier.value,
+        ...(pageId ? { page_id: String(pageId) } : {}),
+        ...(!pageId && wabaId ? { whatsapp_business_account_id: String(wabaId) } : {})
+      }
     };
   }
 
@@ -275,7 +289,15 @@ export class MetaConversionsService {
      * Vacía, se usa el principal.
      */
     const messagingAccessToken = String(process.env.META_CAPI_MESSAGING_ACCESS_TOKEN || '').trim() || accessToken;
+    // Quién recibió el clic: la Página vinculada al conjunto de mensajería o,
+    // si no, la cuenta de WhatsApp Business. `META_PAGE_ID` ya existe para los
+    // formularios y casi siempre es la misma Página, así que se reutiliza
+    // antes que pedir un dato nuevo.
+    const messagingPageId = String(process.env.META_CAPI_PAGE_ID || process.env.META_PAGE_ID || '').trim();
+    const messagingWabaId = String(process.env.META_CAPI_WABA_ID || '').trim();
     return {
+      messagingPageId,
+      messagingWabaId,
       datasetId,
       messagingDatasetId,
       accessToken,
@@ -443,6 +465,12 @@ export class MetaConversionsService {
       if (identifier.kind === 'ctwa_clid') {
         eventName = messagingEventName(status, await loadWinningStatuses());
         if (!eventName) return { state: 'omitido', reason: 'etapa_sin_evento_estandar' };
+        // Sin la identidad del canal el evento se rechaza siempre: se omite
+        // antes de gastar la llamada, y la pantalla lo dice en la
+        // configuración (no acá, que se repetiría en cada movimiento).
+        if (!config.messagingPageId && !config.messagingWabaId) {
+          return { state: 'omitido', reason: 'sin_page_id_ni_waba_id' };
+        }
       }
 
       if (await this.alreadySent(lead.id, eventName)) {
@@ -463,7 +491,8 @@ export class MetaConversionsService {
         eventName,
         eventTime: time.eventTime,
         identifier,
-        leadEventSource: config.leadEventSource
+        leadEventSource: config.leadEventSource,
+        messagingIdentity: { pageId: config.messagingPageId, wabaId: config.messagingWabaId }
       });
 
       const result = await this.sendEvents([event], config, dataset, tokenFor(identifier.kind, config));
@@ -646,7 +675,8 @@ export class MetaConversionsService {
         eventName: candidato.origin === 'ctwa_clid' ? 'LeadSubmitted' : 'Prueba de integración',
         eventTime: Math.floor(Date.now() / 1000),
         identifier,
-        leadEventSource: config.leadEventSource
+        leadEventSource: config.leadEventSource,
+        messagingIdentity: { pageId: config.messagingPageId, wabaId: config.messagingWabaId }
       });
       const result = await this.sendEvents([event], config, datasetFor(identifier.kind, config), tokenFor(identifier.kind, config));
       results.push({

@@ -2835,8 +2835,10 @@ app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks
  */
 app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
   try {
-    const { datasetId, messagingDatasetId, accessToken, messagingAccessToken, enabled, testEventCode, leadEventSource, version } =
-      metaConversionsService.config();
+    const {
+      datasetId, messagingDatasetId, accessToken, messagingAccessToken,
+      messagingPageId, messagingWabaId, enabled, testEventCode, leadEventSource, version
+    } = metaConversionsService.config();
     const [mapping, events, summary, stages] = await Promise.all([
       metaConversionsService.mapping(),
       metaConversionsService.recentEvents({ limit: 30 }),
@@ -2855,6 +2857,8 @@ app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async
         // Si el de mensajería es otro, la pantalla lo dice: con dos tokens en
         // juego, "token configurado" a secas esconde cuál falló.
         hasOwnMessagingToken: Boolean(messagingAccessToken && messagingAccessToken !== accessToken),
+        messagingPageId: messagingPageId || null,
+        messagingWabaId: messagingWabaId || null,
         testEventCode,
         leadEventSource,
         version

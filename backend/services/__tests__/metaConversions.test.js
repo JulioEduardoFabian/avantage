@@ -81,13 +81,49 @@ test('el evento de Click-to-WhatsApp va como mensajería y no como CRM', () => {
   // Son las dos formas que acepta Meta, y usar la del otro origen hace que el
   // evento se descarte.
   const event = buildEvent({
-    eventName: 'Cotizado',
+    eventName: 'LeadSubmitted',
     eventTime: 1760000000,
-    identifier: { kind: 'ctwa_clid', value: 'ARAkXYZ' }
+    identifier: { kind: 'ctwa_clid', value: 'ARAkXYZ' },
+    messagingIdentity: { pageId: '1234567890' }
   });
   assert.equal(event.action_source, 'business_messaging');
   assert.equal(event.messaging_channel, 'whatsapp');
-  assert.deepEqual(event.user_data, { ctwa_clid: 'ARAkXYZ' });
+  assert.deepEqual(event.user_data, { ctwa_clid: 'ARAkXYZ', page_id: '1234567890' });
+});
+
+test('el evento de mensajería lleva la identidad de quien recibió el clic', () => {
+  // Meta lo exige: "no tiene ni page_id ni whatsapp_business_account_id". El
+  // click id identifica el clic, no el negocio que lo recibió.
+  const conPagina = buildEvent({
+    eventName: 'LeadSubmitted',
+    eventTime: 1760000000,
+    identifier: { kind: 'ctwa_clid', value: 'X' },
+    messagingIdentity: { pageId: 111, wabaId: 222 }
+  });
+  // Con las dos, manda la de la Página: es a lo que queda vinculado el
+  // conjunto creado desde "Mensajes > Página de Facebook".
+  assert.equal(conPagina.user_data.page_id, '111');
+  assert.equal(conPagina.user_data.whatsapp_business_account_id, undefined);
+
+  const soloWaba = buildEvent({
+    eventName: 'LeadSubmitted',
+    eventTime: 1760000000,
+    identifier: { kind: 'ctwa_clid', value: 'X' },
+    messagingIdentity: { wabaId: 222 }
+  });
+  assert.equal(soloWaba.user_data.whatsapp_business_account_id, '222');
+});
+
+test('el evento de formulario NO lleva page_id', () => {
+  // Es del flujo de CRM: ahí el lead_id ya identifica todo, y un campo de más
+  // es un campo que Meta puede rechazar.
+  const event = buildEvent({
+    eventName: 'Cotizado',
+    eventTime: 1760000000,
+    identifier: { kind: 'lead_id', value: 123 },
+    messagingIdentity: { pageId: '1234567890' }
+  });
+  assert.equal(event.user_data.page_id, undefined);
 });
 
 test('ningún evento lleva importes', () => {

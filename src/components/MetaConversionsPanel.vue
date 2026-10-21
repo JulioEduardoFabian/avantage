@@ -42,6 +42,13 @@
           <code v-if="config.messagingDatasetId">{{ config.messagingDatasetId }}</code>
           <em v-else>falta <code>META_CAPI_MESSAGING_DATASET_ID</code> — no se reportan</em>
         </li>
+        <!-- Meta exige saber quién recibió el clic, además del clic. -->
+        <li v-if="config.messagingDatasetId">
+          Identidad del canal (obligatoria para Click-to-WhatsApp):
+          <code v-if="config.messagingPageId">page_id {{ config.messagingPageId }}</code>
+          <code v-else-if="config.messagingWabaId">whatsapp_business_account_id {{ config.messagingWabaId }}</code>
+          <em v-else>falta <code>META_CAPI_PAGE_ID</code> (o <code>META_PAGE_ID</code>) — Meta rechaza esos eventos</em>
+        </li>
         <li>
           Token de acceso:
           <span v-if="config.hasToken">configurado</span>
@@ -207,6 +214,8 @@ const config = reactive({
   messagingDatasetId: null,
   hasToken: false,
   hasOwnMessagingToken: false,
+  messagingPageId: null,
+  messagingWabaId: null,
   testEventCode: null,
   leadEventSource: '',
   version: ''

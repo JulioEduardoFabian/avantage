@@ -626,6 +626,13 @@ antes de tocar el arranque de producción.
   por eso, sin el de mensajería, esa mitad queda apagada y la pantalla lo dice, en vez de enviar a
   un destino que no sirve. **No viaja ningún importe** — Meta recibe
   la etapa, no cuánto facturó el cliente, misma regla que el resto del sistema.
+  El evento de Click-to-WhatsApp lleva además, dentro de `user_data`, el **`page_id`** (o el
+  `whatsapp_business_account_id`) del conjunto al que se envía: el `ctwa_clid` identifica el clic,
+  no el negocio que lo recibió, y sin eso Meta lo rechaza. Sale de `META_CAPI_PAGE_ID` o, si no
+  está, del `META_PAGE_ID` que ya se usa para los formularios; sin ninguno, esa mitad se omite
+  antes de gastar la llamada y la pantalla lo dice en la configuración. El ejemplo de la
+  documentación de Meta NO lo incluye —el asistente de Events Manager sí lo marca como
+  obligatorio—, así que el que manda es el asistente.
   **Los nombres de evento solo son libres en la mitad de formularios.** Con
   `action_source: business_messaging` Meta rechaza los nombres propios ("proporciona un valor
   válido como Purchase o LeadSubmitted", error real del 20/10/2026), así que esa mitad se traduce
