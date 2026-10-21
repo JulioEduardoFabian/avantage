@@ -626,6 +626,12 @@ antes de tocar el arranque de producción.
   por eso, sin el de mensajería, esa mitad queda apagada y la pantalla lo dice, en vez de enviar a
   un destino que no sirve. **No viaja ningún importe** — Meta recibe
   la etapa, no cuánto facturó el cliente, misma regla que el resto del sistema.
+  La integración quedó funcionando el **20/10/2026** con los dos canales enviando: conjunto de CRM
+  (formularios) + conjunto propio de mensajería creado desde "Conectar datos > Mensajes > Página de
+  Facebook", un token con los dos conjuntos asignados (se consigue generando el de la Dataset
+  Quality API y marcando ambos) y el `page_id` de la Página. Dato verificado contra Meta ese día:
+  **`Purchase` se acepta sin divisa ni importe**, así que la decisión de no mandarle cifras del
+  negocio no cuesta la señal de venta.
   El evento de Click-to-WhatsApp lleva además, dentro de `user_data`, el **`page_id`** (o el
   `whatsapp_business_account_id`) del conjunto al que se envía: el `ctwa_clid` identifica el clic,
   no el negocio que lo recibió, y sin eso Meta lo rechaza. Sale de `META_CAPI_PAGE_ID` o, si no
