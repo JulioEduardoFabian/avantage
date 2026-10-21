@@ -19,13 +19,16 @@
           v-if="hasPermission('leads.manage_all')"
           class="btn-action-secondary"
           title="Asignar responsable, setter y closer a varios leads a la vez"
-          @click="showBulkTeamModal = true"
+          @click="openBulkTeamModal()"
         >
           <span class="btn-icon">👥</span> Asignación masiva
         </button>
         <button class="btn-action-secondary" @click="fetchAll" :disabled="isLoading" title="Actualizar datos">
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
+        </button>
+        <button class="btn-action-secondary" @click="showDuplicatesModal = true" title="Ver las personas cargadas más de una vez (mismo celular o DNI)">
+          <span class="btn-icon">👯</span> Duplicados
         </button>
         <button class="btn-action-ghost" @click="showMetaRecModal = true" title="Comparar los leads de los formularios de Meta contra los que llegaron al CRM">
           🧮 Conciliar Meta
@@ -90,7 +93,7 @@
           v-model="searchQuery"
           type="text"
           class="search-input"
-          placeholder="Buscar por tema, cliente, #ID, email, teléfono..."
+          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
         />
         <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
       </div>
@@ -261,7 +264,18 @@
                 <span v-if="cameFromForm(lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
                 {{ getLeadFullName(lead) }}
               </h4>
-              <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+              <!-- La fecha de registro comparte renglón con el celular: una
+                   línea más rompería el alto fijo con el que entran cinco
+                   tarjetas por columna. Se escribe igual que en el Setter
+                   Funnel (`leadCardDate.js`): es la misma tarjeta del mismo
+                   lead, y con una copia por pantalla el mismo lead terminaría
+                   diciendo dos fechas distintas. -->
+              <span class="card-lead-meta">
+                <span class="card-lead-phone">📱 {{ lead.phone || 'Sin celular' }}</span>
+                <span class="card-lead-date" :title="`Registrado: ${formatLeadDate(lead.created_at)}`">
+                  🗓 {{ formatCardDate(lead.created_at) }}
+                </span>
+              </span>
 
               <!-- Responsable comercial: el círculo va en la franja reservada
                    a la derecha, sin sumar una línea, para no romper el alto
@@ -570,11 +584,22 @@
 
     <MetaReconciliationModal v-model="showMetaRecModal" @imported="fetchAll" />
 
+    <!-- Personas cargadas más de una vez (mismo celular o DNI), de los dos tableros. -->
+    <DuplicateLeadsModal
+      v-model="showDuplicatesModal"
+      :openable-ids="leadIds"
+      :stage-label="stageLabelFor"
+      @open="openDuplicateLead"
+      @deleted="fetchLeads"
+    />
+
     <!-- Agendar una reunión sin salir del funnel: el mismo modal del Calendario. -->
     <MeetingModal v-model="showMeetingModal" :lead="meetingLead" @created="onMeetingCreated" />
 
-    <!-- Asignación masiva de responsable, setter y closer sobre lo que el
-         tablero muestra con sus filtros actuales. -->
+    <!-- Asignación masiva de responsable, setter y closer. El lote son los dos
+         tableros a la vez —este y el Setter Funnel— con los filtros actuales:
+         repartir es un solo trabajo y partirlo en dos pantallas es como se
+         termina con leads que no son de nadie. -->
     <BulkLeadTeamModal
       v-if="showBulkTeamModal"
       :groups="boardGroups"
@@ -697,10 +722,17 @@
               </label>
             </div>
             <p v-if="leadEditError" class="lead-edit-error">{{ leadEditError }}</p>
+            <LeadDuplicateAlert
+              :duplicates="dupLeads"
+              :checking="dupChecking"
+              :openable-ids="openableDupIds"
+              mode="edit"
+              @open="openDuplicateLead"
+            />
             <div class="lead-edit-actions">
               <button type="button" class="btn-action-ghost" @click="leadEdit = null">Cancelar</button>
-              <button type="submit" class="btn-action-primary" :disabled="leadEditSaving">
-                {{ leadEditSaving ? 'Guardando…' : 'Guardar datos' }}
+              <button type="submit" class="btn-action-primary" :disabled="leadEditSaving || hasDupLeads">
+                {{ leadEditSaving ? 'Guardando…' : hasDupLeads ? 'Dato repetido' : 'Guardar datos' }}
               </button>
             </div>
           </form>
@@ -866,7 +898,7 @@
               :class="{ 'is-open': showBotChat }"
               @click="toggleBotChat"
             >
-              💬 {{ showBotChat ? 'Ocultar conversación con el bot' : 'Ver conversación con el bot' }}
+              💬 {{ showBotChat ? 'Ocultar conversación' : 'Conversación / Responder' }}
               <span class="bot-chat-toggle-phone">{{ selectedLead.phone }}</span>
             </button>
           </div>
@@ -1115,31 +1147,10 @@
           <p v-else-if="quoteHistoryLoading" class="quote-history-empty">Cargando cotizaciones…</p>
          </div>
 
-          <!-- Panel lateral: conversación con el bot de WhatsApp (Avan) -->
-          <aside v-if="showBotChat" class="bot-chat-panel">
-            <header class="bot-chat-head">
-              <span>💬 Conversación con Avan</span>
-              <button type="button" class="bot-chat-refresh" :disabled="botChatLoading" @click="loadBotChat()">
-                {{ botChatLoading ? '…' : '⟳' }}
-              </button>
-            </header>
-            <div ref="botChatScrollEl" class="bot-chat-scroll custom-scrollbar">
-              <p v-if="botChatError" class="bot-chat-empty">⚠️ {{ botChatError }}</p>
-              <p v-else-if="botChatLoading && !botChatMessages.length" class="bot-chat-empty">Cargando conversación…</p>
-              <p v-else-if="!botChatMessages.length" class="bot-chat-empty">Sin mensajes registrados con este contacto.</p>
-              <div
-                v-for="msg in botChatMessages"
-                :key="msg.id"
-                class="bot-bubble"
-                :class="msg.direction === 'outbound' ? 'outbound' : 'inbound'"
-              >
-                <p class="bot-bubble-text">{{ msg.body }}</p>
-                <span class="bot-bubble-time">
-                  {{ msg.direction === 'outbound' ? 'Avan' : 'Contacto' }} · {{ formatClock(msg.received_at) }}
-                </span>
-              </div>
-            </div>
-          </aside>
+          <!-- Panel lateral: la conversación de WhatsApp del lead, para leerla y
+               para responderle sin salir de la ficha. Mismo componente que el
+               Setter Funnel: es la misma conversación. -->
+          <LeadConversation v-if="showBotChat" :lead="selectedLead" class="lead-chat-side" />
         </div>
       </div>
     </div>
@@ -1155,7 +1166,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { QUOTE_PACKAGES, DEFAULT_QUOTE_PACKAGE, findQuotePackage, deliverableLine } from '../data/quoteDeliverables.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
@@ -1163,11 +1174,18 @@ import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import WinDealModal from '../components/WinDealModal.vue';
 import LeadNotes from '../components/LeadNotes.vue';
+import LeadConversation from '../components/LeadConversation.vue';
 import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
+import DuplicateLeadsModal from '../components/DuplicateLeadsModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
+import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { formatCardDate, formatLeadDate } from '../leadCardDate.js';
+import { matchesLeadSearch } from '../leadSearch.js';
+import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 import { SETTER_ONLY_STATUSES } from '../salesFunnelStage.js';
+import { DEFAULT_SETTER_COLUMNS, loadSetterColumns } from '../setterFunnelColumns.js';
 
 // Columnas predeterminadas del sistema (usadas solo para "Restablecer columnas")
 const DEFAULT_COLUMNS = [
@@ -1363,13 +1381,9 @@ const stageHistory = ref([]);
 const stageHistoryLoading = ref(false);
 const stageHistoryError = ref('');
 
-// Conversación con el bot de WhatsApp (Avan) para el lead seleccionado.
+// Conversación de WhatsApp del lead dentro de su ficha. El panel entero vive
+// en `LeadConversation.vue`; acá solo queda si está desplegado o no.
 const showBotChat = ref(false);
-const botChatMessages = ref([]);
-const botChatLoading = ref(false);
-const botChatError = ref('');
-const botChatScrollEl = ref(null);
-let botChatTimer = null;
 
 watch(selectedLead, () => {
   leadEdit.value = null;
@@ -1386,9 +1400,6 @@ watch(selectedLead, () => {
   stageHistoryError.value = '';
 
   showBotChat.value = false;
-  botChatMessages.value = [];
-  botChatError.value = '';
-  stopBotChatPolling();
 });
 
 async function toggleStageHistory() {
@@ -1448,55 +1459,9 @@ function formatStageDate(dateStr) {
   return d.toLocaleString('es-PE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
-/**
- * Trae el hilo completo (contacto + Avan) del lead seleccionado desde la
- * tabla `whatsapp_messages`. El `phone` del lead ES el wa_id del contacto.
- */
-async function loadBotChat() {
-  const waId = selectedLead.value?.phone;
-  if (!waId) return;
-  botChatLoading.value = true;
-  botChatError.value = '';
-  try {
-    const response = await apiFetch(`/api/whatsapp/conversations/${encodeURIComponent(waId)}/messages`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo obtener la conversación.');
-    botChatMessages.value = data.messages || [];
-    await nextTick();
-    if (botChatScrollEl.value) botChatScrollEl.value.scrollTop = botChatScrollEl.value.scrollHeight;
-  } catch (err) {
-    botChatError.value = err.message;
-  } finally {
-    botChatLoading.value = false;
-  }
-}
-
-function stopBotChatPolling() {
-  if (botChatTimer) {
-    clearInterval(botChatTimer);
-    botChatTimer = null;
-  }
-}
-
 function toggleBotChat() {
   showBotChat.value = !showBotChat.value;
-  if (showBotChat.value) {
-    loadBotChat();
-    stopBotChatPolling();
-    botChatTimer = setInterval(loadBotChat, 12000);
-  } else {
-    stopBotChatPolling();
-  }
 }
-
-function formatClock(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
-}
-
-onBeforeUnmount(stopBotChatPolling);
 
 // Leads que Avan todavía está calificando por WhatsApp (Setter Funnel) no
 // cuentan como leads comerciales todavía: no aparecen en ninguna columna ni
@@ -1546,6 +1511,30 @@ const avgViabilityScore = computed(() => {
   return Math.round(sum / scored.length);
 });
 
+/**
+ * Los filtros de la barra (texto y viabilidad) aplicados a UN lead.
+ *
+ * Se escribe una vez porque lo usan dos cosas: las columnas del tablero y el
+ * lote de la asignación masiva, que además incluye los leads del Setter Funnel
+ * —los que este tablero no dibuja—. Dos copias de este filtro es como se llega
+ * a que el reparto muestre leads que la búsqueda ya había descartado.
+ */
+function matchesBoardFilters(lead) {
+  // La regla del buscador vive en `leadSearch.js` y la comparten los dos
+  // tableros: tolera tildes y dedazos en el texto, y el celular, el documento
+  // y el id se buscan tal cual (ahí un dígito de diferencia es otra persona).
+  if (!matchesLeadSearch(lead, searchQuery.value)) return false;
+
+  if (selectedViabilityFilter.value !== 'all') {
+    const lvl = (lead.viability_level || '').toLowerCase();
+    if (selectedViabilityFilter.value === 'alta' && !lvl.includes('alta')) return false;
+    if (selectedViabilityFilter.value === 'media' && !lvl.includes('media')) return false;
+    if (selectedViabilityFilter.value === 'baja' && !lvl.includes('baja')) return false;
+  }
+
+  return true;
+}
+
 // Leads filtrados agrupados por columna
 const filteredLeadsByColumn = computed(() => {
   const grouped = {};
@@ -1553,31 +1542,8 @@ const filteredLeadsByColumn = computed(() => {
     grouped[col.key] = [];
   }
 
-  const query = searchQuery.value.trim().toLowerCase();
-
   for (const lead of visibleLeads.value) {
-    // Filtro por texto multicampo (incluyendo nombre completo, tema, email, celular, etc.)
-    if (query) {
-      const cleanId = query.replace(/^#/, '');
-      const matchId = String(lead.id || '').includes(cleanId);
-      const matchName = (lead.full_name || '').toLowerCase().includes(query);
-      const matchTopic = (lead.topic || '').toLowerCase().includes(query);
-      const matchEmail = (lead.email || '').toLowerCase().includes(query);
-      const matchPhone = (lead.phone || '').toLowerCase().includes(query);
-      const matchField = (lead.field_of_study || '').toLowerCase().includes(query);
-      const matchAcademic = (lead.academic_level || '').toLowerCase().includes(query);
-      const matchNotes = (lead.additional_notes || '').toLowerCase().includes(query);
-      const matchAssigned = (lead.assigned_to || '').toLowerCase().includes(query);
-      if (!matchId && !matchName && !matchTopic && !matchEmail && !matchPhone && !matchField && !matchAcademic && !matchNotes && !matchAssigned) continue;
-    }
-
-    // Filtro por nivel de viabilidad
-    if (selectedViabilityFilter.value !== 'all') {
-      const lvl = (lead.viability_level || '').toLowerCase();
-      if (selectedViabilityFilter.value === 'alta' && !lvl.includes('alta')) continue;
-      if (selectedViabilityFilter.value === 'media' && !lvl.includes('media')) continue;
-      if (selectedViabilityFilter.value === 'baja' && !lvl.includes('baja')) continue;
-    }
+    if (!matchesBoardFilters(lead)) continue;
 
     // Ubicar en columna correspondiente — un lead "graduado" del Setter
     // Funnel (cita_agendada) entra por la columna que le corresponda como
@@ -1924,11 +1890,76 @@ async function fetchAll() {
  * leads, algunas pueden dejar de ser suyas.
  */
 const showBulkTeamModal = ref(false);
-const boardGroups = computed(() => columns.value.map((col) => ({
-  key: col.key,
-  label: `${col.icon || ''} ${col.label}`.trim(),
-  leads: filteredLeadsByColumn.value[col.key] || []
-})));
+
+/* Las columnas del Setter Funnel se releen al abrir: se editan en la otra
+   pantalla, así que una etapa renombrada tiene que verse acá sin recargar el
+   panel: se vuelven a pedir al abrir el modal. */
+function openBulkTeamModal() {
+  showBulkTeamModal.value = true;
+  loadSetterColumns().then((columns) => { setterColumns.value = columns; });
+}
+const SALES_BOARD = { key: 'ventas', label: 'Funnel de Ventas' };
+const SETTER_BOARD = { key: 'setter', label: 'Setter Funnel' };
+
+/**
+ * Los leads que este tablero NO dibuja porque todavía están en el Setter
+ * Funnel, agrupados por su etapa y pasados por los mismos filtros de la barra.
+ *
+ * Van al lote de la asignación masiva aunque no se vean en el Kanban: repartir
+ * es un solo trabajo, y tener que hacerlo dos veces —una por pantalla— es como
+ * se termina con la mitad del equipo sin leads. Las etiquetas salen de las
+ * columnas que el Setter Funnel tiene configuradas (`loadSetterColumns()`), no
+ * de una lista propia, para que una etapa renombrada no se llame distinto en
+ * cada pantalla. Lo que no cae en ninguna columna conocida se agrupa aparte en
+ * vez de desaparecer: un lead que no se lista no se puede repartir.
+ *
+ * Arranca con las de fábrica y se reemplaza con las del servidor al abrir el
+ * modal: la lista dejó de ser un valor en memoria del navegador y ahora viene
+ * de la base, pero este agrupamiento se calcula antes de que llegue.
+ */
+const setterColumns = ref(JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS)));
+
+const setterGroups = computed(() => {
+  const salesIds = new Set(visibleLeads.value.map((lead) => lead.id));
+  const pendientes = leads.value.filter((lead) => !salesIds.has(lead.id) && matchesBoardFilters(lead));
+  if (pendientes.length === 0) return [];
+
+  const grupos = setterColumns.value.map((col) => ({
+    key: `setter:${col.key}`,
+    label: `${col.icon || ''} ${col.label}`.trim(),
+    board: SETTER_BOARD,
+    leads: pendientes.filter((lead) => lead.status === col.key)
+  })).filter((grupo) => grupo.leads.length > 0);
+
+  const agrupados = new Set(grupos.flatMap((grupo) => grupo.leads.map((lead) => lead.id)));
+  const sueltos = pendientes.filter((lead) => !agrupados.has(lead.id));
+  if (sueltos.length > 0) {
+    grupos.push({ key: 'setter:__otras__', label: 'Otras etapas', board: SETTER_BOARD, leads: sueltos });
+  }
+  return grupos;
+});
+
+const showDuplicatesModal = ref(false);
+const leadIds = computed(() => leads.value.map((lead) => lead.id));
+
+/* El nombre de una etapa en cualquiera de los dos tableros: las columnas de
+   Ventas primero y, si no, las del Setter Funnel. */
+function stageLabelFor(status) {
+  const col = columns.value.find((c) => c.key === status)
+    || setterColumns.value.find((c) => c.key === status);
+  if (!col) return status || 'Sin etapa';
+  return `${col.icon || ''} ${col.label}`.trim();
+}
+
+const boardGroups = computed(() => [
+  ...columns.value.map((col) => ({
+    key: col.key,
+    label: `${col.icon || ''} ${col.label}`.trim(),
+    board: SALES_BOARD,
+    leads: filteredLeadsByColumn.value[col.key] || []
+  })),
+  ...setterGroups.value
+]);
 
 function onBulkTeamUpdated() {
   showBulkTeamModal.value = false;
@@ -1964,10 +1995,14 @@ function onDealWon(data) {
   lead.status = data.lead.status;
   lead.project_id = data.project?.id ?? lead.project_id;
   lead.project_status = data.project?.status ?? lead.project_status;
-  lead.initial_payment_id = data.income.id;
-  lead.initial_payment_code = data.income.code;
-  lead.initial_payment_monto = data.income.monto;
-  lead.initial_payment_estado = data.income.estado;
+  // Un cierre sobre cuotas que ya existían no crea un ingreso nuevo: el que
+  // vuelve es la primera cuota del cronograma, ya marcada como pago inicial.
+  if (data.income) {
+    lead.initial_payment_id = data.income.id;
+    lead.initial_payment_code = data.income.code;
+    lead.initial_payment_monto = data.income.monto;
+    lead.initial_payment_estado = data.income.estado;
+  }
 
   if (data.project) {
     projectToast.value = data.project;
@@ -2113,10 +2148,50 @@ async function undoQuoteMove() {
   }
 }
 
+/*
+ * El celular y el DNI de la ficha son los dos datos con los que se reconoce a
+ * una persona, así que acá se hace la misma pregunta que en el alta manual:
+ * ¿este dato ya es de otra ficha? Editarlo para que coincida con otra deja a la
+ * misma persona cargada dos veces, igual que registrarla de nuevo, y el
+ * servidor lo rechaza con 409 (ver `updateLead`). Se excluye el propio lead:
+ * nadie es duplicado de sí mismo.
+ */
+const {
+  duplicates: dupLeads,
+  checking: dupChecking,
+  hasDuplicates: hasDupLeads,
+  schedule: scheduleDupCheck,
+  checkNow: checkDupNow,
+  setDuplicates: setDupLeads,
+  reset: resetDupCheck
+} = useLeadDuplicateCheck();
+
+const openableDupIds = computed(() => leads.value.map((l) => l.id));
+
+watch(() => [leadEdit.value?.phone, leadEdit.value?.dni], () => {
+  if (!leadEdit.value) return;
+  scheduleDupCheck({ ...dupPayload(), excludeId: selectedLead.value?.id });
+});
+
+/* Solo lo que cambió respecto de lo guardado: una ficha que ya tenía un gemelo
+   de antes no puede quedar con su propio formulario bloqueado. */
+function dupPayload() {
+  return changedIdentityFields(leadEdit.value, selectedLead.value);
+}
+
+function openDuplicateLead(dup) {
+  const lead = leads.value.find((l) => l.id === dup.id);
+  if (!lead) return;
+  leadEdit.value = null;
+  resetDupCheck();
+  selectedLead.value = lead;
+}
+
 /** Copia editable de los datos del lead: cancelar no debe tocar el tablero. */
 function startLeadEdit() {
   const lead = selectedLead.value;
   leadEditError.value = '';
+  resetDupCheck();
   leadEdit.value = {
     fullName: lead.full_name || '',
     dni: lead.dni || '',
@@ -2130,8 +2205,15 @@ function startLeadEdit() {
 }
 
 async function saveLeadEdit() {
-  leadEditSaving.value = true;
   leadEditError.value = '';
+  // Sin esperar el retardo del tipeo: el dato pudo escribirse y guardarse en el
+  // mismo segundo, y el aviso tiene que estar antes de mandar el guardado.
+  const repetidos = await checkDupNow({ ...dupPayload(), excludeId: selectedLead.value?.id });
+  if (repetidos.length) {
+    leadEditError.value = 'Ese celular o ese DNI ya son de otra ficha.';
+    return;
+  }
+  leadEditSaving.value = true;
   try {
     const response = await apiFetch(`/api/leads/${selectedLead.value.id}`, {
       method: 'PUT',
@@ -2139,6 +2221,13 @@ async function saveLeadEdit() {
       body: JSON.stringify(leadEdit.value)
     });
     const data = await response.json();
+    if (response.status === 409) {
+      // El servidor manda: la comprobación de mientras se escribía pudo quedar
+      // vieja (otra persona cargó ese contacto entre medio).
+      setDupLeads(data.duplicates || []);
+      leadEditError.value = data.error || 'Ese dato ya es de otra ficha.';
+      return;
+    }
     if (!response.ok) throw new Error(data.error || 'No se pudo guardar los datos.');
 
     // El lead abierto y el del tablero son objetos distintos: se actualizan
@@ -3314,11 +3403,31 @@ onMounted(() => {
   cursor: help;
 }
 
+/* El celular y la fecha, en un solo renglón: la tarjeta tiene alto fijo. */
+.card-lead-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .card-lead-phone {
   font-family: var(--font-mono);
   font-size: 0.73rem;
   color: var(--text-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* La fecha no se encoge: es corta y, si falta espacio, lo que se recorta es
+   el celular, que se reconoce igual por sus últimos dígitos. */
+.card-lead-date {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 
@@ -3707,7 +3816,10 @@ onMounted(() => {
 }
 
 .lead-detail-card.has-chat {
-  max-width: 960px;
+  /* Con el panel de conversación al lado (380 px) la ficha necesita el mismo
+     ancho que en el Setter Funnel; con 960 px las dos columnas quedaban
+     apretadas y el hilo se leía en una tira de texto. */
+  max-width: 1080px;
 }
 
 .modal-body-split {
@@ -4107,101 +4219,19 @@ onMounted(() => {
   color: var(--text-muted);
 }
 
-.bot-chat-panel {
-  flex: 0 0 320px;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-1);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  overflow: hidden;
+/* El panel de conversación (y su propio responsive) vive en
+   `LeadConversation.vue`; acá solo se le reserva el ancho de la columna. */
+.lead-chat-side {
+  flex: 0 0 380px;
+  min-width: 0;
+  max-height: 72vh;
 }
 
 @media (max-width: 900px) {
-  .bot-chat-panel {
+  .lead-chat-side {
     flex-basis: auto;
+    max-height: none;
   }
-}
-
-.bot-chat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.7rem 0.9rem;
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: var(--text-main);
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.bot-chat-refresh {
-  background: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  border-radius: 8px;
-  width: 26px;
-  height: 26px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
-}
-
-.bot-chat-refresh:hover:not(:disabled) {
-  color: var(--text-main);
-}
-
-.bot-chat-scroll {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 45vh;
-}
-
-.bot-chat-empty {
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  text-align: center;
-  margin: auto;
-}
-
-.bot-bubble {
-  max-width: 85%;
-  padding: 0.5rem 0.7rem;
-  border-radius: 12px;
-  font-size: 0.83rem;
-  line-height: 1.4;
-  word-break: break-word;
-}
-
-.bot-bubble.inbound {
-  align-self: flex-start;
-  background: var(--bg-card-solid);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  border-bottom-left-radius: 4px;
-}
-
-.bot-bubble.outbound {
-  align-self: flex-end;
-  background: #2F7D5A;
-  color: #fff;
-  border-bottom-right-radius: 4px;
-}
-
-.bot-bubble-text {
-  margin: 0;
-  white-space: pre-wrap;
-}
-
-.bot-bubble-time {
-  display: block;
-  margin-top: 0.2rem;
-  font-size: 0.66rem;
-  opacity: 0.7;
 }
 
 .quote-form-section {

@@ -8,6 +8,12 @@
     COLUMNA en la que el tablero puso al lead, no `lead.status`: varios status
     caen en la primera columna y el lote tiene que coincidir con lo que se ve.
 
+    Los grupos pueden venir de MÁS DE UN tablero (cada uno con su `board`): el
+    Funnel de Ventas manda también los leads que todavía están en el Setter
+    Funnel, porque repartir es un solo trabajo y hacerlo dos veces, una por
+    pantalla, es como se termina con la mitad del equipo sin leads. Cuando hay
+    un solo tablero el selector no aparece.
+
     Vive en un componente porque lo abren los dos tableros con el mismo
     endpoint (`POST /api/leads/bulk-team`).
   -->
@@ -20,16 +26,26 @@
 
       <div class="modal-body bulk-body">
         <p class="bulk-note">
-          Se listan los leads que el tablero muestra ahora. Acota el lote por etapa y por fecha de
-          registro antes de marcar.
+          {{ boards.length > 1
+            ? 'Se listan los leads de los dos tableros con los filtros que tienen ahora. Acota el lote por tablero, etapa y fecha de registro antes de marcar.'
+            : 'Se listan los leads que el tablero muestra ahora. Acota el lote por etapa y por fecha de registro antes de marcar.' }}
         </p>
 
         <div class="bulk-filters">
+          <label v-if="boards.length > 1" class="bulk-field">
+            <span class="form-label">Tablero</span>
+            <select v-model="board" class="form-select">
+              <option value="all">Los dos ({{ leads.length }})</option>
+              <option v-for="b in boards" :key="b.key" :value="b.key">
+                {{ b.label }} ({{ b.count }})
+              </option>
+            </select>
+          </label>
           <label class="bulk-field">
             <span class="form-label">Etapa del funnel</span>
             <select v-model="stage" class="form-select">
-              <option value="all">Todas ({{ leads.length }})</option>
-              <option v-for="group in groups" :key="group.key" :value="group.key">
+              <option value="all">Todas ({{ boardLeads.length }})</option>
+              <option v-for="group in boardGroups" :key="group.key" :value="group.key">
                 {{ group.label }} ({{ group.leads.length }})
               </option>
             </select>
@@ -49,11 +65,15 @@
             <span class="form-label">{{ field.label }}</span>
             <select v-model="choice[field.key]" class="form-select">
               <option :value="KEEP">No cambiar</option>
-              <option v-for="user in team" :key="user.id" :value="user.id">
+              <option v-for="user in optionsFor(field)" :key="user.id" :value="user.id">
                 {{ user.name }} — {{ user.role_name }}
               </option>
               <option :value="CLEAR">{{ field.clearLabel }}</option>
             </select>
+            <!-- Un desplegable con una sola opción no dice por qué está vacío. -->
+            <small v-if="field.onlySetters && optionsFor(field).length === 0" class="bulk-hint">
+              Nadie tiene el rol Setter todavía.
+            </small>
           </label>
         </div>
         <p v-if="teamError" class="bulk-error">⚠️ {{ teamError }}</p>
@@ -72,7 +92,7 @@
           marcados. <button type="button" class="bulk-link" @click="keepOnlyShown">Quitarlos</button>
         </p>
 
-        <p v-if="leads.length === 0" class="bulk-empty">El tablero no tiene leads con los filtros actuales.</p>
+        <p v-if="leads.length === 0" class="bulk-empty">No hay leads con los filtros actuales.</p>
         <p v-else-if="shown.length === 0" class="bulk-empty">Ningún lead coincide con estos filtros.</p>
 
         <ul v-else class="bulk-list custom-scrollbar">
@@ -105,25 +125,61 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
-import { commercialTeam as team, loadCommercialTeam } from '../data/commercialTeam.js';
+import { commercialTeam as team, loadCommercialTeam, setterTeam } from '../data/commercialTeam.js';
 
 const props = defineProps({
   /**
-   * Las columnas del tablero con los leads que muestra ahora (ya filtrados):
-   * `[{ key, label, leads }]`.
+   * Las columnas con los leads que se muestran ahora (ya filtrados):
+   * `[{ key, label, leads, board? }]`. `board` (`{ key, label }`) es opcional y
+   * solo hace falta cuando los grupos vienen de más de un tablero.
    */
   groups: { type: Array, required: true }
 });
 
 const leads = computed(() => props.groups.flatMap((group) => group.leads));
 
-/** id del lead → etiqueta de su columna, para mostrarla en cada fila. */
+/** Tablero elegido ('all' = los dos). */
+const board = ref('all');
+
+/**
+ * Los tableros que mandaron grupos, en el orden en que llegaron. Un grupo sin
+ * `board` cuenta como un único tablero sin nombre, que es el caso del Setter
+ * Funnel abriendo su propio modal: ahí no hay nada que elegir y el selector ni
+ * se dibuja.
+ */
+const boards = computed(() => {
+  const found = new Map();
+  for (const group of props.groups) {
+    if (!group.board) continue;
+    const prev = found.get(group.board.key);
+    if (prev) prev.count += group.leads.length;
+    else found.set(group.board.key, { key: group.board.key, label: group.board.label, count: group.leads.length });
+  }
+  return [...found.values()];
+});
+
+/** Los grupos del tablero elegido (todos, si no se eligió uno). */
+const boardGroups = computed(() => (
+  board.value === 'all'
+    ? props.groups
+    : props.groups.filter((group) => group.board?.key === board.value)
+));
+
+const boardLeads = computed(() => boardGroups.value.flatMap((group) => group.leads));
+
+/**
+ * id del lead → etiqueta de su columna, para mostrarla en cada fila. Con dos
+ * tableros a la vista lleva delante el nombre del tablero: "Cita Agendada"
+ * existe en los dos, y sin eso no se sabe de cuál es la fila que se marca.
+ */
 const stageLabelOf = computed(() => {
   const labels = new Map();
+  const prefix = boards.value.length > 1;
   for (const group of props.groups) {
-    for (const lead of group.leads) labels.set(lead.id, group.label);
+    const label = prefix && group.board ? `${group.board.label} · ${group.label}` : group.label;
+    for (const lead of group.leads) labels.set(lead.id, label);
   }
   return labels;
 });
@@ -135,11 +191,24 @@ const emit = defineEmits(['close', 'updated']);
  */
 const KEEP = '__keep__';
 const CLEAR = '__clear__';
+/*
+ * `onlySetters`: el trabajo del setter se reparte entre setters. En
+ * «Responsable» y «Setter» la lista son los usuarios con ese rol y no el área
+ * comercial entera, porque ahí aparecían también los administradores —que
+ * tienen el permiso por tenerlos todos, no porque trabajen leads— y elegir uno
+ * por error deja el lote a nombre de alguien que no lo va a trabajar. «Closer»
+ * sigue con el área completa: ese es el otro oficio.
+ */
 const FIELDS = [
-  { key: 'assigneeUserId', label: '🙋 Responsable', clearLabel: 'Dejar sin asignar' },
-  { key: 'setterUserId', label: '🎯 Setter', clearLabel: 'Dejar sin setter' },
+  { key: 'assigneeUserId', label: '🙋 Responsable', clearLabel: 'Dejar sin asignar', onlySetters: true },
+  { key: 'setterUserId', label: '🎯 Setter', clearLabel: 'Dejar sin setter', onlySetters: true },
   { key: 'closerUserId', label: '🤝 Closer', clearLabel: 'Dejar sin closer' }
 ];
+
+/** Los usuarios que puede elegir este campo. */
+function optionsFor(field) {
+  return field.onlySetters ? setterTeam.value : team.value;
+}
 
 const choice = reactive({ assigneeUserId: KEEP, setterUserId: KEEP, closerUserId: KEEP });
 const selected = ref(new Set());
@@ -161,8 +230,8 @@ function limaDay(dateStr) {
 const shown = computed(() => {
   const text = query.value.trim().toLowerCase();
   const pool = stage.value === 'all'
-    ? leads.value
-    : (props.groups.find((group) => group.key === stage.value)?.leads || []);
+    ? boardLeads.value
+    : (boardGroups.value.find((group) => group.key === stage.value)?.leads || []);
 
   return pool.filter((lead) => {
     if (dateFrom.value || dateTo.value) {
@@ -175,6 +244,12 @@ const shown = computed(() => {
     return (lead.full_name || '').toLowerCase().includes(text) || (lead.phone || '').toLowerCase().includes(text);
   });
 });
+
+/* Al cambiar de tablero se vuelve a "Todas": la etapa que estaba elegida puede
+   no existir en el otro, y una lista vacía sin motivo se lee como que no hay
+   leads. Lo MARCADO no se toca —se sigue aplicando, y el aviso de abajo lo
+   dice—, porque marcar en los dos tableros es justamente para lo que sirve. */
+watch(board, () => { stage.value = 'all'; });
 
 const hiddenSelected = computed(() => {
   const visible = new Set(shown.value.map((lead) => lead.id));
@@ -303,6 +378,11 @@ onMounted(() => {
 .bulk-search {
   flex: 1;
   min-width: 180px;
+}
+
+.bulk-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 .bulk-count {

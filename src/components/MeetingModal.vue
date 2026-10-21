@@ -21,6 +21,21 @@
     esta misma mañana ya pasada, y el error se descubría recién cuando el
     cliente no aparecía. Las horas salen del horario del asesor cruzado con sus
     reuniones de ese día y con el reloj.
+
+    El nombre del contacto es un campo y no un dato de solo lectura. Viniendo
+    del funnel se precarga con el del lead, pero sigue siendo editable: la ficha
+    que abrió el bot muchas veces todavía no tiene nombre de verdad, y el
+    marcador "Contacto de WhatsApp" no se precarga nunca —se confirmaría sin
+    mirar y la reunión nacería llamándose así en la agenda de todos. Desde el
+    Calendario no hay lead ninguno y el campo arranca vacío, que es el caso que
+    antes no tenía dónde escribirse.
+
+    Y una reunión por Meet exige una cuenta de Google conectada: se avisa acá,
+    con el botón bloqueado y la salida a la vista ("es por llamada"), y no
+    después de guardarla. El servidor aplica la misma regla —`bookManual()` la
+    rechaza— porque lo que se ve y lo que se hace no pueden decir cosas
+    distintas; esto es para no hacerle elegir la hora a alguien que no va a
+    poder agendar.
   -->
   <div v-if="modelValue" class="modal-overlay" @click.self="close">
     <div class="modal-content meeting-modal">
@@ -30,12 +45,24 @@
       </div>
 
       <div class="modal-body">
-        <p v-if="lead" class="meeting-lead">
-          Con <strong>{{ lead.full_name || lead.topic || `Lead #${lead.id}` }}</strong>
-          <span v-if="lead.phone"> · {{ lead.phone }}</span>
-        </p>
-
         <div class="meeting-grid">
+          <div class="form-group meeting-wide">
+            <label class="form-label">¿Con quién es la reunión?</label>
+            <input
+              v-model="form.contactName"
+              type="text"
+              class="form-input"
+              placeholder="Nombre del contacto"
+            />
+            <small v-if="lead" class="meeting-hint">
+              {{ leadHint }} Corregirlo acá cambia el nombre de esta reunión, no el de la ficha.
+            </small>
+            <small v-else class="meeting-hint">
+              Es el nombre que se verá en el Calendario. Si lo dejas vacío, la reunión se lista por
+              el teléfono del contacto.
+            </small>
+          </div>
+
           <div class="form-group meeting-wide">
             <label class="form-label">Asesor (dueño de la reunión)</label>
             <select v-model="form.advisorUserId" class="form-select">
@@ -43,7 +70,10 @@
                 {{ advisor.name }}{{ advisor.google_connected ? '' : ' — sin Google conectado' }}
               </option>
             </select>
-            <small v-if="selectedAdvisor && !selectedAdvisor.google_connected" class="meeting-hint">
+            <small
+              v-if="selectedAdvisor && !selectedAdvisor.google_connected && viewerGoogleConnected"
+              class="meeting-hint"
+            >
               No tiene su Google conectado: el evento se crea en tu calendario y se lo invita a
               <strong>{{ selectedAdvisor.email }}</strong>.
             </small>
@@ -121,6 +151,34 @@
             </template>
           </div>
 
+          <!-- ------------------------- Cómo se hace ------------------------ -->
+          <div class="form-group meeting-wide">
+            <label class="form-label">Cómo se hace</label>
+            <div class="modality-choice">
+              <label
+                v-for="opcion in MODALITIES"
+                :key="opcion.value"
+                class="modality-option"
+                :class="{ 'is-chosen': form.modality === opcion.value }"
+              >
+                <input v-model="form.modality" type="radio" :value="opcion.value" />
+                <span>{{ opcion.label }}</span>
+              </label>
+            </div>
+            <small v-if="meetBlockedReason" class="meeting-hint meeting-hint-warn">
+              ⚠️ {{ meetBlockedReason }}
+              <button type="button" class="slots-inline" @click="form.modality = 'llamada'">
+                Marcarla como llamada
+              </button>
+            </small>
+            <small v-else-if="form.modality === 'llamada'" class="meeting-hint">
+              Sin sala de Meet: queda en la agenda para llamar al contacto por teléfono.
+            </small>
+            <small v-else class="meeting-hint">
+              Google crea la sala y el enlace de Meet al agendarla.
+            </small>
+          </div>
+
           <div class="form-group meeting-wide">
             <label class="form-label">Tema</label>
             <input
@@ -139,7 +197,10 @@
               class="form-input"
               placeholder="cliente@correo.com"
             />
-            <small class="meeting-hint">Si lo dejas, Google le manda la invitación con el enlace de Meet.</small>
+            <small class="meeting-hint">
+              Si lo dejas, Google le manda la invitación
+              {{ form.modality === 'llamada' ? 'con la hora acordada.' : 'con el enlace de Meet.' }}
+            </small>
           </div>
         </div>
 
@@ -147,7 +208,12 @@
 
         <div class="meeting-actions">
           <button type="button" class="btn-action-ghost" @click="close">Cancelar</button>
-          <button type="button" class="btn-action-primary" :disabled="isSaving || !form.time" @click="submit">
+          <button
+            type="button"
+            class="btn-action-primary"
+            :disabled="isSaving || !form.time || Boolean(meetBlockedReason)"
+            @click="submit"
+          >
             {{ isSaving ? 'Agendando…' : 'Agendar reunión' }}
           </button>
         </div>
@@ -160,6 +226,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { authState } from '../auth.js';
+import { firstRealName } from '../contactName.js';
 import { DAYS, SLOT_MINUTES, TIME_SLOTS, hhmm, minutesOf, weekdayOf } from '../availabilityGrid.js';
 
 const props = defineProps({
@@ -177,7 +244,19 @@ const props = defineProps({
 });
 const emit = defineEmits(['update:modelValue', 'created']);
 
+/** Las dos formas de reunirse. La segunda es la que no necesita Google. */
+const MODALITIES = [
+  { value: 'meet', label: '🎥 Videollamada por Google Meet' },
+  { value: 'llamada', label: '📞 Llamada telefónica' }
+];
+
 const advisors = ref([]);
+/**
+ * Si QUIEN agenda tiene su Google conectado. Es la otra mitad de la pregunta:
+ * cuando el asesor no lo tiene, el evento cae en el calendario de quien agenda,
+ * así que solo con los dos en `false` la reunión por Meet es imposible.
+ */
+const viewerGoogleConnected = ref(false);
 const availability = ref([]);
 const busyMeetings = ref([]);
 const isLoadingSlots = ref(false);
@@ -188,15 +267,35 @@ const freeTime = ref(false);
 
 const form = reactive({
   advisorUserId: null,
+  contactName: '',
   date: '',
   time: '',
   duration: 30,
+  modality: 'meet',
   topic: '',
   attendeeEmail: ''
 });
 
 const selectedAdvisor = computed(() => advisors.value.find((a) => a.id === form.advisorUserId) || null);
 const advisorFirstName = computed(() => String(selectedAdvisor.value?.name || 'El asesor').split(' ')[0]);
+
+/** De dónde salió el nombre precargado, para que no parezca escrito por uno. */
+const leadHint = computed(() => {
+  if (!props.lead) return '';
+  const partes = [`Lead #${props.lead.id}`, props.lead.phone].filter(Boolean);
+  return `${partes.join(' · ')}.`;
+});
+
+/**
+ * Por qué no se puede agendar por Meet, o cadena vacía si sí se puede. Es la
+ * misma pregunta que contesta `meetBlockedReason()` en el servidor; acá se
+ * contesta antes para no dejar llenar un formulario que se va a rechazar.
+ */
+const meetBlockedReason = computed(() => {
+  if (form.modality === 'llamada') return '';
+  if (selectedAdvisor.value?.google_connected || viewerGoogleConnected.value) return '';
+  return `Ni ${advisorFirstName.value} ni tú tienen una cuenta de Google conectada, así que no se puede crear la sala de Meet. Conéctala en "Mi Disponibilidad".`;
+});
 
 function today() {
   const ahora = new Date();
@@ -314,6 +413,7 @@ async function loadAdvisors() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudieron cargar los asesores.');
     advisors.value = data.advisors || [];
+    viewerGoogleConnected.value = Boolean(data.viewerGoogleConnected);
     if (!advisors.value.some((a) => a.id === form.advisorUserId)) {
       // Por defecto, uno mismo: lo normal es agendarse la reunión propia.
       const propio = advisors.value.find((a) => a.id === authState.user?.id);
@@ -376,7 +476,11 @@ watch(() => props.modelValue, (abierto) => {
   busyMeetings.value = [];
   form.date = props.date || today();
   form.time = props.time || '';
-  form.topic = props.lead ? `Reunión con ${props.lead.full_name || props.lead.topic || 'el cliente'}` : '';
+  form.modality = 'meet';
+  // El marcador del bot no se precarga: se confirmaría sin mirar y la reunión
+  // quedaría llamándose así en la agenda, que es lo que se vino a arreglar.
+  form.contactName = firstRealName(props.lead?.full_name);
+  form.topic = props.lead ? `Reunión con ${form.contactName || props.lead.topic || 'el cliente'}` : '';
   form.attendeeEmail = props.lead?.email || '';
   loadAdvisors().then(loadSlots);
 });
@@ -405,6 +509,11 @@ async function submit() {
    * configurada en otra zona agendaría la reunión a una hora distinta de la que
    * la persona escribió.
    */
+  if (meetBlockedReason.value) {
+    errorMessage.value = meetBlockedReason.value;
+    return;
+  }
+
   const inicio = new Date(`${form.date}T${form.time}:00-05:00`);
   const fin = new Date(inicio.getTime() + form.duration * 60000);
 
@@ -415,6 +524,8 @@ async function submit() {
       body: JSON.stringify({
         leadId: props.lead?.id || null,
         advisorUserId: form.advisorUserId,
+        contactName: form.contactName || null,
+        modality: form.modality,
         topic: form.topic || null,
         startTime: inicio.toISOString(),
         endTime: fin.toISOString(),
@@ -437,11 +548,35 @@ async function submit() {
 <style scoped>
 .meeting-modal { max-width: 560px; }
 
-.meeting-lead {
-  margin: 0 0 0.75rem;
-  font-size: 0.88rem;
-  color: var(--text-sub);
+/* ------------------------------- Modalidad ------------------------------- */
+
+.modality-choice {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
+
+.modality-option {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 180px;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-solid);
+  color: var(--text-sub);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.modality-option.is-chosen {
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.modality-option input { accent-color: var(--primary); }
 
 .meeting-grid {
   display: grid;

@@ -8,7 +8,9 @@ import { OllamaService } from './services/ollamaService.js';
 import { EmailService } from './services/emailService.js';
 import { LeadService } from './services/leadService.js';
 import { FunnelColumnService } from './services/funnelColumnService.js';
+import { SetterFunnelColumnService } from './services/setterFunnelColumnService.js';
 import { CareerCatalogService } from './services/careerCatalogService.js';
+import { LeadRoutingService } from './services/leadRoutingService.js';
 import { ProjectService } from './services/projectService.js';
 import { TaskService } from './services/taskService.js';
 import { TaskTemplateService } from './services/taskTemplateService.js';
@@ -21,6 +23,8 @@ import { buildPaymentReceiptDocument } from './services/paymentReceiptDocument.j
 import { buildPaymentReceiptPdf, receiptPdfFilename } from './services/paymentReceiptPdf.js';
 import { LeadNoteService } from './services/leadNoteService.js';
 import { LeadStageChangeService } from './services/leadStageChangeService.js';
+import { LeadReportService } from './services/leadReportService.js';
+import { MetaConversionsService } from './services/metaConversionsService.js';
 import { DocumentService } from './services/documentService.js';
 import { CampaignService } from './services/campaignService.js';
 import { MetaAdsService } from './services/metaAdsService.js';
@@ -48,6 +52,7 @@ import { InstagramService } from './services/instagramService.js';
 import { InstagramWebhookService } from './services/instagramWebhookService.js';
 import { GoogleCalendarService } from './services/googleCalendarService.js';
 import { ScheduledMeetingService } from './services/scheduledMeetingService.js';
+import { CalendarSyncService } from './services/calendarSyncService.js';
 import { NotificationService } from './services/notificationService.js';
 import { ProjectSettingsService } from './services/projectSettingsService.js';
 import { ProjectNoticeService } from './services/projectNoticeService.js';
@@ -60,6 +65,7 @@ import { CommissionService } from './services/commissionService.js';
 import { CollectionService } from './services/collectionService.js';
 import { ClientAccountService } from './services/clientAccountService.js';
 import { buildAttachmentPreview, readImagePreviewBytes, resolveAttachmentKind } from './services/attachmentPreviewService.js';
+import { planWinDeal } from './services/winDeal.js';
 import { signToken, requireAuth, requirePermission, requireAnyPermission, signGoogleOAuthState, verifyGoogleOAuthState, signClientToken, requireClientAuth } from './middleware/auth.js';
 
 import { uploadProjectUpdateAttachment, uploadDir, uploadDeliverableAttachment, deliverableDir, uploadFinanceReceipt, uploadFinanceFile, uploadEmailAttachments, financeReceiptDir, whatsappMediaDir, campaignAdImageDir } from './middleware/upload.js';
@@ -127,8 +133,15 @@ const commissionService = new CommissionService();
 // Cobranzas no tiene tablas propias: es `finance_income` vista desde el trabajo
 // de cobrar, así que comparte el servicio del libro contable.
 const collectionService = new CollectionService({ commissionService });
-const leadService = new LeadService({ commissionService });
+// Conversiones hacia Meta: el lead que Meta nos mandó vuelve a Meta con la
+// etapa en la que terminó. Se inyecta en leadService porque el disparador es el
+// cambio de etapa, que tiene un único camino (`updateLeadStatus`).
+const metaConversionsService = new MetaConversionsService();
+const leadService = new LeadService({ commissionService, metaConversionsService });
 const funnelColumnService = new FunnelColumnService();
+// Las etapas del Setter Funnel: tabla aparte de las de Ventas a propósito, ver
+// la cabecera de `setterFunnelColumnService.js`.
+const setterFunnelColumnService = new SetterFunnelColumnService();
 const careerCatalogService = new CareerCatalogService();
 const clientAccountService = new ClientAccountService();
 // La campana del panel se construye acá arriba porque el aviso de proyecto
@@ -149,11 +162,16 @@ const quoteService = new QuoteService();
 const contractTemplateService = new ContractTemplateService();
 const leadNoteService = new LeadNoteService();
 const leadStageChangeService = new LeadStageChangeService();
+// Reporte de Leads: no tiene tablas propias, es la bitácora de etapas leída
+// de corrido. Recibe leadService para reusar la regla de visibilidad del
+// funnel en vez de tener una propia.
+const leadReportService = new LeadReportService({ leadService, stageChangeService: leadStageChangeService });
 const campaignService = new CampaignService();
 const metaAdsService = new MetaAdsService();
 const tiktokAdsService = new TikTokAdsService();
 const campaignExportService = new CampaignExportService({ campaignService });
 const userService = new UserService();
+const leadRoutingService = new LeadRoutingService({ userService });
 const roleService = new RoleService();
 const projectUpdateService = new ProjectUpdateService();
 // Entregables: no tiene tablas propias, cruza las cuotas de Finanzas con los
@@ -172,6 +190,10 @@ const googleCalendarService = new GoogleCalendarService();
 // Recibe el cliente de Google porque la reunión cargada a mano desde el panel
 // crea el evento ella misma (el bot, en cambio, ya lo trae creado).
 const scheduledMeetingService = new ScheduledMeetingService({ googleCalendarService });
+// Lee el Google Calendar de cada asesor y acomoda el panel a lo que encuentra
+// (nunca al revés): es la mitad que faltaba del Calendario, ver
+// `calendarSyncService.js`.
+const calendarSyncService = new CalendarSyncService({ googleCalendarService, userService });
 const financeService = new FinanceService();
 const financeLedgerService = new FinanceLedgerService();
 // Avisa al equipo de Entregables cuando Finanzas verifica una cuota: es el
@@ -776,16 +798,50 @@ app.get('/api/meetings', requireAuth, requirePermission('calendar.view'), async 
 });
 
 /**
- * Los asesores a los que se les puede agendar: todo el área comercial, con el
- * aviso de quién tiene su Google conectado (sin conexión la reunión se guarda
- * igual, pero sin evento ni enlace de Meet).
+ * Trae al panel lo que cambió en el Google Calendar de los asesores: el botón
+ * "Sincronizar" del Calendario.
+ *
+ * Es un POST y no un GET porque escribe —importa reuniones, corrige horas,
+ * marca cancelaciones—, así que no puede ser el efecto de abrir una pantalla.
+ * Por la misma razón no se dispara solo al cargar el mes: quien lo aprieta
+ * tiene que poder decidir cuándo, y ver después qué pasó.
+ *
+ * Va con `calendar.view`, el mismo permiso que ver la agenda y agendar en
+ * ella: la sincronización no decide nada que no decidiera ya cualquiera que
+ * pueda entrar al Calendario, y solo escribe en el panel — en el calendario de
+ * Google no toca nada.
+ */
+app.post('/api/meetings/sync', requireAuth, requirePermission('calendar.view'), async (req, res) => {
+  try {
+    const resultado = await calendarSyncService.sync({
+      from: req.body?.from || req.query.from || null,
+      to: req.body?.to || req.query.to || null
+    });
+    res.json(resultado);
+  } catch (error) {
+    console.error('❌ Error al sincronizar el calendario:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * Los asesores a los que se les puede agendar, con el aviso de quién tiene su
+ * Google conectado.
+ *
+ * `viewerGoogleConnected` es la otra mitad de esa pregunta: cuando el asesor no
+ * lo tiene, el evento cae en el calendario de quien agenda, así que el
+ * formulario necesita saber si ESE existe para poder decir, antes de que la
+ * persona elija la hora, que la reunión por Meet no se va a poder crear. Quien
+ * agenda no siempre está en la lista (un administrador no es del área
+ * comercial), así que no se puede deducir de ella.
  */
 app.get('/api/meetings/advisors', requireAuth, requirePermission('calendar.view'), async (req, res) => {
   try {
     const equipo = await userService.listCommercialTeam();
     const conectados = new Set(await db('google_calendar_connections').pluck('user_id'));
     res.json({
-      advisors: equipo.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) }))
+      advisors: equipo.map((usuario) => ({ ...usuario, google_connected: conectados.has(usuario.id) })),
+      viewerGoogleConnected: conectados.has(req.user.id)
     });
   } catch (error) {
     console.error('❌ Error al obtener los asesores del calendario:', error);
@@ -828,6 +884,12 @@ app.post('/api/meetings', requireAuth, requirePermission('calendar.view'), async
       endTime: req.body?.endTime,
       attendeeEmail: req.body?.attendeeEmail || null,
       waId: req.body?.waId || null,
+      // Con quién es la reunión y por dónde se hace. Sin `contactName`, el
+      // nombre sale del lead —y una reunión cargada desde el Calendario no
+      // tiene lead—; `modality: 'llamada'` es lo que permite agendarla sin
+      // conexión con Google (ver `bookManual`).
+      contactName: req.body?.contactName || null,
+      modality: req.body?.modality === 'llamada' ? 'llamada' : 'meet',
       createdBy: req.user.id
     });
     res.status(201).json(resultado);
@@ -1017,6 +1079,31 @@ app.patch('/api/finance/leads/:id/total-amount', requireAuth, requirePermission(
   }
 });
 
+/**
+ * Da por caído un cierre, o lo reactiva. Es la salida para la venta que se
+ * firmó y después se cayó: las cuotas se quedan (lo ya cobrado tiene que
+ * seguir en los libros) pero Cobranzas deja de perseguirlas y Finanzas deja de
+ * esperar ese saldo.
+ *
+ * Va bajo `finance.view` como el precio total: las dos son decisiones sobre el
+ * dinero de un cierre y se toman desde la misma fila de la misma pantalla.
+ */
+app.patch('/api/finance/leads/:id/deal-cancelled', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const cancelled = Boolean(req.body?.cancelled);
+    const settlement = await financeLedgerService.setDealCancelled(req.params.id, {
+      cancelled,
+      reason: req.body?.reason,
+      actorId: req.user.id
+    });
+    console.log(`\ud83d\udeab [Finanzas] Cierre del lead #${req.params.id} ${cancelled ? 'dado por caído' : 'reactivado'} por ${req.user.email || req.user.id}`);
+    res.json({ settlement });
+  } catch (error) {
+    console.error('\u274c Error al marcar el cierre como no concretado:', error);
+    res.status(400).json({ error: error.message || 'Error al marcar el cierre.' });
+  }
+});
+
 // --- Ingresos ---
 app.get('/api/finance/income', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
@@ -1030,9 +1117,9 @@ app.get('/api/finance/income', requireAuth, requirePermission('finance.view'), a
 
 app.post('/api/finance/income', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
-    const { fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario } = req.body || {};
+    const { fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario } = req.body || {};
     const record = await financeLedgerService.createIncome({
-      fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario, createdBy: req.user.id
+      fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario, createdBy: req.user.id
     });
     res.status(201).json({ income: record });
   } catch (error) {
@@ -1043,9 +1130,9 @@ app.post('/api/finance/income', requireAuth, requirePermission('finance.view'), 
 
 app.put('/api/finance/income/:id', requireAuth, requirePermission('finance.view'), async (req, res) => {
   try {
-    const { fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario } = req.body || {};
+    const { fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario } = req.body || {};
     const record = await financeLedgerService.updateIncome(req.params.id, {
-      fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario
+      fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario
     });
     if (!record) return res.status(404).json({ error: 'Ingreso no encontrado.' });
     res.json({ income: record });
@@ -1430,9 +1517,9 @@ app.get('/api/finance/journal', requireAuth, requirePermission('finance.view'), 
 
 app.post('/api/finance/journal', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
-    const { fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
+    const { fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
     const record = await financeLedgerService.createJournal({
-      fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino,
+      fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino,
       receipts: req.receipts, createdBy: req.user.id
     });
     res.status(201).json({ journal: record });
@@ -1444,9 +1531,9 @@ app.post('/api/finance/journal', requireAuth, requirePermission('finance.view'),
 
 app.put('/api/finance/journal/:id', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
   try {
-    const { fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
+    const { fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino } = req.body || {};
     const record = await financeLedgerService.updateJournal(req.params.id, {
-      fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino,
+      fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino,
       receipts: req.receipts
     });
     if (!record) return res.status(404).json({ error: 'Asiento no encontrado.' });
@@ -1454,6 +1541,23 @@ app.put('/api/finance/journal/:id', requireAuth, requirePermission('finance.view
   } catch (error) {
     console.error('❌ Error al editar el asiento del libro diario:', error);
     res.status(400).json({ error: error.message || 'Error al editar el asiento.' });
+  }
+});
+
+/**
+ * Pagado ⇄ pendiente desde la propia tabla, de un clic. No pasa por el PUT de
+ * arriba a propósito: ese pide el asiento entero y va por multer porque admite
+ * comprobantes, y reenviar todo para cambiar una palabra es lo que termina
+ * reescribiendo campos que nadie tocó.
+ */
+app.patch('/api/finance/journal/:id/estado', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const record = await financeLedgerService.updateJournalEstado(req.params.id, req.body?.estado);
+    if (!record) return res.status(404).json({ error: 'Asiento no encontrado.' });
+    res.json({ journal: record });
+  } catch (error) {
+    console.error('❌ Error al cambiar el estado del asiento:', error);
+    res.status(400).json({ error: error.message || 'Error al cambiar el estado del asiento.' });
   }
 });
 
@@ -1608,6 +1712,57 @@ app.post('/api/finance/salaries', requireAuth, requirePermission('finance.view')
   } catch (error) {
     console.error('❌ Error al registrar el salario:', error);
     res.status(400).json({ error: error.message || 'Error al registrar el salario.' });
+  }
+});
+
+/**
+ * El salario que se le paga a quien consiguió el lead por ESE proyecto.
+ *
+ * Es el "padre": no es plata que salió —no se descuenta en el Resumen— sino el
+ * compromiso, y de él cuelgan los pagos parciales. A quién se le paga NO se
+ * pide: sale del responsable del proyecto (ver `resolveProjectOwner`).
+ *
+ * Existe también el camino del cierre de venta (`POST /api/leads/:id/win`),
+ * que es donde el vendedor lo registra sin pasar por Finanzas.
+ */
+app.post('/api/finance/salaries/agreement', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    const { projectId, monto, persona, moneda, metodoPago, banco, detalle, fecha } = req.body || {};
+    const salary = await financeSalaryService.createAgreement({
+      projectId, monto, persona, moneda, metodoPago, banco, detalle, fecha, createdBy: req.user.id
+    });
+    res.status(201).json({ salary });
+  } catch (error) {
+    if (error.code === 'SALARY_AGREEMENT_EXISTS') {
+      return res.status(409).json({ error: error.message, agreementId: error.agreementId });
+    }
+    console.error('❌ Error al registrar el salario del proyecto:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar el salario del proyecto.' });
+  }
+});
+
+/** Un pago parcial de ese acuerdo: fecha, monto y estado. El % se deriva. */
+app.post('/api/finance/salaries/:id/payments', requireAuth, requirePermission('finance.view'), uploadFinanceReceipt, async (req, res) => {
+  try {
+    const { fecha, monto, estado, metodoPago, banco, detalle, moneda } = req.body || {};
+    const salary = await financeSalaryService.addPayment(req.params.id, {
+      fecha, monto, estado, metodoPago, banco, detalle, moneda,
+      receipts: req.receipts, createdBy: req.user.id
+    });
+    res.status(201).json({ salary });
+  } catch (error) {
+    console.error('❌ Error al registrar el pago del salario:', error);
+    res.status(400).json({ error: error.message || 'Error al registrar el pago.' });
+  }
+});
+
+/** Los proyectos a los que todavía no se les registró su salario. */
+app.get('/api/finance/salaries/projects', requireAuth, requirePermission('finance.view'), async (req, res) => {
+  try {
+    res.json({ projects: await financeSalaryService.listProjectsWithoutAgreement() });
+  } catch (error) {
+    console.error('❌ Error al listar los proyectos sin salario:', error);
+    res.status(500).json({ error: 'No se pudieron listar los proyectos.' });
   }
 });
 
@@ -1858,7 +2013,15 @@ app.get('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.vi
 });
 
 /**
- * Registro manual de nuevo lead / prospecto desde el formulario de Base de Datos
+ * Registro manual de nuevo lead / prospecto (modal de los dos tableros y ficha
+ * de la Base de Datos).
+ *
+ * Responde 409 con las fichas que ya existen si el celular o el DNI ya están
+ * registrados: una persona es un lead, no uno por cada vez que se carga. El
+ * tope vive en `leadService.registerManualLead()` y acá solo se traduce a HTTP
+ * — la pantalla pregunta antes (`/api/leads/check-duplicate`) para avisar
+ * mientras se escribe, pero lo que manda es esto: la comprobación de la
+ * pantalla puede quedar vieja entre que se abre el formulario y se guarda.
  */
 app.post('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
@@ -1868,12 +2031,59 @@ app.post('/api/leads', requireAuth, requireAnyPermission('leads.view', 'setter.v
       return res.status(400).json({ error: 'El nombre completo y el número de celular son requeridos.' });
     }
 
-    const prospect = await leadService.createProspect(req.body);
+    const prospect = await leadService.registerManualLead(req.body, { actor: req.user });
     console.log(`👤 [Prospectos] Nuevo prospecto registrado #${prospect.id} (${name})`);
     res.status(201).json({ prospect, lead: prospect, message: 'Prospecto registrado exitosamente.' });
   } catch (error) {
+    if (error.code === 'DUPLICATE_LEAD') {
+      console.log(`🚫 [Prospectos] Alta duplicada rechazada (${error.duplicates.map((d) => `#${d.id}`).join(', ')})`);
+      return res.status(409).json({ error: error.message, duplicates: error.duplicates });
+    }
     console.error('❌ Error al registrar prospecto:', error);
     res.status(500).json({ error: 'Error al registrar el prospecto.', details: error.message });
+  }
+});
+
+/**
+ * ¿Este celular o este DNI ya están en la base?
+ *
+ * Es la misma pregunta que se le hace al guardar, para poder avisarla mientras
+ * se escribe el formulario: un error recién al apretar "Guardar" llega después
+ * de haber tipeado la ficha entera. Devuelve un resumen de cada ficha repetida
+ * (nombre, etapa, de quién es) y NO el lead, porque el duplicado suele ser de
+ * otra persona del equipo — ver `findDuplicates()`.
+ *
+ * Declarada ANTES de `/api/leads/:id`, que si no se queda con
+ * "check-duplicate" como id.
+ */
+app.get('/api/leads/check-duplicate', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const duplicates = await leadService.findDuplicates({
+      phone: req.query.phone || null,
+      dni: req.query.dni || null,
+      excludeId: Number(req.query.excludeId) || null,
+      viewer: req.user
+    });
+    res.json({ duplicates });
+  } catch (error) {
+    console.error('❌ Error al verificar duplicados de lead:', error);
+    res.status(500).json({ error: 'No se pudo verificar si el lead ya existe.', details: error.message });
+  }
+});
+
+/**
+ * Las personas cargadas más de una vez (mismo celular o mismo DNI), agrupadas.
+ * Botón "Duplicados" del Funnel de Ventas; el alcance lo recorta
+ * `listDuplicateGroups()`. Declarada antes de `/api/leads/:id` por la misma
+ * razón que `check-duplicate`.
+ */
+app.get('/api/leads/duplicates', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const groups = await leadService.listDuplicateGroups(req.user);
+    res.json({ groups });
+  } catch (error) {
+    console.error('❌ Error al listar leads duplicados:', error);
+    res.status(500).json({ error: 'No se pudieron listar los leads duplicados.', details: error.message });
   }
 });
 
@@ -2044,6 +2254,158 @@ app.get('/api/leads/:id/stage-history', requireAuth, requireAnyPermission('leads
   }
 });
 
+/**
+ * Reporte de Leads: la misma bitácora de etapas, pero de todos los leads a la
+ * vez y filtrable — quién movió a cada uno, hacia qué etapa y cuándo.
+ *
+ * Tiene su propio permiso (`leads.report`) porque es una herramienta de
+ * supervisión y no una de trabajar leads, pero NO amplía lo que cada quien ve:
+ * el servicio reusa la regla de visibilidad del funnel, así que quien ve solo
+ * sus leads ve solo la trazabilidad de sus leads (`scope` viaja en la respuesta
+ * para que la pantalla pueda decirlo).
+ *
+ * Declarada después de `/api/leads/*` a propósito: es su propia ruta
+ * (`/api/lead-report`) y no `/api/leads/report`, que Express resolvería contra
+ * `/api/leads/:id` tomando "report" como un id.
+ */
+app.get('/api/lead-report', requireAuth, requirePermission('leads.report'), async (req, res) => {
+  try {
+    const report = await leadReportService.report(req.user, req.query);
+    res.json(report);
+  } catch (error) {
+    console.error('❌ Error al armar el Reporte de Leads:', error);
+    res.status(500).json({ error: 'Error al armar el Reporte de Leads.', details: error.message });
+  }
+});
+
+// =====================================================================
+// CONVERSACIÓN DE WHATSAPP DE UN LEAD (/api/leads/:id/whatsapp)
+// =====================================================================
+/*
+ * El mismo hilo que la bandeja de WhatsApp, pero entrando por el LEAD: es lo
+ * que la ficha de los dos tableros necesita para leer y para responder.
+ *
+ * Son rutas propias y no las de `/api/whatsapp/conversations/:waId` por el
+ * permiso. Aquellas piden `whatsapp.view`, que es la bandeja entera —todas las
+ * conversaciones de todo el mundo—, y el setter no la tiene: hasta ahora el
+ * panel de la ficha le respondía 403 y la conversación se veía vacía sin
+ * explicación. Acá el alcance es otro y mucho más chico: `requireLeadVisible`
+ * deja pasar únicamente la conversación de un lead que esa persona ya puede
+ * abrir, que es la misma regla de "cada quien ve sus leads".
+ *
+ * El `wa_id` NO se toma de `lead.phone` tal cual: se resuelve
+ * (`resolveWaIdForPhone`), porque la ficha y el webhook escriben el número
+ * distinto. Mandar un mensaje a un identificador mal formado no da error
+ * visible, simplemente no llega.
+ */
+async function leadWaId(lead) {
+  return whatsappMessageService.resolveWaIdForPhone(lead.phone);
+}
+
+app.get('/api/leads/:id/whatsapp', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const waId = await leadWaId(req.lead);
+    if (!waId) return res.json({ waId: null, messages: [], windowOpen: false, botPaused: false });
+
+    const [messages, windowOpen, session] = await Promise.all([
+      whatsappMessageService.getThread(waId, { limit: 200 }),
+      whatsappMessageService.isCustomerWindowOpen(waId),
+      whatsappBotService.getSession(waId)
+    ]);
+
+    // `windowOpen` y `botPaused` viajan con el hilo para que el cuadro de
+    // respuesta sepa dibujarse: fuera de las 24 h de WhatsApp el texto libre
+    // no se puede mandar, y decirlo ANTES de que alguien escriba el mensaje es
+    // la diferencia entre un aviso y un mensaje perdido.
+    res.json({
+      waId,
+      messages,
+      windowOpen,
+      botPaused: session ? !session.bot_enabled : false
+    });
+  } catch (error) {
+    console.error('❌ Error al obtener la conversación del lead:', error);
+    res.status(500).json({ error: 'Error al obtener la conversación.', details: error.message });
+  }
+});
+
+app.post('/api/leads/:id/whatsapp', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const body = (req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'El mensaje no puede estar vacío.' });
+
+    const waId = await leadWaId(req.lead);
+    if (!waId) {
+      return res.status(409).json({
+        error: 'Este lead todavía no tiene ninguna conversación de WhatsApp abierta, así que no hay hilo al que responder.'
+      });
+    }
+
+    const message = await whatsappMessageService.sendTextMessage(waId, body, { sentBy: req.user.id });
+
+    // Mismo efecto que responder desde la bandeja: el bot se pausa para ese
+    // contacto (si no, le escribe por encima a la persona que acaba de
+    // contestar) y se borra la marca de "urgente", que ya está atendida.
+    await whatsappBotService.setBotEnabled(waId, false);
+    await whatsappMessageService.clearHandoffMark(waId);
+
+    res.status(201).json({ message });
+  } catch (error) {
+    console.error('❌ Error al responderle al lead por WhatsApp:', error);
+    res.status(502).json({ error: 'No se pudo enviar el mensaje de WhatsApp.', details: error.message });
+  }
+});
+
+/**
+ * Vuelve a encender (o apaga) Avan para la conversación de ESTE lead.
+ *
+ * Responder desde la ficha pausa el bot para ese contacto, que es lo correcto
+ * mientras hay una persona escribiendo. Pero sin esta ruta, devolvérselo al
+ * bot obligaba a entrar a la bandeja de WhatsApp — que es justo la pantalla
+ * que el setter no tiene. Quedaba un camino de ida: cualquiera podía apagar el
+ * bot de un lead sin poder volver a encenderlo.
+ *
+ * No toca el interruptor GLOBAL (`/api/whatsapp/bot/global`, con `bot.manage`):
+ * esto es un contacto, aquello es cómo se atiende a todos.
+ */
+app.patch('/api/leads/:id/whatsapp/bot', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Falta "enabled" (true o false).' });
+    }
+    const waId = await leadWaId(req.lead);
+    if (!waId) return res.status(409).json({ error: 'Este lead todavía no tiene una conversación de WhatsApp.' });
+
+    await whatsappBotService.setBotEnabled(waId, req.body.enabled);
+    res.json({ botPaused: !req.body.enabled });
+  } catch (error) {
+    console.error('❌ Error al cambiar el bot de la conversación del lead:', error);
+    res.status(500).json({ error: 'Error al cambiar el estado del bot.', details: error.message });
+  }
+});
+
+/**
+ * El adjunto de un mensaje del hilo de ESTE lead. Verifica que el mensaje sea
+ * de su conversación y no solo que exista: sin esa comprobación, cualquiera
+ * con un lead propio podría pedir el adjunto de la conversación de otro
+ * pasando un id cualquiera, que es la misma puerta de atrás que
+ * `requireLeadVisible` cierra en el resto del módulo.
+ */
+app.get('/api/leads/:id/whatsapp/media/:messageId', requireAuth, requireAnyPermission('leads.view', 'setter.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const waId = await leadWaId(req.lead);
+    const message = await whatsappMessageService.getById(req.params.messageId);
+    if (!waId || !message || !message.media_filename || message.wa_id !== waId) return res.status(404).end();
+
+    res.type(message.media_mime_type || 'application/octet-stream');
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.sendFile(path.join(whatsappMediaDir, message.media_filename));
+  } catch (error) {
+    console.error('❌ Error al servir el adjunto de la conversación del lead:', error);
+    res.status(404).end();
+  }
+});
+
 app.delete('/api/lead-notes/:noteId', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     await leadNoteService.remove(req.params.noteId, {
@@ -2197,6 +2559,25 @@ function parseInstallments(raw) {
   }
 }
 
+/**
+ * Lo que el modal de cierre necesita saber ANTES de pedir el primer pago: si
+ * este lead ya tiene cuotas asentadas en Finanzas y cuánto falta. El dinero no
+ * siempre nace aquí — el cronograma del contrato y la propia pantalla de
+ * Finanzas escriben las mismas filas —, y sin este dato el modal pedía un pago
+ * que ya no cabía en el total y el cierre moría con un "supera el saldo
+ * pendiente: S/ 0.00" que no explicaba nada.
+ */
+app.get('/api/leads/:id/win-preview', requireAuth, requirePermission('leads.view'), requireLeadVisible, async (req, res) => {
+  try {
+    const lead = await leadService.getLeadById(req.params.id);
+    if (!lead) return res.status(404).json({ error: 'Lead no encontrado.' });
+    res.json(await financeLedgerService.getLeadSettlement(lead.id));
+  } catch (error) {
+    console.error('❌ Error al leer lo ya registrado del lead:', error);
+    res.status(500).json({ error: 'No se pudo leer lo ya registrado de este lead.' });
+  }
+});
+
 app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), requireLeadVisible, uploadFinanceReceipt, async (req, res) => {
   const vouchers = req.receipts || [];
   try {
@@ -2212,9 +2593,19 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), req
       });
     }
 
+    const settlement = await financeLedgerService.getLeadSettlement(lead.id);
+    const installments = parseInstallments(req.body?.installments);
+
+    // Un cierre puede llegar con el dinero YA asentado (lo pactó el contrato o
+    // lo registró Finanzas). En ese caso `hasAmount` es false: el cierre solo
+    // gana el lead, abre su proyecto y adopta esas cuotas como su cronograma —
+    // registrar otro ingreso sería cobrar dos veces lo mismo. Las reglas se
+    // verifican ANTES de mover nada (ver `winDeal.js`).
+    const { hasAmount, amount, setsTotal } = planWinDeal({ settlement, monto, totalAmount, installments });
+
     // El precio total se fija antes de crear el ingreso, para que la validación
     // de "la suma de cuotas no supera el total" también corra sobre este primer pago.
-    if (totalAmount !== undefined && totalAmount !== null && totalAmount !== '') {
+    if (setsTotal) {
       await financeLedgerService.setLeadTotalAmount(lead.id, totalAmount);
     }
 
@@ -2225,47 +2616,88 @@ app.post('/api/leads/:id/win', requireAuth, requirePermission('leads.view'), req
     const created = await projectService.createProjectFromLead(updatedLead);
 
     const today = new Date().toISOString().slice(0, 10);
-    const income = await financeLedgerService.createIncome({
-      fecha: today,
-      dueDate: today,
-      leadId: lead.id,
-      cuota: '1era',
-      emitir: emitir || 'boleta',
-      monto,
-      banco: banco || 'BCP',
-      estado: 'pendiente',
-      isInitialPayment: true,
-      createdBy: req.user.id
-    });
+    let income = null;
+    if (hasAmount) {
+      income = await financeLedgerService.createIncome({
+        fecha: today,
+        dueDate: today,
+        leadId: lead.id,
+        cuota: '1era',
+        emitir: emitir || 'boleta',
+        monto: amount,
+        banco: banco || 'BCP',
+        estado: 'pendiente',
+        isInitialPayment: true,
+        createdBy: req.user.id
+      });
 
-    // El voucher es opcional; si viene, el ingreso queda cobrado de una vez.
-    let withVoucher = income;
-    if (vouchers.length > 0) {
-      await financeLedgerService.addIncomeReceipts(income.id, vouchers);
-      withVoucher = await financeLedgerService.getIncomeById(income.id);
+      // El voucher es opcional; si viene, el ingreso queda cobrado de una vez.
+      if (vouchers.length > 0) {
+        await financeLedgerService.addIncomeReceipts(income.id, vouchers);
+        income = await financeLedgerService.getIncomeById(income.id);
+      }
     }
 
     // Las cuotas que faltan por cobrar quedan pactadas desde el minuto cero,
     // cada una con su vencimiento: es el cronograma que después se imprime en
-    // el contrato y que el cliente ve en su portal. El primer pago ya creado
-    // entra en la lista para que no se le renumere ni se le duplique.
-    let schedule = [withVoucher];
-    const installments = parseInstallments(req.body?.installments);
+    // el contrato y que el cliente ve en su portal. Las que ya existían y el
+    // primer pago recién creado entran en la lista POR SU ID: el cronograma se
+    // reemplaza entero, y dejarlas fuera las borraría.
+    let schedule = await financeLedgerService.listScheduleByLead(lead.id);
     if (installments.length > 0) {
+      const kept = schedule.map((row) => ({
+        id: row.id,
+        monto: Number(row.monto),
+        dueDate: row.due_date || today,
+        emitir: row.emitir,
+        banco: row.banco
+      }));
       schedule = await financeLedgerService.replaceScheduleForLead(
         lead.id,
-        [{ id: withVoucher.id, monto: withVoucher.monto, dueDate: today, emitir: withVoucher.emitir, banco: withVoucher.banco }, ...installments],
+        [...kept, ...installments],
         { createdBy: req.user.id }
       );
     }
+
+    // El proyecto recién abierto espera la verificación de su primer pago, lo
+    // haya creado este cierre o lo hubiera asentado antes el contrato.
+    await financeLedgerService.ensureInitialPayment(lead.id);
+    const initialPayment = income
+      ? await financeLedgerService.getIncomeById(income.id)
+      : await financeLedgerService.findInitialPaymentByLead(lead.id);
 
     // Se relee el proyecto ya con su pago inicial: el bloqueo se deriva del
     // ingreso, que no existía cuando se creó el proyecto unas líneas antes.
     const project = await projectService.getProjectById(created.id);
 
-    console.log(`🏆 [Ventas] Lead #${lead.id} ganado · proyecto #${project.id} · ingreso ${withVoucher.code} (${withVoucher.estado})` +
-      ` · cronograma de ${schedule.length} cuota(s)`);
-    res.status(201).json({ lead: updatedLead, project, income: withVoucher, schedule });
+    /*
+     * El salario que le toca a quien consiguió el lead, si el vendedor lo
+     * escribió en el cierre. Es el momento natural para registrarlo —acaba de
+     * conseguir el lead y conoce el trato— y le evita entrar a Finanzas, que
+     * además exige un permiso que un vendedor no tiene por qué tener.
+     *
+     * NO puede tumbar la venta: si falla, el lead queda ganado, el proyecto
+     * abierto y el salario se carga después desde la pestaña de Salarios. Es
+     * la misma regla que la comisión de la setter y el aviso de proyecto nuevo.
+     */
+    let salary = null;
+    if (Number(req.body?.salaryAmount) > 0) {
+      try {
+        salary = await financeSalaryService.createAgreement({
+          projectId: project.id,
+          monto: req.body.salaryAmount,
+          detalle: `Salario por el proyecto de ${lead.full_name || lead.topic || 'cliente'}`,
+          createdBy: req.user.id
+        });
+      } catch (error) {
+        console.error(`⚠️ [Ventas] No se pudo registrar el salario del proyecto #${project.id}:`, error.message);
+      }
+    }
+
+    console.log(`🏆 [Ventas] Lead #${lead.id} ganado · proyecto #${project.id} · ingreso ${initialPayment?.code || 's/n'} (${initialPayment?.estado || 's/n'})` +
+      ` · cronograma de ${schedule.length} cuota(s)` + (hasAmount ? '' : ' · sin pago nuevo: ya estaba registrado') +
+      (salary ? ` · salario S/ ${Math.abs(Number(salary.monto)).toFixed(2)} para ${salary.persona}` : ''));
+    res.status(201).json({ lead: updatedLead, project, income: initialPayment, schedule, salary });
   } catch (error) {
     vouchers.forEach((f) => financeLedgerService.discardUploadedFile(f));
     console.error('❌ Error al registrar el cierre de venta:', error);
@@ -2285,6 +2717,11 @@ app.put('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'sette
     console.log(`✏️ [Prospectos] Prospecto actualizado #${req.params.id}`);
     res.json({ lead: updated, message: 'Prospecto actualizado exitosamente.' });
   } catch (error) {
+    // Cambiarle el celular o el DNI a una ficha para que coincida con otra es
+    // el mismo duplicado por otra puerta, y se rechaza igual (ver `updateLead`).
+    if (error.code === 'DUPLICATE_LEAD') {
+      return res.status(409).json({ error: error.message, duplicates: error.duplicates });
+    }
     console.error('❌ Error al actualizar prospecto:', error);
     res.status(500).json({ error: 'Error al actualizar el prospecto.', details: error.message });
   }
@@ -2302,6 +2739,12 @@ app.delete('/api/leads/:id', requireAuth, requireAnyPermission('leads.view', 'se
     console.log(`🗑️ [Prospectos] Prospecto eliminado #${req.params.id}`);
     res.json({ success: true, message: 'Prospecto eliminado exitosamente.' });
   } catch (error) {
+    // De la ficha cuelga trabajo (proyecto, cuotas, contrato…): borrarla
+    // eliminaría el proyecto y dejaría el dinero sin cliente. No es un error
+    // del servidor, es una regla del módulo — ver `deleteLead()`.
+    if (error.code === 'LEAD_HAS_WORK') {
+      return res.status(409).json({ error: error.message });
+    }
     console.error('❌ Error al eliminar prospecto:', error);
     res.status(500).json({ error: 'Error al eliminar el prospecto.', details: error.message });
   }
@@ -2373,6 +2816,118 @@ app.get('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks.vi
 app.delete('/api/webhooks/meta/events', requireAuth, requirePermission('webhooks.view'), (req, res) => {
   metaWebhookService.clearRecentEvents();
   res.json({ success: true });
+});
+
+// =====================================================================
+// CONVERSIONES HACIA META (Conversions API) — /api/meta-capi
+// =====================================================================
+/*
+ * La vuelta del circuito con Meta: sus formularios y sus anuncios
+ * Click-to-WhatsApp nos dejan leads, y esto le devuelve en qué etapa terminó
+ * cada uno para que pueda optimizar por calidad de lead y no solo por
+ * "formularios llenados".
+ *
+ * Van bajo `webhooks.view` —el permiso de la pantalla de integración con
+ * Meta— y no bajo uno nuevo: es la misma plomería con el mismo proveedor,
+ * vista desde el otro sentido, y la configura la misma persona que conectó el
+ * webhook. El envío en sí no pasa por acá: lo dispara
+ * `leadService.updateLeadStatus()`.
+ */
+app.get('/api/meta-capi', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const {
+      datasetId, messagingDatasetId, accessToken, messagingAccessToken,
+      messagingPageId, messagingWabaId, enabled, testEventCode, leadEventSource, version
+    } = metaConversionsService.config();
+    const [mapping, events, summary, stages] = await Promise.all([
+      metaConversionsService.mapping(),
+      metaConversionsService.recentEvents({ limit: 30 }),
+      metaConversionsService.summary(),
+      metaConversionsService.availableStages()
+    ]);
+
+    res.json({
+      // Del token solo viaja si está puesto: un secreto no se devuelve a la
+      // pantalla ni para mostrarlo tachado.
+      config: {
+        enabled,
+        datasetId: datasetId || null,
+        messagingDatasetId: messagingDatasetId || null,
+        hasToken: Boolean(accessToken),
+        // Si el de mensajería es otro, la pantalla lo dice: con dos tokens en
+        // juego, "token configurado" a secas esconde cuál falló.
+        hasOwnMessagingToken: Boolean(messagingAccessToken && messagingAccessToken !== accessToken),
+        messagingPageId: messagingPageId || null,
+        messagingWabaId: messagingWabaId || null,
+        testEventCode,
+        leadEventSource,
+        version
+      },
+      mapping,
+      // Todas las etapas de los dos tableros, para poder mapear las que falten.
+      stages,
+      events,
+      summary
+    });
+  } catch (error) {
+    console.error('❌ Error al leer la configuración de conversiones de Meta:', error);
+    /*
+     * El fallo más probable de este módulo recién desplegado es que falten sus
+     * tablas: el código viaja con el despliegue y las migraciones se corren
+     * aparte. Decirlo con todas las letras ahorra el diagnóstico — "Error al
+     * leer la configuración" mandaría a buscar el problema en el token o en
+     * Meta, que es justo donde no está.
+     */
+    if (error.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(500).json({
+        error: 'Faltan las tablas de conversiones en esta base de datos.',
+        details: 'Ejecuta `npm run migrate` en este entorno y vuelve a cargar la pantalla.'
+      });
+    }
+    res.status(500).json({ error: 'Error al leer la configuración de conversiones.', details: error.message });
+  }
+});
+
+/** Guarda el mapeo etapa → nombre del evento. */
+app.put('/api/meta-capi/mapping', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.mapping) ? req.body.mapping : [];
+    const mapping = await metaConversionsService.saveMapping(rows);
+    res.json({ mapping });
+  } catch (error) {
+    console.error('❌ Error al guardar el mapeo de conversiones de Meta:', error);
+    res.status(500).json({ error: 'Error al guardar el mapeo.', details: error.message });
+  }
+});
+
+/**
+ * Evento de prueba. Usa un lead real con atribución de Meta porque un
+ * identificador inventado lo rechaza Meta, y entonces la prueba no probaría
+ * nada.
+ */
+app.post('/api/meta-capi/test', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const result = await metaConversionsService.sendTestEvent();
+    res.status(result.ok ? 200 : 422).json(result);
+  } catch (error) {
+    console.error('❌ Error al enviar el evento de prueba a Meta:', error);
+    res.status(500).json({ error: 'Error al enviar el evento de prueba.', details: error.message });
+  }
+});
+
+/**
+ * Reenvía los movimientos de los últimos 7 días que debían reportarse y no
+ * llegaron. Es un POST y no un efecto de abrir la pantalla: manda datos hacia
+ * afuera.
+ */
+app.post('/api/meta-capi/backfill', requireAuth, requirePermission('webhooks.view'), async (req, res) => {
+  try {
+    const result = await metaConversionsService.backfill({ limit: 200 });
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Error al reenviar conversiones a Meta:', error);
+    res.status(500).json({ error: 'Error al reenviar las conversiones.', details: error.message });
+  }
 });
 
 /**
@@ -2842,7 +3397,7 @@ app.post('/api/whatsapp/conversations/:waId/messages', requireAuth, requirePermi
     if (!body) {
       return res.status(400).json({ error: 'El mensaje no puede estar vacío.' });
     }
-    const message = await whatsappMessageService.sendTextMessage(req.params.waId, body);
+    const message = await whatsappMessageService.sendTextMessage(req.params.waId, body, { sentBy: req.user.id });
 
     // Si un asesor responde manualmente, se pausa Avan para esa
     // conversación (evita que el bot automático interrumpa a un humano
@@ -2932,6 +3487,52 @@ app.post('/api/whatsapp/conversations/:waId/bot/force-book', requireAuth, requir
   } catch (error) {
     console.error('❌ Error al forzar el agendamiento manual:', error);
     res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * Interruptor GLOBAL de Avan: encendido atiende el bot, apagado atiende el
+ * equipo y los leads que entran solos se reparten según `/admin/reparto`.
+ *
+ * Es otra cosa que `PATCH /api/whatsapp/conversations/:waId/bot`, que pausa el
+ * bot para UN contacto. Y va con otro permiso: leer el estado lo puede quien
+ * ve la pantalla de WhatsApp (si no, el botón no sabría cómo dibujarse), pero
+ * cambiarlo es `bot.manage` — apagar el bot cambia cómo se atiende a todos los
+ * leads que entren desde ese momento.
+ */
+app.get('/api/whatsapp/bot/global', requireAuth, requirePermission('whatsapp.view'), async (req, res) => {
+  try {
+    res.json({ enabled: await whatsappBotSettingsService.isBotEnabled() });
+  } catch (error) {
+    console.error('❌ Error al obtener el interruptor global del bot:', error);
+    res.status(500).json({ error: 'Error al obtener el estado del bot.', details: error.message });
+  }
+});
+
+app.patch('/api/whatsapp/bot/global', requireAuth, requirePermission('bot.manage'), async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Falta "enabled" (true o false).' });
+    }
+    const enabled = await whatsappBotSettingsService.setBotEnabled(req.body.enabled);
+
+    // La pantalla necesita las dos mitades de la decisión para poder decir qué
+    // pasa ahora: con el bot apagado, a quién le van a llegar los leads.
+    let routing = null;
+    try {
+      const config = await leadRoutingService.getConfig();
+      routing = {
+        active: config.pool.active,
+        members: config.members.filter((m) => m.active && m.eligible).map((m) => m.name)
+      };
+    } catch (error) {
+      console.error('❌ No se pudo leer el reparto tras cambiar el interruptor del bot:', error.message);
+    }
+
+    res.json({ enabled, routing });
+  } catch (error) {
+    console.error('❌ Error al cambiar el interruptor global del bot:', error);
+    res.status(500).json({ error: 'Error al cambiar el estado del bot.', details: error.message });
   }
 });
 
@@ -3098,6 +3699,17 @@ app.post('/api/whatsapp/bot-test/simulate', requireAuth, requirePermission('bot.
     if (!waId || !text) {
       return res.status(400).json({ error: 'waId y text son obligatorios.' });
     }
+    // Con el bot apagado el simulador no simula nada: `handleIncomingMessage`
+    // vuelve en la primera línea. Se dice acá en vez de devolver un "listo" que
+    // no pasó nada — si no, quien prueba ve el mensaje guardado, ninguna
+    // respuesta, y lo interpreta como que el bot se rompió.
+    if (!(await whatsappBotSettingsService.isBotEnabled())) {
+      await whatsappMessageService.createSimulatedInbound(waId, text);
+      return res.status(409).json({
+        error: 'El bot está apagado para todas las conversaciones, así que no va a responder. Enciéndelo desde la barra de WhatsApp para probar el flujo.'
+      });
+    }
+
     await whatsappMessageService.createSimulatedInbound(waId, text);
     await whatsappBotService.handleIncomingMessage(waId, text);
     res.json({ success: true });
@@ -3194,6 +3806,171 @@ app.delete('/api/funnel-columns/:key', requireAuth, requireAnyPermission('leads.
   } catch (error) {
     console.error('❌ Error al eliminar la columna:', error);
     res.status(500).json({ error: 'Error al eliminar la columna del funnel.', details: error.message });
+  }
+});
+
+/* ------------------------- Etapas del Setter Funnel ------------------------ */
+/*
+ * Mismas operaciones que `/api/funnel-columns` pero sobre la tabla del otro
+ * tablero. Hasta el 16/10/2026 estas etapas vivían en el `localStorage` del
+ * navegador, así que el tablero era distinto en cada máquina aunque entrara la
+ * misma persona — y como arrastrar un lead escribe `leads.status` con la clave
+ * de la columna, que sí es compartida, cada máquina le ensuciaba el tablero a
+ * las demás.
+ *
+ * Van con el mismo permiso que las de Ventas (`leads.view` o `setter.view`):
+ * es el mismo oficio sobre el otro tablero, y pedir más acá dejaría al setter
+ * sin poder ordenar el suyo.
+ */
+
+app.get('/api/setter-funnel-columns', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const columns = await setterFunnelColumnService.getAllColumns();
+    res.json({ columns });
+  } catch (error) {
+    console.error('❌ Error al obtener las etapas del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al obtener las etapas del Setter Funnel.', details: error.message });
+  }
+});
+
+app.post('/api/setter-funnel-columns', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const { key, label, icon, color, final: isFinal, atIndex } = req.body || {};
+    if (!label || !label.trim()) {
+      return res.status(400).json({ error: 'El nombre de la etapa es requerido.' });
+    }
+    const columnKey = (key && key.trim())
+      || 'setter_col_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 5);
+
+    if (await setterFunnelColumnService.getColumnByKey(columnKey)) {
+      return res.status(409).json({ error: 'Ya existe una etapa con esa clave.' });
+    }
+
+    const column = await setterFunnelColumnService.createColumn({
+      key: columnKey,
+      label: label.trim(),
+      icon,
+      color,
+      final: isFinal,
+      atIndex: Number.isInteger(atIndex) ? atIndex : null
+    });
+    res.status(201).json({ column });
+  } catch (error) {
+    console.error('❌ Error al crear la etapa del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al crear la etapa.', details: error.message });
+  }
+});
+
+// Va ANTES de `/:key`: Express resuelve por orden y la ruta con parámetro
+// se quedaría con "reorder" y con "reset" como si fueran claves de columna.
+app.patch('/api/setter-funnel-columns/reorder', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const { keys } = req.body || {};
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return res.status(400).json({ error: 'keys debe ser un arreglo con el orden de las etapas.' });
+    }
+    const columns = await setterFunnelColumnService.reorderColumns(keys);
+    res.json({ columns });
+  } catch (error) {
+    console.error('❌ Error al reordenar las etapas del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al reordenar las etapas.', details: error.message });
+  }
+});
+
+app.post('/api/setter-funnel-columns/reset', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const columns = await setterFunnelColumnService.resetToDefaults();
+    res.json({ columns });
+  } catch (error) {
+    console.error('❌ Error al restablecer las etapas del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al restablecer las etapas.', details: error.message });
+  }
+});
+
+app.put('/api/setter-funnel-columns/:key', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    if (!(await setterFunnelColumnService.getColumnByKey(req.params.key))) {
+      return res.status(404).json({ error: 'Etapa no encontrada.' });
+    }
+    const { label, icon, color, final: isFinal } = req.body || {};
+    const column = await setterFunnelColumnService.updateColumn(req.params.key, { label, icon, color, final: isFinal });
+    res.json({ column });
+  } catch (error) {
+    console.error('❌ Error al actualizar la etapa del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al actualizar la etapa.', details: error.message });
+  }
+});
+
+/**
+ * Borra una etapa. Los leads que estaban en ella los reubica el cliente antes
+ * de llamar acá, por `PATCH /api/leads/:id/status` — el único camino que mueve
+ * el funnel y el que deja registro en `lead_stage_changes`.
+ */
+app.delete('/api/setter-funnel-columns/:key', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    if (!(await setterFunnelColumnService.getColumnByKey(req.params.key))) {
+      return res.status(404).json({ error: 'Etapa no encontrada.' });
+    }
+    await setterFunnelColumnService.deleteColumn(req.params.key);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error al eliminar la etapa del Setter Funnel:', error);
+    res.status(500).json({ error: 'Error al eliminar la etapa.', details: error.message });
+  }
+});
+
+// =====================================================================
+// REPARTO AUTOMÁTICO DE LEADS (/api/lead-routing)
+// =====================================================================
+// Quién recibe los leads que entran solos y en qué proporción. Por ahora solo
+// se configura: ningún alta de leads lo lee todavía (ver leadRoutingService.js).
+function sendRoutingError(res, error, context) {
+  if (error.status) return res.status(error.status).json({ error: error.message });
+  console.error(`❌ Error al ${context}:`, error);
+  return res.status(500).json({ error: `Error al ${context}.`, details: error.message });
+}
+
+app.get('/api/lead-routing', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    res.json(await leadRoutingService.getConfig());
+  } catch (error) {
+    sendRoutingError(res, error, 'obtener la configuración del reparto');
+  }
+});
+
+app.post('/api/lead-routing/members', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    res.status(201).json(await leadRoutingService.addMember(req.body?.userId, req.body?.weight ?? 1));
+  } catch (error) {
+    sendRoutingError(res, error, 'sumar a la persona al reparto');
+  }
+});
+
+// Va antes de `/members/:id`: Express resuelve por orden y `:id` la taparía.
+app.patch('/api/lead-routing/members/reorder', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    if (!ids) return res.status(400).json({ error: 'Falta el orden (ids).' });
+    res.json(await leadRoutingService.reorderMembers(ids));
+  } catch (error) {
+    sendRoutingError(res, error, 'reordenar el reparto');
+  }
+});
+
+app.patch('/api/lead-routing/members/:id', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    const { weight, active } = req.body || {};
+    res.json(await leadRoutingService.updateMember(Number(req.params.id), { weight, active }));
+  } catch (error) {
+    sendRoutingError(res, error, 'actualizar a la persona del reparto');
+  }
+});
+
+app.delete('/api/lead-routing/members/:id', requireAuth, requirePermission('leads.routing'), async (req, res) => {
+  try {
+    res.json(await leadRoutingService.removeMember(Number(req.params.id)));
+  } catch (error) {
+    sendRoutingError(res, error, 'quitar a la persona del reparto');
   }
 });
 

@@ -12,6 +12,26 @@
       </div>
 
       <div class="header-actions">
+        <!-- Interruptor GLOBAL de Avan. Va primero y se ve distinto del resto
+             porque no es una preferencia de pantalla como "Auto: ON": cambia
+             cómo se atiende a todos los leads que entren desde ahora. -->
+        <button
+          v-if="canManageBot"
+          class="bot-switch"
+          :class="botGlobalEnabled ? 'is-on' : 'is-off'"
+          :disabled="botGlobalLoading"
+          :title="botGlobalEnabled
+            ? 'Avan está atendiendo. Apágalo para que los leads nuevos se repartan entre el equipo.'
+            : 'Avan está apagado. Los leads nuevos se reparten según el módulo de Reparto de leads.'"
+          @click="toggleGlobalBot"
+        >
+          <span class="bot-switch-dot" aria-hidden="true"></span>
+          <span class="bot-switch-text">
+            <strong>{{ botGlobalEnabled ? 'Bot encendido' : 'Bot apagado' }}</strong>
+            <small>{{ botGlobalLoading ? 'Guardando…' : (botGlobalEnabled ? 'Avan atiende y agenda' : 'Atiende el equipo · se reparten los leads') }}</small>
+          </span>
+        </button>
+
         <button class="btn-action-secondary" @click="fetchAll()" :disabled="isLoading" title="Actualizar ahora">
           <span :class="['btn-icon', { 'spin-animation': isLoading }]">🔄</span>
           {{ isLoading ? 'Cargando...' : 'Actualizar' }}
@@ -54,6 +74,18 @@
         </div>
       </div>
     </header>
+
+    <!-- Con el bot apagado la pantalla tiene que decirlo en todo momento: si no,
+         una conversación sin respuesta se lee como una falla del bot en vez de
+         como el estado que alguien eligió. -->
+    <p v-if="canSeeBotState && !botGlobalEnabled" class="info-box bot-off-box">
+      🔕 <strong>Avan está apagado.</strong>
+      No le responde a nadie y los leads nuevos de WhatsApp, Meta y el evaluador
+      se asignan según el <router-link to="/admin/reparto">Reparto de leads</router-link>,
+      para que aparezcan en el Setter Funnel de su responsable.
+      <span v-if="botRoutingNames.length"> Ahora mismo reciben: <strong>{{ botRoutingNames.join(', ') }}</strong>.</span>
+      <span v-else-if="botRoutingChecked"> <strong>No hay nadie en el reparto</strong>, así que los leads van a quedar sin responsable.</span>
+    </p>
 
     <p v-if="errorMessage" class="info-box alert-box">⚠️ {{ errorMessage }}</p>
     <p v-if="resetMessage" class="info-box success-box">✅ {{ resetMessage }}</p>
@@ -355,7 +387,7 @@
             <span class="contact-info">
               <span class="contact-name">
                 <span v-if="c.handed_off_at" class="urgent-flag" title="Avan lo transfirió a un asesor">🆘</span>
-                {{ displayName(c) }}
+                <span class="contact-name-text">{{ displayName(c) }}</span>
                 <!-- El alias del perfil de WhatsApp, cuando no es el nombre
                      real: es como aparece en el celular de quien atiende. -->
                 <span v-if="aliasOf(c)" class="contact-alias" :title="'En WhatsApp aparece como ' + aliasOf(c)">
@@ -363,9 +395,27 @@
                 </span>
               </span>
               <span class="contact-preview">{{ c.direction === 'outbound' ? 'Tú: ' : '' }}{{ truncate(c.body, 42) }}</span>
+              <!--
+                En qué etapa del funnel está su ficha. Va en su PROPIO renglón y
+                no pegada al nombre: en una columna angosta las dos cosas no
+                entran, y la que se recortaba era el nombre — que es lo único
+                que identifica al contacto. Acá la etiqueta se lee entera y, si
+                aun así no entra, se recorta ella.
+              -->
+              <span v-if="c.funnel_stage" class="contact-stage">
+                <span
+                  class="stage-badge"
+                  :class="`stage-${c.funnel_stage.board}`"
+                  :style="stageStyle(c.funnel_stage)"
+                  :title="stageTitle(c.funnel_stage)"
+                >
+                  <span v-if="c.funnel_stage.icon" aria-hidden="true">{{ c.funnel_stage.icon }}</span>
+                  <span class="stage-label">{{ c.funnel_stage.label }}</span>
+                </span>
+              </span>
             </span>
             <span class="contact-side">
-              <span class="contact-time">{{ formatShortTime(c.received_at) }}</span>
+              <span class="contact-time" :title="formatFullTime(c.received_at)">{{ formatShortTime(c.received_at) }}</span>
               <span class="badge-row">
                 <span v-if="c.is_form_lead" class="form-lead-badge" title="Llegó desde el formulario de un anuncio">
                   <Form :size="11" :stroke-width="2.25" />
@@ -395,7 +445,19 @@
               {{ initialsOf(selectedContactName) }}
             </span>
             <div class="thread-identity">
-              <strong class="thread-name">{{ selectedContactName }}</strong>
+              <strong class="thread-name">
+                <span class="thread-name-text">{{ selectedContactName }}</span>
+                <span
+                  v-if="selectedStage"
+                  class="stage-badge"
+                  :class="`stage-${selectedStage.board}`"
+                  :style="stageStyle(selectedStage)"
+                  :title="stageTitle(selectedStage)"
+                >
+                  <span v-if="selectedStage.icon" aria-hidden="true">{{ selectedStage.icon }}</span>
+                  <span class="stage-label">{{ selectedStage.label }}</span>
+                </span>
+              </strong>
               <span class="thread-sub">
                 <span class="thread-phone">{{ selectedWaId }}</span>
                 <span
@@ -555,6 +617,7 @@
 import { nextTick, onMounted, onUnmounted, computed, ref, reactive, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
+import { hasPermission } from '../auth.js';
 import { Form } from 'lucide-vue-next';
 
 const conversations = ref([]);
@@ -572,6 +635,67 @@ const isLoading = ref(false);
 const errorMessage = ref('');
 const resetMessage = ref('');
 const autoRefresh = ref(true);
+
+/*
+ * Interruptor GLOBAL de Avan.
+ *
+ * Es otra cosa que pausar el bot en UNA conversación (lo que ya hacía el botón
+ * de cada hilo, y lo que pasa solo en cuanto alguien responde a mano): esto
+ * decide si el bot atiende o si atiende el equipo. Y de la misma decisión
+ * cuelga el reparto automático de leads, que corre exactamente cuando el bot
+ * está apagado — por eso al cambiarlo se traen también los nombres de quienes
+ * van a recibir: apagar el bot sin nadie en el reparto deja a los leads sin
+ * responsable, y eso hay que verlo en el momento, no descubrirlo al día
+ * siguiente con el tablero vacío.
+ *
+ * Verlo lo puede quien ve esta pantalla; cambiarlo exige `bot.manage`.
+ */
+const canSeeBotState = hasPermission('whatsapp.view');
+const canManageBot = hasPermission('bot.manage');
+const botGlobalEnabled = ref(true);
+const botGlobalLoading = ref(false);
+const botRoutingNames = ref([]);
+const botRoutingChecked = ref(false);
+
+async function loadGlobalBotState() {
+  if (!canSeeBotState) return;
+  try {
+    const response = await apiFetch('/api/whatsapp/bot/global');
+    const data = await response.json();
+    if (response.ok) botGlobalEnabled.value = !!data.enabled;
+  } catch (err) {
+    console.warn('No se pudo leer el interruptor global del bot:', err);
+  }
+}
+
+async function toggleGlobalBot() {
+  if (botGlobalLoading.value) return;
+  const next = !botGlobalEnabled.value;
+  if (!next && !window.confirm(
+    'Vas a APAGAR a Avan para todas las conversaciones.\n\n'
+    + 'Deja de responder y de agendar, y los leads nuevos pasan a repartirse '
+    + 'entre el equipo según el módulo de Reparto de leads.\n\n'
+    + '¿Continuar?'
+  )) return;
+
+  botGlobalLoading.value = true;
+  errorMessage.value = '';
+  try {
+    const response = await apiFetch('/api/whatsapp/bot/global', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: next })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo cambiar el estado del bot.');
+    botGlobalEnabled.value = !!data.enabled;
+    botRoutingNames.value = data.routing?.members || [];
+    botRoutingChecked.value = !!data.routing;
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    botGlobalLoading.value = false;
+  }
+}
 
 const selectedWaId = ref(null);
 const thread = ref([]);
@@ -696,6 +820,30 @@ const selectedContactName = computed(() => {
   const conv = selectedConversation.value;
   return conv ? displayName(conv) : selectedWaId.value;
 });
+
+/**
+ * La etapa del funnel del contacto abierto. Sale de la conversación de la
+ * lista —el servidor ya la resolvió ahí (`funnel_stage`)— y no de una
+ * petición propia: es el mismo dato, y pedirlo dos veces es como se llega a
+ * que la lista y la cabecera digan etapas distintas.
+ */
+const selectedStage = computed(() => selectedConversation.value?.funnel_stage || null);
+
+const BOARD_LABEL = { setter: 'Setter Funnel', ventas: 'Funnel de Ventas' };
+
+function stageTitle(stage) {
+  return `${BOARD_LABEL[stage.board] || 'Funnel'}: ${stage.label}`;
+}
+
+/**
+ * La píldora se pinta con el color que el equipo le puso a esa columna, para
+ * que coincida con el tablero. Sin color configurado quedan los tonos neutros
+ * de `.stage-setter` / `.stage-ventas`, que ya distinguen un tablero del otro.
+ */
+function stageStyle(stage) {
+  if (!stage.color) return {};
+  return { background: `${stage.color}22`, color: stage.color, borderColor: `${stage.color}55` };
+}
 
 /*
  * La búsqueda la resuelve el SERVIDOR (ver `/api/whatsapp/conversations`).
@@ -1372,10 +1520,46 @@ function formatTime(isoString) {
   });
 }
 
+/**
+ * La hora de la lista, con la convención de cualquier bandeja: la HORA si el
+ * último mensaje es de hoy, "Ayer", el día de la semana dentro de la semana, y
+ * la fecha más atrás.
+ *
+ * Antes salía siempre "16/10, 10:21 a. m." — diecinueve caracteres que en una
+ * columna angosta le comían el ancho justo al nombre, y que además obligan a
+ * leer la fecha para darse cuenta de que el mensaje es de hace diez minutos.
+ * La fecha completa queda en el `title`.
+ */
+const DIAS_SEMANA = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
 function formatShortTime(isoString) {
   if (!isoString) return '—';
-  return new Date(isoString).toLocaleString('es-PE', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const hoy = new Date();
+  const dia = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  if (dia(date) === dia(hoy)) {
+    return date.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  const ayer = new Date(hoy);
+  ayer.setDate(ayer.getDate() - 1);
+  if (dia(date) === dia(ayer)) return 'Ayer';
+
+  const dias = Math.round((hoy - date) / 86400000);
+  if (dias < 7) return DIAS_SEMANA[date.getDay()];
+
+  return date.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' });
+}
+
+/** La fecha y la hora completas, para el `title` de esa misma línea. */
+function formatFullTime(isoString) {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('es-PE', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
   });
 }
 
@@ -1402,6 +1586,7 @@ onMounted(() => {
   if (requestedWaId) selectConversation(requestedWaId);
 
   fetchAll();
+  loadGlobalBotState();
   window.addEventListener('keydown', onActivityKeydown);
   pollHandle = setInterval(() => {
     if (!autoRefresh.value) return;
@@ -1461,6 +1646,73 @@ onUnmounted(() => {
   gap: 0.6rem;
   flex-wrap: wrap;
 }
+
+/* ---- Interruptor global de Avan ----
+   Deliberadamente NO usa `.btn-action-secondary`: al lado de "Actualizar" y
+   "Auto: ON" se leería como una preferencia de pantalla más, y es la única
+   cosa de esta barra que cambia cómo se atiende a los leads. El punto de
+   color dice el estado de un vistazo y el renglón de abajo dice la
+   consecuencia, que es lo que de verdad hay que decidir. */
+.bot-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  border-radius: 10px;
+  padding: 0.42rem 0.95rem;
+  cursor: pointer;
+  font-family: var(--font-heading);
+  text-align: left;
+  border: 1px solid transparent;
+  background: var(--surface-2);
+  color: var(--text-main);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.bot-switch.is-on {
+  border-color: rgba(46, 125, 70, 0.45);
+  background: rgba(46, 125, 70, 0.12);
+}
+
+.bot-switch.is-off {
+  border-color: rgba(200, 85, 50, 0.45);
+  background: rgba(200, 85, 50, 0.12);
+}
+
+.bot-switch:hover:not(:disabled) { filter: brightness(1.05); }
+.bot-switch:disabled { opacity: 0.6; cursor: default; }
+
+.bot-switch-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.bot-switch.is-on .bot-switch-dot {
+  background: var(--accent-emerald, #2F7D5A);
+  box-shadow: 0 0 0 3px rgba(46, 125, 70, 0.22);
+}
+
+.bot-switch.is-off .bot-switch-dot {
+  background: var(--accent-rose, #B23A45);
+  box-shadow: 0 0 0 3px rgba(200, 85, 50, 0.22);
+}
+
+.bot-switch-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.bot-switch-text strong { font-size: 0.84rem; font-weight: 700; }
+.bot-switch-text small { font-size: 0.68rem; color: var(--text-muted); }
+
+.bot-off-box {
+  border-color: rgba(200, 85, 50, 0.4);
+  line-height: 1.5;
+}
+
+.bot-off-box a { color: inherit; font-weight: 700; }
 
 .btn-action-secondary {
   background: var(--surface-2);
@@ -1728,7 +1980,9 @@ onUnmounted(() => {
 .contact-item {
   width: 100%;
   display: flex;
-  align-items: center;
+  /* Arriba y no al centro: con la etapa en su propio renglón, la hora tiene
+     que quedar a la altura del nombre, como en cualquier bandeja. */
+  align-items: flex-start;
   gap: 0.7rem;
   background: transparent;
   border: none;
@@ -1781,6 +2035,9 @@ onUnmounted(() => {
   width: 38px;
   height: 38px;
   flex-shrink: 0;
+  /* La fila ahora alinea arriba: un pelo de margen deja el avatar a la altura
+     del nombre y no pegado al borde superior. */
+  margin-top: 0.1rem;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -1798,12 +2055,35 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
+/* Renglón de identidad: la bandera de urgente, el nombre y su alias. La etapa
+   del funnel NO va acá — en una columna angosta no entran las dos cosas y la
+   que se recortaba era el nombre, que es lo único que identifica al contacto
+   (lo rompió así el primer intento, con el nombre reducido a "R.." y filas
+   enteras sin nombre). */
 .contact-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+/* El nombre se queda con todo el espacio libre y es lo último que se recorta;
+   el alias cede primero. */
+.contact-name-text {
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* La etapa, en su propio renglón y alineada a la izquierda bajo el nombre. */
+.contact-stage {
+  display: flex;
+  min-width: 0;
+  margin-top: 0.15rem;
 }
 
 /* Alias del perfil de WhatsApp junto al nombre real: sirve para reconocerlo
@@ -1813,6 +2093,12 @@ onUnmounted(() => {
   font-weight: 400;
   font-size: 0.72rem;
   color: var(--text-muted);
+  /* Lo último que sobrevive si la fila se queda corta: el nombre y la etapa
+     van primero. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .contact-alias::before { content: '· '; }
@@ -1868,6 +2154,47 @@ onUnmounted(() => {
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
   white-space: nowrap;
+}
+
+/*
+ * Etapa del funnel al lado del nombre. Hereda la forma de `.channel-badge`
+ * —misma altura, mismo radio— para que las dos píldoras de una fila se lean
+ * como una sola familia, pero con borde: el color viene de la columna que
+ * configuró el equipo y sin borde se pierde contra el fondo de la fila activa.
+ */
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  /* Encoge y se recorta ella antes que empujar a nadie fuera de la fila. */
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1.6;
+  padding: 0 0.42rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+.stage-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sin color propio: el tablero igual se distingue. */
+.stage-setter {
+  background: var(--surface-2);
+  color: var(--text-sub);
+  border-color: var(--border-color);
+}
+
+.stage-ventas {
+  background: rgba(47, 125, 90, 0.14);
+  color: #4FA87D;
+  border-color: rgba(47, 125, 90, 0.35);
 }
 
 .channel-fb {
@@ -2007,9 +2334,21 @@ onUnmounted(() => {
 }
 
 .thread-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
   font-size: 0.95rem;
   font-weight: 600;
   line-height: 1.2;
+}
+
+/* Igual que en la lista: el nombre manda y la píldora cede. */
+.thread-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .thread-sub {

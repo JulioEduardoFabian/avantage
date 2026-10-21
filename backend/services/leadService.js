@@ -1,4 +1,5 @@
 import { db } from '../db/connection.js';
+import { GENERIC_CONTACT_NAME } from './contactName.js';
 import { LeadStageChangeService } from './leadStageChangeService.js';
 import { UserService } from './userService.js';
 import {
@@ -9,6 +10,8 @@ import {
   loadWinningStatuses
 } from './salesFunnelStage.js';
 import { CommissionService } from './commissionService.js';
+import { LeadRoutingService } from './leadRoutingService.js';
+import { MetaConversionsService } from './metaConversionsService.js';
 
 /**
  * Dígitos con los que se compara un teléfono.
@@ -93,18 +96,194 @@ export const LEAD_PEOPLE_FIELDS = ['assigned_user_id', 'setter_user_id', 'closer
 /** Columna de `leads` que guarda a cada miembro del equipo del lead. */
 const LEAD_TEAM_COLUMNS = { setter: 'setter_user_id', closer: 'closer_user_id' };
 
+/**
+ * Acota una consulta sobre `leads` a lo que esta persona puede ver.
+ *
+ * Es la regla de "cada quien ve sus leads" escrita en SQL una sola vez, para
+ * que cualquier listado nuevo que lea la tabla —el Reporte de Leads fue el
+ * primero— no tenga que copiarla: una copia que se olvide de los tres roles o
+ * del Setter Funnel completo no es un filtro distinto, es una fuga.
+ *
+ * Sin `viewerId` no filtra nada (es el alcance `all`, el del administrador
+ * comercial). `setterFunnelStatuses` suma lo que todavía no graduó a Ventas y
+ * es el espejo en SQL de `leadHasGraduated()`: sin sello y con un status que no
+ * es comercial.
+ */
+export function applyLeadVisibility(query, { viewerId = null, setterFunnelStatuses = null } = {}) {
+  if (!viewerId) return query;
+
+  return query.where(function () {
+    this.where('leads.assigned_user_id', viewerId)
+      .orWhere('leads.setter_user_id', viewerId)
+      .orWhere('leads.closer_user_id', viewerId);
+    if (setterFunnelStatuses) {
+      this.orWhere(function () {
+        this.whereNull('leads.sales_funnel_at').andWhere(function () {
+          this.whereNull('leads.status').orWhereNotIn('leads.status', [...setterFunnelStatuses]);
+        });
+      });
+    }
+  });
+}
+
 /** Los mismos dígitos, calculados en SQL sobre la columna `phone`. */
 export const PHONE_MATCH_KEY_SQL = "RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9)";
+
+/**
+ * Caracteres con los que se compara un documento de identidad.
+ *
+ * Mismo problema que el teléfono: el DNI se carga "70123456", "70.123.456" o
+ * "70 123 456" según quién lo escriba, y comparar las cadenas tal cual deja
+ * entrar al mismo cliente dos veces. Se quitan los separadores que la gente usa
+ * de verdad (espacio, guion, punto, barra) y nada más — ni se exige que sean
+ * dígitos: un carné de extranjería o un pasaporte llevan letras y también se
+ * guardan en esta columna. Esta función y `DNI_MATCH_KEY_SQL` limpian lo mismo
+ * a propósito: son la misma regla en los dos lados de la consulta.
+ *
+ * Menos de 6 caracteres no identifica a nadie (es lo que hay escrito a medias
+ * mientras alguien tipea): ahí devuelve null y no se cruza con nada.
+ */
+export function dniMatchKey(dni) {
+  const clean = String(dni || '').replace(/[\s.\-/]/g, '').toUpperCase();
+  return clean.length < 6 ? null : clean;
+}
+
+/** Los mismos caracteres, calculados en SQL sobre la columna `dni`. */
+export const DNI_MATCH_KEY_SQL =
+  "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(leads.dni, ' ', ''), '-', ''), '.', ''), '/', ''))";
+
+/**
+ * Por qué el lead que ya existe es la misma persona que se está cargando:
+ * `'phone'`, `'dni'`, o los dos.
+ *
+ * Es la regla del duplicado escrita una vez y sin base de datos de por medio:
+ * la consulta solo trae candidatos y esta función es la que decide, así que el
+ * alta manual, la edición de la ficha y el aviso que se ve en pantalla no
+ * pueden discrepar sobre qué cuenta como repetido.
+ *
+ * Un campo vacío nunca es una coincidencia: dos leads sin DNI no son la misma
+ * persona, y si lo fueran igual no hay forma de saberlo.
+ */
+export function duplicateReasons(candidate, lead) {
+  const reasons = [];
+  const phoneKey = phoneMatchKey(candidate?.phone);
+  if (phoneKey && phoneKey === phoneMatchKey(lead?.phone)) reasons.push('phone');
+  const dniKey = dniMatchKey(candidate?.dni);
+  if (dniKey && dniKey === dniMatchKey(lead?.dni)) reasons.push('dni');
+  return reasons;
+}
+
+/**
+ * Agrupa los leads que son la misma persona: los que comparten celular (últimos
+ * 9 dígitos) o documento, con la misma regla de `duplicateReasons()`.
+ *
+ * Es transitivo a propósito (unión de conjuntos): si A comparte celular con B
+ * y B comparte DNI con C, los tres son una persona — mostrarlos en dos grupos
+ * separados escondería justo el eslabón que los une. Cada grupo dice qué dato
+ * se repite (`reasons`) y se devuelven solo los de dos o más fichas, el más
+ * reciente primero: el gemelo recién creado es el que el equipo todavía puede
+ * cortar antes de que lo trabajen dos personas.
+ */
+export function groupDuplicateLeads(leads = []) {
+  const parent = new Map();
+  const find = (id) => {
+    while (parent.get(id) !== id) {
+      parent.set(id, parent.get(parent.get(id)));
+      id = parent.get(id);
+    }
+    return id;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+
+  const byKey = new Map();
+  for (const lead of leads) {
+    parent.set(lead.id, lead.id);
+    const keys = [
+      ['phone', phoneMatchKey(lead.phone)],
+      ['dni', dniMatchKey(lead.dni)]
+    ];
+    for (const [kind, key] of keys) {
+      if (!key) continue;
+      const mapKey = `${kind}:${key}`;
+      if (byKey.has(mapKey)) union(lead.id, byKey.get(mapKey));
+      else byKey.set(mapKey, lead.id);
+    }
+  }
+
+  const groups = new Map();
+  for (const lead of leads) {
+    const root = find(lead.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(lead);
+  }
+
+  const time = (lead) => new Date(lead.created_at || 0).getTime() || 0;
+  return [...groups.values()]
+    .filter((group) => group.length > 1)
+    .map((group) => {
+      const sorted = [...group].sort((a, b) => time(b) - time(a));
+      const reasons = [];
+      const repeats = (fn) => {
+        const seen = new Set();
+        return sorted.some((lead) => {
+          const key = fn(lead);
+          if (!key) return false;
+          if (seen.has(key)) return true;
+          seen.add(key);
+          return false;
+        });
+      };
+      if (repeats((lead) => phoneMatchKey(lead.phone))) reasons.push('phone');
+      if (repeats((lead) => dniMatchKey(lead.dni))) reasons.push('dni');
+      return { reasons, leads: sorted };
+    })
+    .sort((a, b) => time(b.leads[0]) - time(a.leads[0]));
+}
+
+/**
+ * Lo que se le dice a quien está cargando el lead.
+ *
+ * Nombra el DATO repetido (el celular, el documento o los dos), a la persona
+ * que ya está en la base y de quién es su ficha: "ya existe un lead con estos
+ * datos" obliga a salir a buscarla para entender qué pasó, y mientras se busca
+ * es cuando se carga igual.
+ */
+export function duplicateMessage(duplicates) {
+  const lead = (duplicates || [])[0];
+  if (!lead) return 'Ya existe un lead registrado con estos datos.';
+  const reasons = lead.reasons || [];
+  const dato = reasons.includes('phone') && reasons.includes('dni')
+    ? 'ese celular y ese DNI'
+    : reasons.includes('dni') ? 'ese DNI' : 'ese celular';
+  const quien = lead.assigned_user_name ? `, a cargo de ${lead.assigned_user_name}` : '';
+  const nombre = lead.full_name || `El lead #${lead.id}`;
+  return `${nombre} ya está registrado con ${dato}${quien}. No se carga dos veces: abre su ficha y trabaja sobre ella.`;
+}
+
+/** El rechazo del alta duplicada, con las fichas que lo provocaron adjuntas
+ * para que la pantalla pueda mostrarlas (la ruta responde 409). */
+export function duplicateLeadError(duplicates) {
+  const error = new Error(duplicateMessage(duplicates));
+  error.code = 'DUPLICATE_LEAD';
+  error.duplicates = duplicates;
+  return error;
+}
 
 /**
  * Servicio de acceso a datos para los leads y prospectos (registro comercial de usuarios
  * del chatbot y prospectos capturados en la Base de Datos).
  */
 export class LeadService {
-  constructor({ stageChangeService, userService, commissionService } = {}) {
+  constructor({ stageChangeService, userService, commissionService, routingService, metaConversionsService } = {}) {
     this.stageChanges = stageChangeService || new LeadStageChangeService();
     this.users = userService || new UserService();
     this.commissions = commissionService || new CommissionService();
+    this.routing = routingService || new LeadRoutingService({ userService: this.users });
+    this.metaConversions = metaConversionsService || new MetaConversionsService();
   }
 
   async createLead({
@@ -128,6 +307,7 @@ export class LeadService {
     province,
     address,
     assignedTo,
+    createdBy,
     source,
     status,
     metaLeadgenId,
@@ -136,17 +316,44 @@ export class LeadService {
     metaAdsetId,
     metaCampaignId,
     metaPlatform,
-    metaCreatedTime
+    metaCreatedTime,
+    autoRoute = true
   }) {
     /*
-     * Si el responsable llega como texto y nombra a alguien del área comercial
-     * (el alta manual lo elige de la lista del equipo), el lead nace ya
-     * enlazado a esa cuenta. El valor por defecto —"Kevin", de cuando el campo
-     * era texto libre— no corresponde a ninguna cuenta mientras nadie se llame
-     * así en el panel: queda como nombre y el tablero lo muestra igual.
+     * El reparto automático (`/admin/reparto`) va primero y le gana al texto:
+     * cuando está corriendo —o sea, cuando el bot está apagado— es ÉL quien
+     * decide de quién es el lead, y por eso pisa el valor por defecto "Kevin",
+     * que es un resto de cuando el campo era texto libre y hoy además nombra a
+     * una persona real del panel. Respetarlo haría que todos los leads de Meta
+     * y del evaluador siguieran cayéndole a Kevin con el reparto encendido.
+     *
+     * `autoRoute` viene en `true` a propósito: los caminos automáticos son los
+     * que hay que repartir y son los que se van a seguir agregando, así que el
+     * que tiene que acordarse de algo es el alta MANUAL, que es una sola
+     * (`registerManualLead()`) y se desvía poniéndolo en `false`. Al revés —que
+     * cada camino automático tenga que pedirlo— el cuarto que aparezca se
+     * olvida y nadie se entera, porque un lead sin repartir no falla: solo
+     * queda sin dueño.
+     *
+     * Un fallo del reparto NO puede tumbar el alta: un lead sin responsable se
+     * arregla asignándolo a mano, y un lead que no se guardó se perdió.
+     */
+    let assignedUser = null;
+    if (autoRoute) {
+      try {
+        assignedUser = await this.routing.pickAssignee();
+      } catch (error) {
+        console.error('❌ Error al repartir el lead automáticamente (queda sin responsable):', error.message);
+      }
+    }
+
+    /*
+     * Sin reparto (o sin nadie elegible), lo de siempre: si el responsable
+     * llega como texto y nombra a alguien del área comercial (el alta manual lo
+     * elige de la lista del equipo), el lead nace ya enlazado a esa cuenta.
      */
     const assignedText = assignedTo || 'Kevin';
-    const assignedUser = await this.users.findCommercialByName(assignedText);
+    if (!assignedUser) assignedUser = await this.users.findCommercialByName(assignedText);
 
     const [id] = await db('leads').insert({
       topic: topic || 'Asesoría de Tesis',
@@ -170,6 +377,9 @@ export class LeadService {
       address: address || null,
       assigned_to: assignedUser ? assignedUser.name : assignedText,
       assigned_user_id: assignedUser ? assignedUser.id : null,
+      // Solo el alta manual trae autor: lo que entra por el bot, por Meta o por
+      // el evaluador no lo cargó nadie (ver la migración de `created_by`).
+      created_by: createdBy || null,
       source: source || 'Chatbot Web',
       status: status || 'nuevo',
       meta_leadgen_id: metaLeadgenId || null,
@@ -200,6 +410,7 @@ export class LeadService {
       province: data.province,
       address: data.address,
       assignedTo: data.assignedTo || data.assigned_to || 'Kevin',
+      createdBy: data.createdBy || null,
       source: data.source || 'Manual',
       status: data.status || 'nuevo',
       additionalNotes: data.additionalNotes || data.additional_notes || null,
@@ -209,8 +420,173 @@ export class LeadService {
       metaAdsetId: data.metaAdsetId,
       metaCampaignId: data.metaCampaignId,
       metaPlatform: data.metaPlatform,
-      metaCreatedTime: data.metaCreatedTime
+      metaCreatedTime: data.metaCreatedTime,
+      // Por acá entran los leads de Meta, que SÍ se reparten; el alta manual
+      // entra por `registerManualLead()`, que lo pone en `false`.
+      autoRoute: data.autoRoute !== false
     });
+  }
+
+  /**
+   * Los leads que ya existen con este celular o este documento.
+   *
+   * Pregunta sobre TODA la tabla y no solo sobre lo que el que carga puede ver:
+   * el duplicado que más daño hace es justamente el del lead que trabaja otra
+   * persona — quien carga no lo tiene en su tablero, así que lo vuelve a cargar
+   * de buena fe y el contacto termina en dos funnels a la vez. Por eso de una
+   * ficha ajena viaja un RESUMEN y no el lead: nombre, celular, documento,
+   * etapa y de quién es, lo justo para entender que ya está cargado y a quién
+   * preguntarle. `visible` dice si además la puede abrir, para no ofrecerle un
+   * enlace que `requireLeadVisible` le va a negar.
+   *
+   * `excludeId` es el propio lead cuando se está editando su ficha: nadie es
+   * duplicado de sí mismo.
+   */
+  async findDuplicates({ phone, dni, excludeId = null, viewer = null } = {}) {
+    const phoneKey = phoneMatchKey(phone);
+    const dniKey = dniMatchKey(dni);
+    if (!phoneKey && !dniKey) return [];
+
+    const query = db('leads')
+      .select(
+        'leads.id',
+        'leads.full_name',
+        'leads.phone',
+        'leads.dni',
+        'leads.status',
+        'leads.source',
+        'leads.created_at',
+        'leads.sales_funnel_at',
+        'leads.assigned_to',
+        'leads.assigned_user_id',
+        'leads.setter_user_id',
+        'leads.closer_user_id',
+        'asesor.name as assigned_user_name'
+      )
+      .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
+      .where(function () {
+        if (phoneKey) this.orWhereRaw(`${PHONE_MATCH_KEY_SQL} = ?`, [phoneKey]);
+        if (dniKey) this.orWhereRaw(`${DNI_MATCH_KEY_SQL} = ?`, [dniKey]);
+      })
+      .orderBy('leads.created_at', 'desc')
+      .limit(5);
+    if (excludeId) query.whereNot('leads.id', excludeId);
+
+    const rows = await query;
+    // El alcance se resuelve UNA vez para todas las filas (lo mismo que hace
+    // `getLeadsVisibleTo`): son como máximo cinco, pero `visibilityFor()`
+    // consulta las etapas comerciales y no hay por qué preguntarlas cinco veces.
+    const salesStatuses = viewer ? (await this.visibilityFor(viewer)).salesStatuses : null;
+
+    return rows
+      .map((row) => ({ row, reasons: duplicateReasons({ phone, dni }, row) }))
+      .filter(({ reasons }) => reasons.length > 0)
+      .map(({ row, reasons }) => ({
+        id: row.id,
+        full_name: row.full_name,
+        phone: row.phone,
+        dni: row.dni,
+        status: row.status,
+        source: row.source,
+        created_at: row.created_at,
+        assigned_user_name: row.assigned_user_name || row.assigned_to || null,
+        reasons,
+        visible: viewer ? this.canView(row, viewer, salesStatuses) : false
+      }));
+  }
+
+  /**
+   * Las personas que están cargadas más de una vez (botón "Duplicados" del
+   * Funnel de Ventas). Agrupa con `groupDuplicateLeads()` —la misma regla del
+   * tope del alta manual— sobre TODA la tabla, porque el gemelo que más daño
+   * hace es el que trabaja otra persona.
+   *
+   * Pero no le abre la base entera a cualquiera: quien no administra el área
+   * comercial recibe solo los grupos donde al menos una ficha es suya (la que
+   * él trabaja y su gemela ajena), y de cada ficha viaja el mismo RESUMEN que
+   * en `findDuplicates()` con `visible` para saber si la puede abrir.
+   */
+  async listDuplicateGroups(viewer) {
+    const rows = await db('leads')
+      .select(
+        'leads.id',
+        'leads.full_name',
+        'leads.phone',
+        'leads.dni',
+        'leads.status',
+        'leads.source',
+        'leads.created_at',
+        'leads.sales_funnel_at',
+        'leads.assigned_to',
+        'leads.assigned_user_id',
+        'leads.setter_user_id',
+        'leads.closer_user_id',
+        'asesor.name as assigned_user_name',
+        'projects.id as project_id'
+      )
+      .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
+      .leftJoin('projects', 'projects.lead_id', 'leads.id')
+      .where(function () {
+        this.whereNotNull('leads.phone').orWhereNotNull('leads.dni');
+      });
+
+    const { scope, salesStatuses } = await this.visibilityFor(viewer);
+    const grupos = groupDuplicateLeads(rows);
+    // Una sola pasada por las cinco tablas para todas las fichas repetidas.
+    const workload = await this.workloadByLead(grupos.flatMap((group) => group.leads.map((lead) => lead.id)));
+
+    return grupos
+      .map((group) => ({
+        reasons: group.reasons,
+        leads: group.leads.map((row) => ({
+          id: row.id,
+          full_name: row.full_name,
+          phone: row.phone,
+          dni: row.dni,
+          status: row.status,
+          source: row.source,
+          created_at: row.created_at,
+          has_project: Boolean(row.project_id),
+          assigned_user_name: row.assigned_user_name || row.assigned_to || null,
+          visible: this.canView(row, viewer, salesStatuses),
+          // La misma regla que aplica el borrado, viajando a la pantalla: el
+          // botón que se ve y lo que el servidor acepta no pueden decir cosas
+          // distintas (mismo criterio que `delivery_blocked` en Entregables).
+          delete_blocked_reason: deletionBlockReason(workload.get(row.id))
+        }))
+      }))
+      .filter((group) => scope === 'all' || group.leads.some((lead) => lead.visible));
+  }
+
+  /**
+   * El alta MANUAL de un lead: el modal de los dos tableros y la ficha de la
+   * Base de Datos (`POST /api/leads`).
+   *
+   * Es un método aparte de `createProspect()` —por donde siguen entrando los
+   * leads de Meta— porque el tope de duplicados vale para la persona que carga
+   * a mano y no para el webhook: ahí un alta rechazada no se reintenta nunca y
+   * el lead se pierde en silencio (y Meta ya cruza por teléfono antes de
+   * llamar, ver `persistMetaLead`). Va en el servicio y no en la ruta porque es
+   * la regla del módulo: el día que haya un tercer formulario de alta, el tope
+   * viene puesto.
+   *
+   * `actor` es quien está cargando, y se usa para dos cosas distintas: queda
+   * escrito en `created_by` —la ficha dice a quién preguntarle por lo que se
+   * cargó a mano— y decide de cuál de las fichas repetidas la pantalla puede
+   * ofrecer un enlace y de cuál tiene que decir "no está en tu cartera". Lo que
+   * se RECHAZA no depende de quién mire: el duplicado que más daño hace es
+   * justamente el que esa persona no ve.
+   */
+  async registerManualLead(data, { actor = null } = {}) {
+    const duplicates = await this.findDuplicates({ phone: data.phone, dni: data.dni, viewer: actor });
+    if (duplicates.length > 0) throw duplicateLeadError(duplicates);
+    /*
+     * El alta manual NO pasa por el reparto automático. Quien carga la ficha
+     * suele estar cargando SU lead (lo consiguió, se lo pasaron por fuera), y
+     * mandárselo a otro del grupo es quitárselo; además el formulario ya tiene
+     * su propio campo de responsable, que es el que manda acá.
+     */
+    return this.createProspect({ ...data, createdBy: actor?.id || null, autoRoute: false });
   }
 
   /**
@@ -250,32 +626,22 @@ export class LeadService {
         // Quién lo pasó al funnel de ventas y quién lo cerró: los dos sellos se
         // leen por nombre desde la ficha y desde Comisiones.
         'setter.name as setter_name',
-        'closer.name as closer_name'
+        'closer.name as closer_name',
+        // Quién lo cargó a mano, para que la ficha diga a quién preguntarle.
+        // Solo lo tienen los leads del alta manual (ver `created_by`).
+        'autor.name as created_by_name'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
       .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
+      .leftJoin('users as autor', 'autor.id', 'leads.created_by')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
       .orderBy('leads.created_at', 'desc');
 
-    if (viewerId) {
-      query.where(function () {
-        this.where('leads.assigned_user_id', viewerId)
-          .orWhere('leads.setter_user_id', viewerId)
-          .orWhere('leads.closer_user_id', viewerId);
-        if (setterFunnelStatuses) {
-          this.orWhere(function () {
-            this.whereNull('leads.sales_funnel_at').andWhere(function () {
-              this.whereNull('leads.status').orWhereNotIn('leads.status', [...setterFunnelStatuses]);
-            });
-          });
-        }
-      });
-    }
-    return query;
+    return applyLeadVisibility(query, { viewerId, setterFunnelStatuses });
   }
 
   /**
@@ -293,12 +659,22 @@ export class LeadService {
     return { scope: 'mine', salesStatuses: null };
   }
 
+  /**
+   * El alcance de esta persona traducido a los argumentos con los que se acota
+   * una consulta sobre `leads` (`applyLeadVisibility()`). Lo usan el listado de
+   * los tableros y el Reporte de Leads: que `scope: 'all'` signifique "no
+   * filtres nada" se decide una vez acá y no en cada llamador.
+   */
+  async visibilityQueryFor(user) {
+    const { scope, salesStatuses } = await this.visibilityFor(user);
+    if (scope === 'all') return { scope, viewerId: null, setterFunnelStatuses: null };
+    return { scope, viewerId: user.id, setterFunnelStatuses: salesStatuses };
+  }
+
   /** Los leads que le tocan a esta persona según `visibilityFor()`. */
   async getLeadsVisibleTo(user) {
-    const { scope, salesStatuses } = await this.visibilityFor(user);
-    const leads = await this.getAllLeads(
-      scope === 'all' ? {} : { viewerId: user.id, setterFunnelStatuses: salesStatuses }
-    );
+    const { scope, viewerId, setterFunnelStatuses } = await this.visibilityQueryFor(user);
+    const leads = await this.getAllLeads({ viewerId, setterFunnelStatuses });
     return { leads, scope };
   }
 
@@ -498,7 +874,7 @@ ${note}` : note;
     if (existing) return existing;
 
     return this.createLead({
-      fullName: fullName || 'Contacto de WhatsApp',
+      fullName: fullName || GENERIC_CONTACT_NAME,
       phone,
       topic: `Consulta por WhatsApp de ${fullName || phone}`,
       source: source || 'WhatsApp Directo',
@@ -519,12 +895,14 @@ ${note}` : note;
         'asesor.name as assigned_user_name',
         'asesor.email as assigned_user_email',
         'setter.name as setter_name',
-        'closer.name as closer_name'
+        'closer.name as closer_name',
+        'autor.name as created_by_name'
       )
       .leftJoin('projects', 'projects.lead_id', 'leads.id')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
       .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
+      .leftJoin('users as autor', 'autor.id', 'leads.created_by')
       .leftJoin('finance_income as pago', function () {
         this.on('pago.lead_id', '=', 'leads.id').andOn('pago.is_initial_payment', '=', db.raw('1'));
       })
@@ -705,11 +1083,29 @@ ${note}` : note;
     }
 
     await db('leads').where({ id }).update(patch);
-    await this.stageChanges.record(current.id, {
+    const stageChangeId = await this.stageChanges.record(current.id, {
       fromStatus: current.status,
       toStatus: status,
       actor,
       reason
+    });
+
+    /*
+     * Devolverle a Meta en qué etapa quedó el lead que nos mandó
+     * (`metaConversionsService`). Va acá por lo mismo que la comisión: hay
+     * varios caminos a cada etapa y todos pasan por este método.
+     *
+     * NO se espera a propósito. Es una llamada HTTP a la Graph API, y arrastrar
+     * una tarjeta en el Kanban no puede quedarse esperando a que Meta
+     * responda; el servicio se traga sus propios errores y deja cada intento en
+     * `meta_capi_events`, que es donde se revisa. Un evento que no salió se
+     * puede reenviar (botón "Reenviar últimos 7 días"); un movimiento de lead
+     * que se cayó por un timeout de Meta, no.
+     */
+    void this.metaConversions.reportStageChange({ ...current, status }, {
+      status,
+      movedAt: new Date(),
+      stageChangeId
     });
 
     /*
@@ -811,6 +1207,35 @@ ${note}` : note;
       updatePayload.additional_notes = data.additionalNotes !== undefined ? data.additionalNotes : data.additional_notes;
     }
 
+    /*
+     * Editar la ficha tampoco puede dejar dos veces a la misma persona: si el
+     * celular o el documento cambian y el valor nuevo ya es de otro lead, el
+     * guardado se rechaza igual que el alta.
+     *
+     * Se miran solo los campos que DE VERDAD cambian, y no el estado final de
+     * la ficha: en la base quedaron gemelos de antes (los que abrían el
+     * evaluador público y el webhook de Meta, ver `esMejorLead` en
+     * campaignService.js), y chequear el valor que ya estaba guardado haría
+     * imposible corregirle el nombre o el correo a uno de ellos — un tope que
+     * impide arreglar justo el problema que viene a evitar.
+     */
+    if (updatePayload.phone !== undefined || updatePayload.dni !== undefined) {
+      const actual = await this.getLeadById(id);
+      const phoneChanged = updatePayload.phone !== undefined
+        && phoneMatchKey(updatePayload.phone) !== phoneMatchKey(actual?.phone);
+      const dniChanged = updatePayload.dni !== undefined
+        && dniMatchKey(updatePayload.dni) !== dniMatchKey(actual?.dni);
+      if (phoneChanged || dniChanged) {
+        const duplicates = await this.findDuplicates({
+          phone: phoneChanged ? updatePayload.phone : null,
+          dni: dniChanged ? updatePayload.dni : null,
+          excludeId: id,
+          viewer: actor
+        });
+        if (duplicates.length > 0) throw duplicateLeadError(duplicates);
+      }
+    }
+
     if (Object.keys(updatePayload).length > 0) {
       await db('leads').where({ id }).update(updatePayload);
     }
@@ -821,7 +1246,96 @@ ${note}` : note;
     return this.getLeadById(id);
   }
 
+  /**
+   * Cuánto trabajo cuelga de cada uno de estos leads.
+   *
+   * Cinco consultas agrupadas para TODA la lista, no cinco por lead: se usa
+   * desde el listado de duplicados, que puede traer cientos de fichas.
+   */
+  async workloadByLead(ids = []) {
+    const unicos = [...new Set(ids.map(Number).filter(Boolean))];
+    const mapa = new Map(unicos.map((id) => [id, { projects: 0, income: 0, contracts: 0, quotes: 0, commissions: 0 }]));
+    if (unicos.length === 0) return mapa;
+
+    const contar = async (tabla, campo) => {
+      const filas = await db(tabla).whereIn('lead_id', unicos).select('lead_id').count({ n: '*' }).groupBy('lead_id');
+      for (const fila of filas) {
+        const registro = mapa.get(Number(fila.lead_id));
+        if (registro) registro[campo] = Number(fila.n) || 0;
+      }
+    };
+
+    await Promise.all([
+      contar('projects', 'projects'),
+      contar('finance_income', 'income'),
+      contar('contracts', 'contracts'),
+      contar('quotes', 'quotes'),
+      contar('sales_commissions', 'commissions')
+    ]);
+    return mapa;
+  }
+
+  /**
+   * Borra la ficha de un lead. Devuelve cuántas filas borró.
+   *
+   * Se niega si de esa ficha cuelga trabajo, y no es una precaución de más:
+   * `projects`, `quotes`, `sales_commissions`, las notas y el historial de
+   * etapas están en CASCADE, así que borrar el lead **borra el proyecto con
+   * todo lo suyo**; y `finance_income` y `contracts` están en SET NULL, así
+   * que las cuotas sobreviven pero se quedan **sin cliente** — desaparecen del
+   * cierre en INGRESOS y de Cobranzas, y ya no hay forma de saber de quién
+   * eran. Hasta acá el borrado no comprobaba nada, y el botón nuevo del modal
+   * de duplicados lo pone justo al lado de una ficha marcada "🏆 con proyecto".
+   *
+   * La regla es la MISMA que viaja al listado de duplicados
+   * (`deletionBlockReason`), para que el botón que se ve y lo que el servidor
+   * acepta no puedan decir cosas distintas.
+   */
   async deleteLead(id) {
+    const workload = (await this.workloadByLead([id])).get(Number(id));
+    const motivo = deletionBlockReason(workload);
+    if (motivo) {
+      const error = new Error(motivo);
+      error.code = 'LEAD_HAS_WORK';
+      throw error;
+    }
     return db('leads').where({ id }).del();
   }
+}
+
+/**
+ * Por qué NO se puede borrar esta ficha, o `null` si se puede.
+ *
+ * Nombra lo que hay colgando y lo que pasaría, en vez de un "no se puede" a
+ * secas: de un duplicado casi siempre se borra el gemelo vacío, y si justo el
+ * que se eligió es el que tiene el proyecto hay que poder darse cuenta sin
+ * salir del modal.
+ */
+export function deletionBlockReason(workload) {
+  if (!workload) return null;
+
+  const tiene = [];
+  const pasaria = [];
+  if (workload.projects > 0) {
+    tiene.push('un proyecto abierto');
+    pasaria.push('se borraría el proyecto con todo su trabajo');
+  }
+  if (workload.quotes > 0) {
+    tiene.push(`${workload.quotes} cotización(es)`);
+    pasaria.push('se borrarían sus cotizaciones');
+  }
+  if (workload.commissions > 0) {
+    tiene.push(`${workload.commissions} comisión(es) devengada(s)`);
+    pasaria.push('se borrarían sus comisiones');
+  }
+  // Las dos SET NULL van juntas: la fila sobrevive pero se queda huérfana, que
+  // en los libros es casi peor que perderla — nadie sabe de quién era.
+  if (workload.income > 0) tiene.push(`${workload.income} cuota(s) en Finanzas`);
+  if (workload.contracts > 0) tiene.push(`${workload.contracts} contrato(s)`);
+  if (workload.income > 0 || workload.contracts > 0) pasaria.push('el dinero quedaría sin cliente');
+
+  if (tiene.length === 0) return null;
+
+  return `Esta ficha tiene ${tiene.join(', ')}: ${pasaria.join(' y ')}. `
+    + 'Si la repetida es esta, primero hay que mover ese trabajo a la ficha que se queda.';
 }

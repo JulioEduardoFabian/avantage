@@ -7,6 +7,9 @@
  *
  * Cada alias se compara ya normalizado (minúsculas, sin tildes) contra el
  * texto del contacto — ver `normalizeToken()` en `universityNormalizer.js`.
+ * Gana el alias MÁS LARGO de todo el catálogo, no el de la primera entrada de
+ * la lista: con el primero ganando, un alias genérico ("catolica") de una
+ * entrada temprana tapaba el nombre propio de otra ("sedes sapientiae").
  */
 export const PERU_UNIVERSITIES = [
   { name: 'Universidad Nacional Mayor de San Marcos', aliases: ['unmsm', 'san marcos', 'sanmarcos'] },
@@ -19,7 +22,18 @@ export const PERU_UNIVERSITIES = [
   { name: 'Universidad de San Martín de Porres', aliases: ['usmp', 'san martin de porres'] },
   { name: 'Universidad Nacional de San Antonio Abad del Cusco', aliases: ['unsaac', 'san antonio abad'] },
   { name: 'Universidad Peruana de Ciencias Aplicadas', aliases: ['upc'] },
-  { name: 'Pontificia Universidad Católica del Perú', aliases: ['pucp', 'catolica'] },
+  { name: 'Pontificia Universidad Católica del Perú', aliases: ['pucp', 'pontificia', 'pontificia catolica', 'catolica del peru'] },
+  // Las "católicas" son varias y comparten la misma palabra. Cada una entra
+  // con su nombre propio para que gane el alias más específico (ver
+  // `matchCatalog`), y "catolica" a secas queda como término AMBIGUO: no
+  // resuelve a ninguna. Caso real (15/10/2026): "Universidad católica Sedes
+  // Sapientiae" se confirmó como "Pontificia Universidad Católica del Perú".
+  { name: 'Universidad Católica Sedes Sapientiae', aliases: ['ucss', 'sedes sapientiae', 'sapientiae', 'catolica sedes sapientiae'] },
+  { name: 'Universidad Católica de Santa María', aliases: ['ucsm', 'santa maria', 'catolica de santa maria', 'catolica santa maria'] },
+  { name: 'Universidad Católica San Pablo', aliases: ['ucsp', 'san pablo', 'catolica san pablo'] },
+  { name: 'Universidad Católica Santo Toribio de Mogrovejo', aliases: ['usat', 'santo toribio', 'santo toribio de mogrovejo'] },
+  { name: 'Universidad Católica de Trujillo Benedicto XVI', aliases: ['uct', 'catolica de trujillo'] },
+  { name: 'Universidad Católica Los Ángeles de Chimbote', aliases: ['uladech', 'los angeles de chimbote', 'catolica los angeles de chimbote'] },
   { name: 'Universidad Nacional Tecnológica de Lima Sur', aliases: ['untels'] },
   { name: 'Universidad de Ciencias y Humanidades', aliases: ['uch'] },
   { name: 'Universidad Continental', aliases: ['continental', 'la continental'] },
@@ -34,3 +48,18 @@ export const PERU_UNIVERSITIES = [
   { name: 'Universidad Ricardo Palma', aliases: ['urp', 'ricardo palma'] },
   { name: 'Universidad ESAN', aliases: ['esan'] }
 ];
+
+/**
+ * Términos que varias universidades comparten: por sí solos NO identifican a
+ * ninguna. Un match que dependa únicamente de uno de ellos baja a confianza
+ * media, así el bot se queda con el texto que escribió el contacto en vez de
+ * confirmarle una universidad que nadie nombró.
+ */
+export const AMBIGUOUS_UNIVERSITY_TERMS = new Set([
+  'catolica',
+  'la catolica',
+  'universidad catolica',
+  'nacional',
+  'particular',
+  'privada'
+]);

@@ -73,6 +73,42 @@ export class WhatsappBotSettingsService {
     };
   }
 
+  /**
+   * El interruptor **global** de Avan: `true` = el bot atiende, `false` = lo
+   * atiende el equipo y el reparto automático de leads entra en juego.
+   *
+   * Es una consulta propia y no `get()` porque la pregunta se hace en el camino
+   * caliente —una vez por mensaje entrante y una vez por barrido de fondo— y
+   * `get()` trae y parsea el prompt entero, el FAQ y los rangos de precio para
+   * leer un booleano.
+   *
+   * Ante un error de base devuelve `true` (el bot sigue): un fallo de lectura
+   * no puede dejar en silencio al único que contesta. El lado caro de
+   * equivocarse acá es no responderle a nadie, no responder de más.
+   */
+  async isBotEnabled() {
+    try {
+      const row = await db('whatsapp_bot_settings').orderBy('id', 'asc').first('bot_enabled');
+      return row ? Boolean(row.bot_enabled) : true;
+    } catch (error) {
+      console.error('❌ No se pudo leer el interruptor global del bot:', error.message);
+      return true;
+    }
+  }
+
+  /** Enciende o apaga el bot para TODAS las conversaciones. */
+  async setBotEnabled(enabled) {
+    const current = await db('whatsapp_bot_settings').orderBy('id', 'asc').first();
+    if (!current) {
+      await db('whatsapp_bot_settings').insert({ bot_enabled: !!enabled });
+      return this.isBotEnabled();
+    }
+    await db('whatsapp_bot_settings')
+      .where({ id: current.id })
+      .update({ bot_enabled: !!enabled, updated_at: db.fn.now() });
+    return !!enabled;
+  }
+
   /** Textos por defecto de la personalidad (para el botón "Restaurar" del panel). */
   getPromptDefaults() {
     return {

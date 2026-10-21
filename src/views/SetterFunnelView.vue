@@ -97,7 +97,7 @@
           v-model="searchQuery"
           type="text"
           class="search-input"
-          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad..."
+          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
         />
         <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
       </div>
@@ -213,6 +213,16 @@
     <div v-if="loadError" class="info-box alert-box">
       <h4>⚠️ No se pudo cargar el Setter Funnel</h4>
       <p>{{ loadError }}</p>
+    </div>
+
+    <!--
+      Las etapas ahora se guardan en el servidor y son de todo el equipo, así
+      que un cambio que no llegó tiene que decirse: antes se escribía en el
+      navegador y nunca podía fallar.
+    -->
+    <div v-if="columnError" class="info-box alert-box">
+      <h4>⚠️ No se pudo guardar el cambio de etapas</h4>
+      <p>{{ columnError }}</p>
     </div>
 
     <!-- Toast de Proyecto Creado Automáticamente al Ganar -->
@@ -596,6 +606,13 @@
         <form @submit.prevent="saveNewLead" class="modal-body">
           <p v-if="leadFormError" class="info-box alert-box lead-form-error">{{ leadFormError }}</p>
 
+          <LeadDuplicateAlert
+            :duplicates="dupLeads"
+            :checking="dupChecking"
+            :openable-ids="openableDupIds"
+            @open="openDuplicateLead"
+          />
+
           <div class="lead-form-grid">
             <div class="form-group">
               <label class="form-label">Nombre completo *</label>
@@ -654,8 +671,8 @@
 
           <div class="modal-actions">
             <button type="button" class="btn-action-ghost" @click="showCreateLeadModal = false">Cancelar</button>
-            <button type="submit" class="btn-action-primary" :disabled="isSavingLead">
-              {{ isSavingLead ? 'Guardando...' : 'Registrar Lead' }}
+            <button type="submit" class="btn-action-primary" :disabled="isSavingLead || hasDupLeads">
+              {{ isSavingLead ? 'Guardando...' : hasDupLeads ? 'Ya está registrado' : 'Registrar Lead' }}
             </button>
           </div>
         </form>
@@ -769,9 +786,26 @@
           <div class="lead-modal-title-group">
             <span class="lead-modal-id">#{{ selectedLead.id }}</span>
             <div>
-              <h3 class="lead-modal-name">{{ getLeadFullName(selectedLead) }}</h3>
+              <h3 class="lead-modal-name">
+                {{ getLeadFullName(selectedLead) }}
+                <!-- Los datos del lead se corrigen acá mismo: es la ficha que el
+                     setter tiene abierta mientras habla con la persona, y
+                     mandarlo a otra pantalla a arreglar un nombre o un correo es
+                     como se termina trabajando con el dato viejo. -->
+                <button v-if="!leadEdit" type="button" class="lead-edit-btn" title="Editar los datos del lead" @click="startLeadEdit">
+                  ✏️ Editar datos
+                </button>
+              </h3>
               <p class="lead-modal-subtext">
                 Canal: <strong :class="getLeadChannelInfo(selectedLead).cssClass">{{ getLeadChannelInfo(selectedLead).icon }} {{ selectedLead.source || getLeadChannelInfo(selectedLead).label }}</strong>
+                <!-- Quién lo cargó a mano: el responsable comercial que figura
+                     abajo se asigna aparte y casi nunca es el que registró la
+                     ficha, así que sin esto no hay a quién preguntarle por lo
+                     que el lead trae escrito. Solo lo tienen las altas manuales;
+                     en las demás el canal ya dice de dónde salió. -->
+                <template v-if="selectedLead.created_by_name">
+                  · Cargado por <strong>{{ selectedLead.created_by_name }}</strong>
+                </template>
                 · Registrado: {{ formatDate(selectedLead.created_at) }}
               </p>
             </div>
@@ -791,7 +825,7 @@
                 :class="{ 'is-active': showBotChat }"
                 @click="toggleBotChat"
               >
-                💬 {{ showBotChat ? 'Ocultar conversación' : 'Ver conversación con el bot' }} ({{ selectedLead.phone }})
+                💬 {{ showBotChat ? 'Ocultar conversación' : 'Conversación / Responder' }} ({{ selectedLead.phone }})
               </button>
               <a
                 v-if="selectedLead.email"
@@ -845,8 +879,66 @@
             </div>
           </div>
 
+          <!-- Edición de los datos del lead -->
+          <form v-if="leadEdit" class="lead-edit-form" @submit.prevent="saveLeadEdit">
+            <div class="lead-edit-grid">
+              <label class="lead-edit-field">
+                <span>Nombre completo</span>
+                <input v-model="leadEdit.fullName" type="text" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>DNI</span>
+                <input v-model="leadEdit.dni" type="text" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Correo</span>
+                <input v-model="leadEdit.email" type="email" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Celular</span>
+                <input v-model="leadEdit.phone" type="text" class="form-input custom-input" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Universidad</span>
+                <input v-model="leadEdit.university" type="text" class="form-input custom-input" placeholder="Ej: Universidad Continental" />
+              </label>
+              <label class="lead-edit-field">
+                <span>Nivel académico</span>
+                <select v-model="leadEdit.academicLevel" class="form-select custom-select">
+                  <option v-for="level in ACADEMIC_LEVELS" :key="level" :value="level">{{ level }}</option>
+                </select>
+              </label>
+              <label class="lead-edit-field lead-edit-field--wide">
+                <span>Carrera / especialidad</span>
+                <select v-model="leadEdit.fieldOfStudy" class="form-select custom-select">
+                  <optgroup v-for="group in careerGroupsWith(leadEdit.fieldOfStudy)" :key="group.label" :label="group.label">
+                    <option v-for="career in group.careers" :key="career" :value="career">{{ career }}</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label class="lead-edit-field lead-edit-field--wide">
+                <span>Tema de tesis</span>
+                <input v-model="leadEdit.topic" type="text" class="form-input custom-input" />
+              </label>
+            </div>
+            <p v-if="leadEditError" class="lead-edit-error">{{ leadEditError }}</p>
+            <LeadDuplicateAlert
+              :duplicates="editDupLeads"
+              :checking="editDupChecking"
+              :openable-ids="openableDupIds"
+              mode="edit"
+              @open="openDuplicateLead"
+            />
+            <div class="lead-edit-actions">
+              <button type="button" class="btn-action-ghost" @click="cancelLeadEdit">Cancelar</button>
+              <button type="submit" class="btn-action-primary" :disabled="leadEditSaving || hasEditDupLeads">
+                {{ leadEditSaving ? 'Guardando…' : hasEditDupLeads ? 'Dato repetido' : 'Guardar datos' }}
+              </button>
+            </div>
+          </form>
+
           <!-- Grid de Datos del Lead -->
-          <div class="lead-details-grid">
+          <div v-else class="lead-details-grid">
             <div class="detail-item">
               <span class="detail-label">🙋 Responsable comercial:</span>
               <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
@@ -905,45 +997,10 @@
           <LeadNotes :lead-id="selectedLead.id" />
          </div>
 
-          <!-- Panel lateral: conversación con el bot de WhatsApp (Avan) -->
-          <aside v-if="showBotChat" class="bot-chat-panel">
-            <header class="bot-chat-head">
-              <span>💬 Conversación con Avan</span>
-              <button type="button" class="bot-chat-refresh" :disabled="botChatLoading" @click="loadBotChat()">
-                {{ botChatLoading ? '…' : '⟳' }}
-              </button>
-            </header>
-            <div ref="botChatScrollEl" class="bot-chat-scroll custom-scrollbar">
-              <p v-if="botChatError" class="bot-chat-empty">⚠️ {{ botChatError }}</p>
-              <p v-else-if="botChatLoading && !botChatMessages.length" class="bot-chat-empty">Cargando conversación…</p>
-              <p v-else-if="!botChatMessages.length" class="bot-chat-empty">Sin mensajes registrados con este contacto.</p>
-              <div
-                v-for="msg in botChatMessages"
-                :key="msg.id"
-                class="bot-bubble"
-                :class="msg.direction === 'outbound' ? 'outbound' : 'inbound'"
-              >
-                <img
-                  v-if="msg.message_type === 'image' && botChatMediaUrls[msg.id]"
-                  :src="botChatMediaUrls[msg.id]"
-                  alt="Imagen enviada por WhatsApp"
-                  class="bot-bubble-image"
-                />
-                <a
-                  v-else-if="msg.media_filename && botChatMediaUrls[msg.id]"
-                  :href="botChatMediaUrls[msg.id]"
-                  target="_blank"
-                  rel="noopener"
-                  class="bot-bubble-attachment-link"
-                >📎 Ver adjunto</a>
-                <span v-if="msg.message_type === 'audio' && msg.body && msg.body !== '[Audio]'" class="bot-bubble-audio-tag" title="Transcrito automáticamente de una nota de voz">🎤 Audio transcrito</span>
-                <p v-if="msg.body && !(msg.media_filename && MEDIA_BODY_PLACEHOLDER_RE.test(msg.body))" class="bot-bubble-text">{{ msg.body }}</p>
-                <span class="bot-bubble-time">
-                  {{ msg.direction === 'outbound' ? 'Avan' : 'Contacto' }} · {{ formatClock(msg.received_at) }}
-                </span>
-              </div>
-            </div>
-          </aside>
+          <!-- Panel lateral: la conversación de WhatsApp del lead, para leerla
+               y para responderle sin salir de la ficha. El componente es el
+               mismo que usa el Funnel de Ventas. -->
+          <LeadConversation v-if="showBotChat" :lead="selectedLead" class="lead-chat-side" />
         </div>
 
         <div class="modal-footer">
@@ -968,81 +1025,32 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
-import { loadApiImage } from '../apiImage.js';
 import LeadNotes from '../components/LeadNotes.vue';
+import LeadConversation from '../components/LeadConversation.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
+import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import { formatCardDate, formatLeadDate as formatDate, limaDay } from '../leadCardDate.js';
+import { matchesLeadSearch } from '../leadSearch.js';
+import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
+import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import { buildSalesFunnelStatuses, leadHasGraduated } from '../salesFunnelStage.js';
-
-/** Deja de mostrar solo "[Imagen]"/"[Video]": para esos placeholders se intenta cargar el adjunto real. */
-const MEDIA_BODY_PLACEHOLDER_RE = /^\[(Imagen|Video|Audio|Documento|Sticker)\]$/;
+import {
+  createSetterColumn,
+  deleteSetterColumn,
+  fetchSetterColumns,
+  reorderSetterColumns,
+  resetSetterColumns,
+  updateSetterColumn
+} from '../setterFunnelColumns.js';
 
 // Etapas predeterminadas especializadas para Setter Funnel
-const DEFAULT_SETTER_COLUMNS = [
-  {
-    key: 'conversacion_abierta',
-    label: 'Conversación Abierta',
-    icon: '💬',
-    color: '#2C8C99',
-    final: false,
-    position: 0
-  },
-  {
-    key: 'calificando',
-    label: 'En Calificación',
-    icon: '🎯',
-    color: '#6F8125',
-    final: false,
-    position: 1
-  },
-  {
-    key: 'congelado',
-    label: 'Congelado',
-    icon: '🧊',
-    color: '#8D9199',
-    final: false,
-    position: 2
-  },
-  {
-    key: 'cita_agendada',
-    label: 'Cita Agendada',
-    icon: '📅',
-    color: '#C9922E',
-    final: false,
-    position: 3
-  },
-  {
-    key: 'transferido_closer',
-    label: 'Transferido a Closer',
-    icon: '🤝',
-    color: '#56624A',
-    final: false,
-    position: 4
-  },
-  {
-    key: 'ganado',
-    label: 'Ganado / Cerrado',
-    icon: '🏆',
-    color: '#2F7D5A',
-    final: true,
-    position: 5
-  },
-  {
-    key: 'descartado',
-    label: 'No Califica / Sin Resp.',
-    icon: '🚫',
-    color: '#B23A45',
-    final: false,
-    position: 6
-  }
-];
-
 const PRESET_EMOJIS = ['💬', '🎯', '📅', '🤝', '🏆', '🚫', '💚', '📘', '📸', '📞', '🆕', '📋', '⏳', '⭐', '⚡', '💰'];
 
 const PRESET_COLORS = [
@@ -1072,6 +1080,12 @@ const leads = ref([]);
 // 'all' = se ven todos (administrador comercial); 'mine' = solo los propios.
 const leadScope = ref('all');
 const selectedLead = ref(null);
+// Copia editable de los datos del lead abierto (null = la ficha se está leyendo,
+// no editando).
+const leadEdit = ref(null);
+const leadEditSaving = ref(false);
+const leadEditError = ref('');
+const ACADEMIC_LEVELS = ['Pregrado (Bachiller/Título)', 'Posgrado (Maestría)', 'Posgrado (Doctorado)'];
 const meetingLead = ref(null);
 const showMeetingModal = ref(false);
 const meetingNotice = ref('');
@@ -1088,16 +1102,14 @@ function onMeetingCreated(data) {
   setTimeout(() => { meetingNotice.value = ''; }, 8000);
 }
 
-// Conversación con el bot de WhatsApp (Avan) dentro de la ficha del lead
+// Conversación de WhatsApp del lead dentro de su ficha. El panel entero vive
+// en `LeadConversation.vue` (hilo, adjuntos, sondeo y cuadro de respuesta);
+// acá solo queda si está desplegado o no.
 const showBotChat = ref(false);
-const botChatMessages = ref([]);
-const botChatMediaUrls = reactive({});
-const botChatLoading = ref(false);
-const botChatError = ref('');
-const botChatScrollEl = ref(null);
-let botChatTimer = null;
 const isLoading = ref(false);
 const loadError = ref('');
+// Las etapas viajan al servidor: un cambio puede fallar, y hay que decirlo.
+const columnError = ref('');
 const draggedLead = ref(null);
 const hoveredColumn = ref(null);
 const projectToast = ref(null);
@@ -1158,18 +1170,6 @@ const assigneeOptions = computed(() => {
 const unassignedCount = computed(
   () => setterFunnelLeads.value.filter((lead) => leadPeople(lead).length === 0).length
 );
-
-/**
- * El día de calendario de Lima en que se registró el lead (`YYYY-MM-DD`), que
- * es como lo escribe el `<input type="date">`. Con el huso del navegador, un
- * lead de las 23:00 caería en el día siguiente para una laptop en otra zona.
- */
-function limaDay(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
-}
 
 // Paginación por Columna
 const columnPages = reactive({});
@@ -1408,7 +1408,9 @@ const filteredLeadsByColumn = computed(() => {
     grouped[col.key] = [];
   }
 
-  const query = searchQuery.value.trim().toLowerCase();
+  // Se normaliza dentro de `matchesLeadSearch`: acá solo se saca de la ref una
+  // vez, fuera del bucle de leads.
+  const query = searchQuery.value;
   const channelFilter = selectedChannelFilter.value;
   const assigneeFilter = selectedAssigneeFilter.value;
   const firstColKey = columns.value[0]?.key || 'conversacion_abierta';
@@ -1437,23 +1439,11 @@ const filteredLeadsByColumn = computed(() => {
       if (dateTo.value && day > dateTo.value) continue;
     }
 
-    // Filtro por texto de búsqueda
-    if (query) {
-      const cleanId = query.replace(/^#/, '');
-      const matchId = String(lead.id || '').includes(cleanId);
-      const matchName = (lead.full_name || '').toLowerCase().includes(query);
-      const matchTopic = (lead.topic || '').toLowerCase().includes(query);
-      const matchEmail = (lead.email || '').toLowerCase().includes(query);
-      const matchPhone = (lead.phone || '').toLowerCase().includes(query);
-      const matchField = (lead.field_of_study || '').toLowerCase().includes(query);
-      const matchUniversity = (lead.university || '').toLowerCase().includes(query);
-      const matchChannel = (lead.source || '').toLowerCase().includes(query);
-      const matchAssigned = (lead.assigned_to || '').toLowerCase().includes(query);
-
-      if (!matchId && !matchName && !matchTopic && !matchEmail && !matchPhone && !matchField && !matchUniversity && !matchChannel && !matchAssigned) {
-        continue;
-      }
-    }
+    // Filtro por texto de búsqueda. La regla vive en `leadSearch.js` y la
+    // comparten los dos tableros: tolera tildes y dedazos en el texto, y el
+    // celular, el documento y el id se buscan tal cual (ahí un dígito de
+    // diferencia es otra persona).
+    if (!matchesLeadSearch(lead, query)) continue;
 
     // Filtro por nivel de viabilidad
     if (selectedViabilityFilter.value !== 'all') {
@@ -1539,23 +1529,34 @@ const availableTargetColumns = computed(() => {
   return columns.value.filter(c => c.key !== deletingColumn.value.key);
 });
 
-// Mover columnas
+// Mover columnas. Se reordena en pantalla y se manda el orden completo al
+// servidor; si falla se vuelve al orden que había, para no dejar el tablero
+// diciendo una cosa y la base otra.
 function moveColumnLeft(index) {
   if (index <= 0) return;
-  const newCols = [...columns.value];
-  const [removed] = newCols.splice(index, 1);
-  newCols.splice(index - 1, 0, removed);
-  columns.value = newCols;
-  persistSetterColumns();
+  swapColumns(index, index - 1);
 }
 
 function moveColumnRight(index) {
   if (index >= columns.value.length - 1) return;
+  swapColumns(index, index + 1);
+}
+
+async function swapColumns(from, to) {
+  const anterior = [...columns.value];
   const newCols = [...columns.value];
-  const [removed] = newCols.splice(index, 1);
-  newCols.splice(index + 1, 0, removed);
+  const [removed] = newCols.splice(from, 1);
+  newCols.splice(to, 0, removed);
   columns.value = newCols;
-  persistSetterColumns();
+  columns.value.forEach((c, i) => { c.position = i; });
+
+  try {
+    columnError.value = '';
+    await reorderSetterColumns(columns.value.map((c) => c.key));
+  } catch (err) {
+    columns.value = anterior;
+    columnError.value = err.message || 'No se pudo guardar el nuevo orden de las etapas.';
+  }
 }
 
 function scrollBoard(direction) {
@@ -1750,27 +1751,157 @@ function openCreateColumnModal(index = null) {
   showCreateColModal.value = true;
 }
 
-function saveNewColumn() {
+async function saveNewColumn() {
   if (!newColumnForm.label.trim()) return;
-  const key = 'setter_col_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 5);
-  const newCol = {
-    key,
-    label: newColumnForm.label.trim(),
-    icon: newColumnForm.icon || '📌',
-    color: newColumnForm.color || '#2C8C99',
-    final: Boolean(newColumnForm.final),
-    position: 0
-  };
-  const at = insertAtIndex.value;
-  if (at !== null) {
-    columns.value.splice(at, 0, newCol);
-  } else {
-    columns.value.push(newCol);
+  // La clave la genera el servidor, que es el que puede garantizar que no
+  // choque con otra: dos personas creando una etapa a la vez en dos máquinas
+  // es exactamente el caso que esta pantalla vino a arreglar.
+  try {
+    columnError.value = '';
+    const column = await createSetterColumn({
+      label: newColumnForm.label.trim(),
+      icon: newColumnForm.icon || '📌',
+      color: newColumnForm.color || '#2C8C99',
+      final: Boolean(newColumnForm.final),
+      atIndex: insertAtIndex.value
+    });
+    const at = insertAtIndex.value;
+    if (at !== null) columns.value.splice(at, 0, column);
+    else columns.value.push(column);
+    columns.value.forEach((c, i) => { c.position = i; });
+    showCreateColModal.value = false;
+    insertAtIndex.value = null;
+  } catch (err) {
+    columnError.value = err.message || 'No se pudo crear la etapa.';
   }
-  columns.value.forEach((c, i) => { c.position = i; });
-  persistSetterColumns();
-  showCreateColModal.value = false;
-  insertAtIndex.value = null;
+}
+
+/*
+ * Antes de cargar un lead a mano se pregunta si ese celular o ese DNI ya están
+ * en la base. El aviso sale mientras se escribe —un error recién al apretar
+ * "Registrar" llega después de haber tipeado la ficha entera— pero el tope de
+ * verdad lo pone el servidor, que responde 409 (ver `registerManualLead`): esta
+ * pantalla ve solo los leads de quien mira, y el duplicado que más daño hace es
+ * justamente el del lead que trabaja otra persona.
+ */
+const {
+  duplicates: dupLeads,
+  checking: dupChecking,
+  hasDuplicates: hasDupLeads,
+  schedule: scheduleDupCheck,
+  checkNow: checkDupNow,
+  setDuplicates: setDupLeads,
+  reset: resetDupCheck
+} = useLeadDuplicateCheck();
+
+/* Los duplicados que SÍ se pueden abrir desde este tablero: los que ya están
+   cargados en él. El resto se nombra pero no se ofrece abrir. */
+const openableDupIds = computed(() => leads.value.map((l) => l.id));
+
+watch(() => [leadForm.phone, leadForm.dni], () => {
+  if (!showCreateLeadModal.value) return;
+  scheduleDupCheck({ phone: leadForm.phone, dni: leadForm.dni });
+});
+
+function openDuplicateLead(dup) {
+  const lead = leads.value.find((l) => l.id === dup.id);
+  if (!lead) return;
+  showCreateLeadModal.value = false;
+  cancelLeadEdit();
+  selectedLead.value = lead;
+}
+
+/*
+ * ── Edición de los datos del lead desde su propia ficha ──
+ * Mismo formulario y mismas reglas que en el Funnel de Ventas: el dato se
+ * corrige donde se está mirando. La comprobación de duplicados es una instancia
+ * APARTE de la del alta manual: los dos formularios pueden estar abiertos en la
+ * misma pantalla, y compartir el estado haría que el aviso de uno bloqueara el
+ * botón del otro.
+ */
+const {
+  duplicates: editDupLeads,
+  checking: editDupChecking,
+  hasDuplicates: hasEditDupLeads,
+  schedule: scheduleEditDupCheck,
+  checkNow: checkEditDupNow,
+  setDuplicates: setEditDupLeads,
+  reset: resetEditDupCheck
+} = useLeadDuplicateCheck();
+
+watch(() => [leadEdit.value?.phone, leadEdit.value?.dni], () => {
+  if (!leadEdit.value) return;
+  scheduleEditDupCheck({ ...editDupPayload(), excludeId: selectedLead.value?.id });
+});
+
+/* Solo lo que cambió respecto de lo guardado: una ficha que ya tenía un gemelo
+   de antes no puede quedar con su propio formulario bloqueado. */
+function editDupPayload() {
+  return changedIdentityFields(leadEdit.value, selectedLead.value);
+}
+
+/** Copia editable de los datos del lead: cancelar no debe tocar el tablero. */
+function startLeadEdit() {
+  const lead = selectedLead.value;
+  if (!lead) return;
+  leadEditError.value = '';
+  resetEditDupCheck();
+  leadEdit.value = {
+    fullName: lead.full_name || '',
+    dni: lead.dni || '',
+    email: lead.email || '',
+    phone: lead.phone || '',
+    university: lead.university || '',
+    academicLevel: lead.academic_level || ACADEMIC_LEVELS[0],
+    fieldOfStudy: lead.field_of_study || DEFAULT_CAREER,
+    topic: lead.topic || ''
+  };
+}
+
+function cancelLeadEdit() {
+  leadEdit.value = null;
+  leadEditError.value = '';
+  resetEditDupCheck();
+}
+
+async function saveLeadEdit() {
+  leadEditError.value = '';
+  // Sin esperar el retardo del tipeo: el dato pudo escribirse y guardarse en el
+  // mismo segundo, y el aviso tiene que estar antes de mandar el guardado.
+  const repetidos = await checkEditDupNow({ ...editDupPayload(), excludeId: selectedLead.value?.id });
+  if (repetidos.length) {
+    leadEditError.value = 'Ese celular o ese DNI ya son de otra ficha.';
+    return;
+  }
+  leadEditSaving.value = true;
+  try {
+    const response = await apiFetch(`/api/leads/${selectedLead.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(leadEdit.value)
+    });
+    const data = await response.json();
+    if (response.status === 409) {
+      // El servidor manda: la comprobación de mientras se escribía pudo quedar
+      // vieja (otra persona cargó ese contacto entre medio).
+      setEditDupLeads(data.duplicates || []);
+      leadEditError.value = data.error || 'Ese dato ya es de otra ficha.';
+      return;
+    }
+    if (!response.ok) throw new Error(data.error || 'No se pudo guardar los datos.');
+
+    // El lead abierto y el del tablero son objetos distintos: se actualizan los
+    // dos para que la tarjeta muestre el nombre nuevo sin recargar.
+    Object.assign(selectedLead.value, data.lead);
+    const inBoard = leads.value.find((l) => l.id === data.lead.id);
+    if (inBoard) Object.assign(inBoard, data.lead);
+    leadEdit.value = null;
+    resetEditDupCheck();
+  } catch (err) {
+    leadEditError.value = err.message;
+  } finally {
+    leadEditSaving.value = false;
+  }
 }
 
 // Modal Nuevo Lead manual
@@ -1787,6 +1918,7 @@ function openCreateLeadModal() {
   leadForm.assignedTo = 'Kevin';
   leadForm.status = columns.value[0]?.key || 'conversacion_abierta';
   leadForm.additionalNotes = '';
+  resetDupCheck();
   showCreateLeadModal.value = true;
 }
 
@@ -1794,6 +1926,16 @@ async function saveNewLead() {
   leadFormError.value = '';
   if (!leadForm.fullName.trim() || !leadForm.phone.trim()) {
     leadFormError.value = 'El nombre completo y el celular son obligatorios.';
+    return;
+  }
+  /*
+   * Se vuelve a preguntar sin esperar el retardo: el dato pudo escribirse y
+   * guardarse en el mismo segundo, y así el aviso aparece antes de mandar un
+   * alta que el servidor va a rechazar igual.
+   */
+  const repetidos = await checkDupNow({ phone: leadForm.phone, dni: leadForm.dni });
+  if (repetidos.length) {
+    leadFormError.value = 'Ese contacto ya está registrado. Revisa las fichas de abajo.';
     return;
   }
   isSavingLead.value = true;
@@ -1817,6 +1959,13 @@ async function saveNewLead() {
       body: JSON.stringify(payload)
     });
     const data = await res.json();
+    if (res.status === 409) {
+      // El servidor es el que manda: el formulario pudo abrirse antes de que
+      // otra persona cargara ese contacto.
+      setDupLeads(data.duplicates || []);
+      leadFormError.value = data.error || 'Ese contacto ya está registrado.';
+      return;
+    }
     if (!res.ok) throw new Error(data.error || 'No se pudo registrar el lead.');
     showCreateLeadModal.value = false;
     await fetchAll();
@@ -1836,17 +1985,26 @@ function openEditColumnModal(col) {
   showEditColModal.value = true;
 }
 
-function saveEditedColumn() {
+async function saveEditedColumn() {
   if (!editingColumn.value || !editColumnForm.label.trim()) return;
   const col = columns.value.find(c => c.key === editingColumn.value.key);
-  if (col) {
-    col.label = editColumnForm.label.trim();
-    col.icon = editColumnForm.icon;
-    col.color = editColumnForm.color;
-    col.final = Boolean(editColumnForm.final);
+  const anterior = col ? { ...col } : null;
+  const cambios = {
+    label: editColumnForm.label.trim(),
+    icon: editColumnForm.icon,
+    color: editColumnForm.color,
+    final: Boolean(editColumnForm.final)
+  };
+  if (col) Object.assign(col, cambios);
+
+  try {
+    columnError.value = '';
+    await updateSetterColumn(editingColumn.value.key, cambios);
+    showEditColModal.value = false;
+  } catch (err) {
+    if (col && anterior) Object.assign(col, anterior);
+    columnError.value = err.message || 'No se pudo actualizar la etapa.';
   }
-  persistSetterColumns();
-  showEditColModal.value = false;
 }
 
 function openDeleteColumnModal(col) {
@@ -1861,52 +2019,61 @@ async function confirmDeleteColumn() {
   const colKey = deletingColumn.value.key;
   const targetKey = targetReassignColKey.value;
 
-  // Reasignar leads que estaban en la columna eliminada
-  for (const lead of leads.value) {
-    if (lead.status === colKey) {
-      lead.status = targetKey;
-      apiFetch(`/api/leads/${lead.id}/status`, {
+  /*
+   * Primero se mueven los leads y recién después se borra la etapa: al revés,
+   * si el borrado sale bien y la reasignación falla, quedan leads con un
+   * `status` que ya no es columna de nadie — y esos aparecen en la primera
+   * columna sin que nadie entienda por qué. Se espera a que terminen (antes
+   * se mandaban sueltas con `.catch(console.error)`) porque ahora la etapa se
+   * borra en el servidor y el orden entre las dos cosas importa.
+   */
+  const enLaColumna = leads.value.filter((lead) => lead.status === colKey);
+  try {
+    columnError.value = '';
+    await Promise.all(enLaColumna.map(async (lead) => {
+      const res = await apiFetch(`/api/leads/${lead.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: targetKey })
-      }).catch(console.error);
-    }
+      });
+      if (!res.ok) throw new Error('No se pudieron mover los leads de esa etapa.');
+      lead.status = targetKey;
+    }));
+
+    await deleteSetterColumn(colKey);
+    columns.value = columns.value.filter(c => c.key !== colKey);
+    showDeleteColModal.value = false;
+    deletingColumn.value = null;
+  } catch (err) {
+    columnError.value = err.message || 'No se pudo eliminar la etapa.';
+    await loadSetterColumns();
+    await fetchAll();
   }
-
-  columns.value = columns.value.filter(c => c.key !== colKey);
-  persistSetterColumns();
-  showDeleteColModal.value = false;
-  deletingColumn.value = null;
 }
 
-function confirmResetColumns() {
-  if (!confirm('¿Restablecer las etapas de Setter Funnel a su configuración original?')) return;
-  columns.value = JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
-  persistSetterColumns();
-}
-
-function persistSetterColumns() {
+async function confirmResetColumns() {
+  if (!confirm('¿Restablecer las etapas de Setter Funnel a su configuración original? Es para todo el equipo.')) return;
   try {
-    localStorage.setItem('setter_funnel_columns_v2', JSON.stringify(columns.value));
-  } catch (e) {
-    console.warn('No se pudo guardar columnas en localStorage:', e);
+    columnError.value = '';
+    columns.value = await resetSetterColumns();
+  } catch (err) {
+    columnError.value = err.message || 'No se pudieron restablecer las etapas.';
   }
 }
 
-function loadSetterColumns() {
+/**
+ * Las etapas del equipo, desde el servidor. Si la petición falla el tablero
+ * queda con lo que tenía (o vacío en la primera carga) y se dice: dibujar las
+ * de fábrica como si fueran las del equipo invita a arrastrar leads a una
+ * columna que para los demás no existe.
+ */
+async function loadSetterColumns() {
   try {
-    const saved = localStorage.getItem('setter_funnel_columns_v2');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        columns.value = parsed;
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn('Error al cargar columnas guardadas:', e);
+    columnError.value = '';
+    columns.value = await fetchSetterColumns();
+  } catch (err) {
+    columnError.value = err.message || 'No se pudieron cargar las etapas del Setter Funnel.';
   }
-  columns.value = JSON.parse(JSON.stringify(DEFAULT_SETTER_COLUMNS));
 }
 
 /**
@@ -1962,115 +2129,18 @@ function getLevelClass(level) {
   return 'viability-unknown';
 }
 
-function formatDate(dateStr) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('es-PE', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
 
-/**
- * La fecha de registro en la tarjeta: día y mes, y el año solo si no es el
- * actual. La hora completa queda en el `title` y en la ficha.
- */
-function formatCardDate(dateStr) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '—';
-  const sameYear = limaDay(dateStr).slice(0, 4) === limaDay(new Date()).slice(0, 4);
-  return d.toLocaleDateString('es-PE', {
-    timeZone: 'America/Lima',
-    day: '2-digit',
-    month: 'short',
-    ...(sameYear ? {} : { year: '2-digit' })
-  });
-}
-
-function formatClock(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
-}
-
-/**
- * Trae el hilo completo (contacto + Avan) del lead seleccionado desde la
- * tabla `whatsapp_messages`. El `phone` del lead ES el wa_id del contacto.
- */
-function releaseBotChatMedia(keepIds) {
-  for (const key of Object.keys(botChatMediaUrls)) {
-    if (keepIds.has(Number(key))) continue;
-    URL.revokeObjectURL(botChatMediaUrls[key]);
-    delete botChatMediaUrls[key];
-  }
-}
-
-async function hydrateBotChatMedia(messages) {
-  const withMedia = messages.filter((m) => m.media_filename);
-  releaseBotChatMedia(new Set(withMedia.map((m) => m.id)));
-  for (const msg of withMedia) {
-    if (botChatMediaUrls[msg.id]) continue;
-    const url = await loadApiImage(`/api/whatsapp/messages/${msg.id}/media`);
-    if (url) botChatMediaUrls[msg.id] = url;
-  }
-}
-
-async function loadBotChat() {
-  const waId = selectedLead.value?.phone;
-  if (!waId) return;
-  botChatLoading.value = true;
-  botChatError.value = '';
-  try {
-    const response = await apiFetch(`/api/whatsapp/conversations/${encodeURIComponent(waId)}/messages`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo obtener la conversación.');
-    botChatMessages.value = data.messages || [];
-    await hydrateBotChatMedia(botChatMessages.value);
-    await nextTick();
-    if (botChatScrollEl.value) botChatScrollEl.value.scrollTop = botChatScrollEl.value.scrollHeight;
-  } catch (err) {
-    botChatError.value = err.message;
-  } finally {
-    botChatLoading.value = false;
-  }
-}
-
-function stopBotChatPolling() {
-  if (botChatTimer) {
-    clearInterval(botChatTimer);
-    botChatTimer = null;
-  }
-}
 
 function toggleBotChat() {
   showBotChat.value = !showBotChat.value;
-  if (showBotChat.value) {
-    loadBotChat();
-    stopBotChatPolling();
-    botChatTimer = setInterval(loadBotChat, 12000);
-  } else {
-    stopBotChatPolling();
-  }
 }
 
-// Al cambiar de lead (o cerrar la ficha) se colapsa y limpia el panel.
+// Al cambiar de lead (o cerrar la ficha) el panel se colapsa. Lo que había que
+// limpiar —hilo, adjuntos, sondeo— lo desmonta `LeadConversation` solo.
 watch(selectedLead, () => {
   showBotChat.value = false;
-  botChatMessages.value = [];
-  botChatError.value = '';
-  releaseBotChatMedia(new Set());
-  stopBotChatPolling();
-});
-
-onBeforeUnmount(() => {
-  stopBotChatPolling();
-  releaseBotChatMedia(new Set());
+  // Abrir otra ficha no puede arrastrar el formulario de la anterior.
+  cancelLeadEdit();
 });
 
 onMounted(() => {
@@ -2084,6 +2154,62 @@ onMounted(() => {
 </script>
 
 <style scoped>
+
+/* ── Edición de los datos del lead (dentro de su ficha) ── */
+.lead-edit-btn {
+  margin-left: 0.6rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-2);
+  color: var(--text-sub);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.lead-edit-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+.lead-edit-form {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--surface-1);
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.lead-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+}
+
+.lead-edit-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.lead-edit-field--wide { grid-column: 1 / -1; }
+
+.lead-edit-field > span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.lead-edit-error {
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--accent-rose);
+}
+
+.lead-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .lead-edit-grid { grid-template-columns: 1fr; }
+}
 /* Contenedor Principal de la Página */
 .kanban-page-wrapper {
   padding: var(--page-py) var(--page-px) var(--page-pb);
@@ -3380,130 +3506,21 @@ button.setter-btn {
   flex: 1 1 0;
 }
 
-.bot-chat-panel {
-  flex: 0 0 360px;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-1);
-  border: 1px solid var(--border-color);
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.bot-chat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.7rem 0.9rem;
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: var(--text-main);
-  background: var(--surface-2, var(--surface-1));
-  border-bottom: 1px solid var(--border-color);
-}
-
-.bot-chat-refresh {
-  background: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  border-radius: 8px;
-  width: 26px;
-  height: 26px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
-}
-
-.bot-chat-refresh:hover:not(:disabled) {
-  color: var(--text-main);
-}
-
-.bot-chat-scroll {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 62vh;
-  background:
-    radial-gradient(circle at 20% 10%, rgba(47, 125, 90, 0.06), transparent 60%);
-}
-
-.bot-chat-empty {
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  text-align: center;
-  margin: auto;
-}
-
-.bot-bubble {
-  max-width: 85%;
-  padding: 0.5rem 0.7rem;
-  border-radius: 12px;
-  font-size: 0.83rem;
-  line-height: 1.4;
-  word-break: break-word;
-}
-
-.bot-bubble.inbound {
-  align-self: flex-start;
-  background: var(--bg-card-solid);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  border-bottom-left-radius: 4px;
-}
-
-.bot-bubble.outbound {
-  align-self: flex-end;
-  background: #2F7D5A;
-  color: #fff;
-  border-bottom-right-radius: 4px;
-}
-
-.bot-bubble-text {
-  margin: 0;
-  white-space: pre-wrap;
-}
-
-.bot-bubble-image {
-  display: block;
-  max-width: 100%;
-  max-height: 18rem;
-  border-radius: 0.5rem;
-  margin-bottom: 0.25rem;
-}
-
-.bot-bubble-attachment-link {
-  display: inline-block;
-  color: inherit;
-  text-decoration: underline;
-  margin-bottom: 0.25rem;
-}
-
-.bot-bubble-audio-tag {
-  display: block;
-  font-size: 0.65rem;
-  opacity: 0.65;
-  margin-bottom: 0.15rem;
-}
-
-.bot-bubble-time {
-  display: block;
-  margin-top: 0.2rem;
-  font-size: 0.66rem;
-  opacity: 0.7;
+/* El panel de conversación (y su propio responsive) vive en
+   `LeadConversation.vue`; acá solo se le reserva el ancho de la columna. */
+.lead-chat-side {
+  flex: 0 0 380px;
+  min-width: 0;
+  max-height: 72vh;
 }
 
 @media (max-width: 900px) {
   .modal-body-split {
     flex-direction: column !important;
   }
-  .bot-chat-panel {
+  .lead-chat-side {
     flex-basis: auto;
-  }
-  .bot-chat-scroll {
-    max-height: 40vh;
+    max-height: none;
   }
 }
 

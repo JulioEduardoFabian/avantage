@@ -22,8 +22,8 @@ export function priceAnchor(contactName, durationLabel) {
   // el lead recibía dos duraciones distintas en la misma conversación.
   const duration = durationLabel ? `dura ${durationLabel} ` : '';
   return (
-    `${hello}El costo depende de tu carrera, tu nivel académico y el alcance de tu tesis, así que prefiero que te lo detalle el asesor con el número exacto para tu caso 🙌\n\n` +
-    `Para eso es justo la reunión: es *totalmente gratis*, ${duration}y no te compromete a nada — ahí te resuelve el precio y todas tus dudas. ¿Coordinamos?`
+    `${hello}El costo depende de tu carrera y del alcance de tu tesis, así que el número exacto te lo da el asesor 🙌\n\n` +
+    `La reunión es *totalmente gratis*, ${duration}y no te compromete a nada. ¿Coordinamos?`
   );
 }
 
@@ -48,18 +48,18 @@ export function unreadableMessage(messageType) {
     contacts: 'el contacto'
   };
   const cosa = QUE_MANDO[messageType] || 'eso';
+  // En minúscula porque va incrustado a mitad de frase, después de "pero".
   const detalle = messageType === 'audio' || messageType === 'voice'
-    ? 'Por acá todavía no puedo escucharlo'
-    : `Por acá todavía no puedo abrirlo`;
+    ? 'por acá todavía no puedo escucharlo'
+    : 'por acá todavía no puedo abrirlo';
 
-  return `Me llegó ${cosa}, pero te soy sincero: ${detalle} 🙈 `
-    + '¿Me lo cuentas en un mensaje escrito? Con eso sigo sin problema — y si es algo que necesitas que vea '
-    + 'alguien del equipo, ya les avisé para que lo revisen.';
+  return `Me llegó ${cosa}, pero ${detalle} 🙈 `
+    + '¿Me lo cuentas por escrito? Ya le avisé al equipo para que también lo revise.';
 }
 
 /** F1 — Segunda vez que insiste con el precio: texto distinto al de la 1ª + handoff. */
 export function priceInsistedHandoff() {
-  return 'Entiendo que quieres el número exacto ya 🙌 Te paso directo con el asesor para que te lo confirme y resuelva tus dudas al detalle.';
+  return 'Entiendo que quieres el número exacto 🙌 Te paso con el asesor para que te lo confirme.';
 }
 
 /**
@@ -69,7 +69,7 @@ export function priceInsistedHandoff() {
  * en una misma conversación.
  */
 export function priceInsistedDuringScheduling() {
-  return 'El precio y las formas de pago te los explica el asesor con calma. Te lo paso ahora para que lo coordinen directamente 🙌';
+  return 'El precio y las formas de pago te los explica el asesor. Te lo paso ahora 🙌';
 }
 
 /**
@@ -117,11 +117,11 @@ export function askInstituteField() {
 }
 
 export function lowCycleRejection() {
-  return 'Genial que ya estés pensando en tu tesis desde ahora 💪 Trabajamos con alumnos a partir de 8.º ciclo, que es cuando la mayoría de universidades habilita el proceso de tesis. Cuando llegues ahí, escríbeme y te ayudamos. ¡Éxitos!';
+  return 'Genial que ya lo estés pensando 💪 Trabajamos desde 8.º ciclo, que es cuando se habilita el proceso de tesis. Cuando llegues ahí, escríbeme. ¡Éxitos!';
 }
 
 export function instituteFieldRejection() {
-  return 'Gracias por escribirnos 🙌 En institutos solo podemos evaluar casos de administración, negocios o educación, y por ahora tu especialidad no está dentro de las áreas que atendemos. ¡Te deseamos mucho éxito en tu proceso! 💪';
+  return 'Gracias por escribirnos 🙌 En institutos solo atendemos administración, negocios y educación, así que por ahora no podemos con tu especialidad. ¡Mucho éxito! 💪';
 }
 
 /**
@@ -145,11 +145,11 @@ export function instituteFieldRejection() {
  */
 export function trustCredentials() {
   return (
-    'Es una duda totalmente válida, y prefiero que lo verifiques tú mismo antes de avanzar 🙌\n\n' +
-    `Somos *${COMPANY.legalName}*, con RUC *${COMPANY.ruc}* — lo puedes consultar en la página de SUNAT.\n` +
-    `📍 Nuestra oficina está en ${COMPANY.address}, ${COMPANY.addressCity}.\n` +
+    'Es una duda válida, y mejor que lo verifiques tú mismo 🙌\n\n' +
+    `Somos *${COMPANY.legalName}*, RUC *${COMPANY.ruc}* — lo consultas en SUNAT.\n` +
+    `📍 ${COMPANY.address}, ${COMPANY.addressCity}.\n` +
     `🌐 ${COMPANY.website}\n\n` +
-    'El trabajo se formaliza con un contrato de prestación de servicios. Si quieres revisar algo más antes de seguir, dímelo con confianza.'
+    'El trabajo va con contrato de por medio. Si quieres revisar algo más, dime.'
   );
 }
 
@@ -211,9 +211,9 @@ export function warmupAsk({ understood = '', purpose = '', durationLabel = '' } 
   const opener = understood ? `Perfecto: ${understood}. ` : '';
   const duration = durationLabel ? ` de ${durationLabel}` : ' corta';
   return (
-    `${opener}Te cuento: lo siguiente sería una reunión${duration} con uno de nuestros asesores para ${purpose}. ` +
+    `${opener}Lo siguiente es una reunión${duration} con un asesor para ${purpose}. ` +
     'Es *totalmente gratis* y no te compromete a nada 🙌\n\n' +
-    '¿Te parece si la coordinamos? Respóndeme *sí* y te paso los horarios disponibles.'
+    '¿La coordinamos? Respóndeme *sí* y te paso los horarios.'
   );
 }
 
@@ -225,8 +225,8 @@ export function warmupAsk({ understood = '', purpose = '', durationLabel = '' } 
  */
 export function warmupDeclined(contactName) {
   const name = contactName ? `, ${contactName}` : '';
-  return `Sin problema${name} 🙌 Si prefieres, cuéntame por acá en qué estás y te oriento sin necesidad de agendar nada. ` +
-    'Y si más adelante quieres la reunión, me dices y la coordinamos.';
+  return `Sin problema${name} 🙌 Cuéntame por acá en qué estás y te oriento sin agendar nada. ` +
+    'Si después quieres la reunión, me dices.';
 }
 
 /**
@@ -237,8 +237,8 @@ export function warmupDeclined(contactName) {
  */
 export function notInterestedFarewell(contactName) {
   const name = contactName ? `, ${contactName}` : '';
-  return `Entendido${name}, gracias por avisarme 🙌 Cierro por acá para no molestarte más. ` +
-    'Si más adelante retomas tu tesis, escríbeme a este mismo número y te atiendo al toque.';
+  return `Entendido${name}, gracias por avisarme 🙌 No te escribo más. ` +
+    'Si retomas tu tesis, escríbeme a este número y te atiendo.';
 }
 
 /**
@@ -251,5 +251,36 @@ export function notInterestedFarewell(contactName) {
 export function postponedFarewell(contactName) {
   const name = contactName ? `, ${contactName}` : '';
   return `Perfecto${name}, lo dejamos para cuando te acomode 🙌 No te escribo más por ahora. ` +
-    'Cuando quieras retomarlo me avisas por acá y seguimos desde donde lo dejamos.';
+    'Cuando quieras retomar, me avisas.';
+}
+
+/**
+ * El contacto nos corrigió la carrera o la universidad (ver
+ * `profileCorrection.js`) y el dato nuevo ya quedó guardado.
+ *
+ * Tres cosas en una línea: se admite el error como propio ("lo corrijo", no
+ * "te entendí mal"), se repite el valor nuevo escrito completo —que es la
+ * única forma de que el contacto vea que esta vez quedó bien— y nada más: el
+ * paso que estaba en curso lo retoma quien llama, en el mismo mensaje. Pedirle
+ * disculpas en tres renglones por un dato mal leído, en medio de la elección
+ * de un horario, cuesta más de lo que arregla.
+ */
+export function profileCorrected(value) {
+  return `Gracias por la corrección 🙌 Lo anoto bien: *${value}*.`;
+}
+
+/**
+ * Descartó lo que le dijimos pero no alcanzamos a entender el valor correcto
+ * ("no es la pontificia", "es esta universidad", "no es esa carrera").
+ *
+ * No se repite lo que ya se sabe que está mal y no se le pide que "lo escriba
+ * de nuevo": nunca lo escribió mal — lo leímos mal nosotros. Si ya hay un
+ * valor guardado se le muestra para que confirme o corrija de una sola vez,
+ * en vez de preguntarle a ciegas algo que él ya contestó una vez.
+ */
+export function profileCorrectionAsk(label, current = '') {
+  if (current) {
+    return `Perdona, lo tengo anotado como *${current}*. Si no es así, dime el nombre y lo corrijo 🙌`;
+  }
+  return `Perdona, ¿me confirmas ${label}? La anoto bien 🙌`;
 }

@@ -114,9 +114,22 @@ adelante) desde **hPanel → Avanzado → Node.js**. Pasos:
   `npm run migrate` si hay migraciones nuevas) antes de reiniciar la app.
 - **Por qué `nodemailer` está fijado en `^9` y no en la última**: nodemailer 10 exige Node >= 20
   en su campo `engines`. El Node del hosting compartido no siempre es esa versión, así que la
-  rama 9 es lo más alto que se puede subir sin arriesgar el arranque en producción; ya incluye
-  el parche de todas las vulnerabilidades reportadas de `addressparser` y de la opción `raw`.
+  rama 9 es lo más alto que se puede subir sin arriesgar el arranque en producción.
   Antes de saltar a 10, confirma la versión de Node en hPanel → Avanzado → Node.js.
+
+  **Ojo: desde el 29/09/2026 la rama 9 ya NO está al día.** Aparecieron tres avisos nuevos de
+  `addressparser` y `9.1.1` es la última 9.x publicada — no hay backport, el arreglo existe solo
+  en la rama 10. De los tres, **uno no aplica** (CVE-2026-90776, el O(n²) de direcciones unidas
+  por comentarios, se explota *vía `mailparser`*: este proyecto no lo tiene en el árbol y nunca
+  parsea correo entrante, solo envía). Los otros dos **sí** son alcanzables, porque las direcciones
+  que llegan a `sendMail()` son datos del lead y el evaluador público no pide sesión:
+  GHSA-v53p-9fqp-m79j (retroceso cuadrático en el *fallback* de texto libre → una dirección
+  preparada frena el bucle de eventos) y GHSA-g57g-f23g-4646 (un *local-part* entre comillas
+  puede producir un destinatario de sobre mal formado, o sea correo mal entregado). La API que usa
+  `emailService.js` —`createTransport`, `sendMail`, `createTestAccount`, `getTestMessageUrl`,
+  adjuntos por `path`/`content` con `cid`— **no cambió en la 10**: probado con la 10.1.1, compone
+  los mismos correos. Lo único que frena el salto es el `engines`, así que en cuanto el hosting
+  esté en Node 20+ el cambio es de una línea.
 - **Por qué `esbuild` se queda en 0.25.x pese al aviso de seguridad**: el escáner de dependencias
   marca `esbuild@0.25.12` (GHSA-gv7w-rqvm-qjhr, "actualiza a 0.28.1"). Ese aviso **está retirado
   por GitHub** —dice textualmente que el paquete afectado se identificó mal— y describe un fallo
@@ -131,13 +144,18 @@ adelante) desde **hPanel → Avanzado → Node.js**. Pasos:
   1. `overrides` de `esbuild@^0.28.1` manteniendo Vite 6 → **el build falla** con 181 errores
      ("Transforming destructuring to the configured target environment is not supported yet"):
      esbuild 0.28 ya no reescribe ciertas sintaxis al target que Vite 6 pide por defecto.
-  2. Subir Vite, que es quien fija el rango → **ningún Vite 6 ni 7 usa esbuild ≥ 0.28** (todos
-     piden `^0.25.0`). El primero que resuelve el aviso es **Vite 8**, que directamente dejó de
-     usar esbuild (pasó a rolldown/oxc), pero exige **Node ^20.19 || >=22.12** y el build corre en
-     el hosting, que hoy tiene **Node 18**. Se probó localmente y funciona (compila en ~1 s, el
-     bundle baja de 649 kB a 623 kB, el dev server y la app quedan igual), así que **cuando el
-     hosting suba a Node 20.19+ el camino es Vite 8 + `@vitejs/plugin-vue@^6`**, y el aviso
-     desaparece solo porque esbuild sale del árbol de dependencias.
+  2. Subir Vite, que es quien fija el rango. Esto **cambió**: cuando se escribió esta nota ningún
+     Vite 6 ni 7 pasaba de `^0.25.0`, pero **Vite 7.3.6+ ya pide `^0.27.0 || ^0.28.0`** y resuelve
+     esbuild 0.28.2, y **Vite 8** directamente dejó de usar esbuild (pasó a rolldown/oxc). Las dos
+     salidas exigen **Node ^20.19 || >=22.12**, y el build corre en el hosting, que hoy tiene
+     **Node 18** — así que el bloqueo sigue siendo el mismo, pero ahora es *solo* la versión de
+     Node y no la falta de un Vite que lo soporte. Se probó Vite 7.3.7 +
+     `@vitejs/plugin-vue@^6` localmente y el build sale igual: mismos 1904 módulos, el CSS
+     **byte a byte idéntico** y el JS 2 kB más chico. Un detalle a no olvidar en ese salto: Vite 7
+     cambió el `build.target` por defecto a `baseline-widely-available` (Chrome 107+, Safari 16+),
+     así que hay que fijarlo a mano a la lista de Vite 6
+     (`['es2020','edge88','firefox78','chrome87','safari14']`) para no dejar afuera navegadores
+     que hoy entran al panel.
 
   Mientras tanto el aviso se puede descartar en GitHub como "no aplica" (advisory retirado).
 

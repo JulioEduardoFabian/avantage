@@ -37,20 +37,33 @@ test('un mensaje vacío no es una aceptación', () => {
   }
 });
 
-// ------------------------------------- una pregunta por mensaje, en orden
+// ------------------------------------------- qué se pregunta, y en qué orden
 
 /*
- * Pedir carrera y universidad juntas era pedir dos cosas en el mensaje que
- * decide si te contestan: 9 de 25 contactos abandonaron ahí.
+ * Carrera y universidad van JUNTAS en la primera pregunta (decisión del
+ * equipo comercial, 16/10): son el mismo dato —dónde estudia qué— y se
+ * contestan de corrido en una línea ("Sistemas, UNCP"), así que separarlas
+ * gastaba un turno en algo que ya venía en la misma respuesta.
  */
-test('la primera pregunta es SOLO la carrera', () => {
+test('la primera pregunta pide carrera y universidad en un solo mensaje', () => {
   const question = nextDataQuestion({});
   assert.match(question, /carrera/i);
-  assert.doesNotMatch(question, /universidad/i);
+  assert.match(question, /universidad/i);
+  // Una sola pregunta, no dos pegadas.
+  assert.equal((question.match(/\?/g) || []).length, 1);
 });
 
-test('después de la carrera viene la universidad, y después el tema', () => {
-  assert.match(nextDataQuestion({ field: 'Antropología' }), /universidad/i);
+test('si contesta solo uno de los dos, se pide el que falta y nada más', () => {
+  const sinUniversidad = nextDataQuestion({ field: 'Antropología' });
+  assert.match(sinUniversidad, /universidad/i);
+  assert.doesNotMatch(sinUniversidad, /carrera/i);
+
+  const sinCarrera = nextDataQuestion({ university: 'UNSA' });
+  assert.match(sinCarrera, /carrera/i);
+  assert.doesNotMatch(sinCarrera, /universidad/i);
+});
+
+test('con carrera y universidad, lo que sigue es el tema', () => {
   assert.match(nextDataQuestion({ field: 'Antropología', university: 'UNSA' }), /tema/i);
 });
 

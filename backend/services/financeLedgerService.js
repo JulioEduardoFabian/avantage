@@ -46,6 +46,29 @@ function calcItf(monto) {
   return Math.round(Math.floor(a / 1000) * 0.05 * 100) / 100;
 }
 
+/**
+ * El ITF que se guarda: el que mandó el formulario, o el de la fórmula si no
+ * mandó ninguno.
+ *
+ * La fórmula es la del Excel del área y acierta casi siempre, pero el banco
+ * cobra lo que cobra: hay cuentas exoneradas, operaciones entre cuentas
+ * propias y redondeos que no cuadran, y hasta ahora el campo era de solo
+ * lectura y esa diferencia se quedaba fuera de los libros. Ahora la fórmula es
+ * el **valor propuesto** y el que registra puede corregirlo.
+ *
+ * Un `itf` ausente, vacío o nulo NO es un cero: significa "no me lo dieron,
+ * calculalo". Un cero explícito sí se respeta — es exactamente el caso de la
+ * cuenta exonerada, y tratarlo como "no vino" haría imposible registrarlo.
+ */
+export function resolveItf(itf, monto) {
+  if (itf === undefined || itf === null || itf === '') return calcItf(monto);
+  const numeric = Number(itf);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    throw new Error('El ITF debe ser un número mayor o igual a 0.');
+  }
+  return Math.round(numeric * 100) / 100;
+}
+
 function dayOnly(fecha) {
   if (fecha instanceof Date) return isoDay(fecha);
   return String(fecha).slice(0, 10);
@@ -140,7 +163,7 @@ export class FinanceLedgerService {
    */
   async listLeadsDirectory() {
     const leads = await db('leads')
-      .select('id', 'dni', 'total_amount')
+      .select('id', 'dni', 'total_amount', 'deal_cancelled_at')
       .select(db.raw("COALESCE(NULLIF(full_name, ''), topic) as name"))
       .orderBy('name', 'asc');
 
@@ -158,7 +181,10 @@ export class FinanceLedgerService {
         ...lead,
         total_amount: total,
         registered_amount: registered,
-        balance_amount: total != null ? Math.round((total - registered) * 100) / 100 : null
+        balance_amount: total != null ? Math.round((total - registered) * 100) / 100 : null,
+        // Un cierre caído conserva su saldo (es historia), pero quien lo mira
+        // tiene que saber que ese saldo ya no se espera.
+        deal_cancelled: Boolean(lead.deal_cancelled_at)
       };
     });
   }
@@ -224,12 +250,18 @@ export class FinanceLedgerService {
     const rows = await db('finance_income')
       .leftJoin('leads', 'leads.id', 'finance_income.lead_id')
       .leftJoin('users', 'users.id', 'finance_income.created_by')
+      .leftJoin('users as cancelador', 'cancelador.id', 'leads.deal_cancelled_by')
       .select(
         'finance_income.*',
         db.raw("COALESCE(NULLIF(leads.full_name, ''), leads.topic) as lead_name"),
         'leads.dni as lead_dni',
         'leads.email as lead_email',
         'leads.phone as lead_phone',
+        // Viaja con cada cuota porque la pantalla agrupa por lead y necesita
+        // pintar el cierre caído sin pedir el directorio aparte.
+        'leads.deal_cancelled_at as lead_deal_cancelled_at',
+        'leads.deal_cancelled_reason as lead_deal_cancelled_reason',
+        'cancelador.name as lead_deal_cancelled_by_name',
         'users.name as created_by_name'
       )
       .orderBy('finance_income.fecha', 'desc')
@@ -273,10 +305,11 @@ export class FinanceLedgerService {
 
   /**
    * Valida y normaliza los campos editables de un ingreso; los comparten el
-   * alta y la edición para que ambas apliquen las mismas reglas (mes e ITF
-   * siempre derivados de la fecha y el monto).
+   * alta y la edición para que ambas apliquen las mismas reglas (el mes sale
+   * siempre de la fecha; el ITF se propone con la fórmula y se puede corregir,
+   * ver `resolveItf`).
    */
-  #normalizeIncome({ fecha, dueDate, leadId, cuota, emitir, monto, banco, estado, tributario }) {
+  #normalizeIncome({ fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario }) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!CUOTAS.includes(cuota)) throw new Error('La cuota debe ser 1era, 2da o 3era.');
     if (!EMITIR_OPCIONES.includes(emitir)) throw new Error('El campo "emitir" no es válido.');
@@ -296,7 +329,7 @@ export class FinanceLedgerService {
       cuota,
       emitir,
       monto: numericMonto,
-      itf: calcItf(numericMonto),
+      itf: resolveItf(itf, numericMonto),
       banco,
       estado: ESTADOS_INGRESO.includes(estado) ? estado : 'pendiente',
       tributario: tributario?.trim() || null
@@ -337,6 +370,104 @@ export class FinanceLedgerService {
 
     await db('finance_income').where({ lead_id: leadId }).update({ is_initial_payment: false });
     await db('finance_income').where({ id: first.id }).update({ is_initial_payment: true });
+  }
+
+  /**
+   * Lo que un lead ya tiene registrado en Finanzas, mirado desde el cierre de
+   * venta: su precio total, la suma de lo ya asentado en cuotas y cuánto falta
+   * por registrar.
+   *
+   * Existe porque el cierre NO siempre es el primer sitio donde aparece el
+   * dinero: el cronograma también nace del contrato (`replaceScheduleForLead`)
+   * y Finanzas puede asentar el pago por su cuenta. Cuando eso ya pasó, el
+   * modal de cierre pedía igual "el primer pago" y el alta chocaba contra
+   * `#assertWithinLeadTotal` ("supera el saldo pendiente... S/ 0.00") sin decir
+   * que el dinero ya estaba — y el lead se quedaba sin poder ganarse.
+   *
+   * Va aparte de `listLeadsDirectory()` porque esto lo lee el closer con
+   * `leads.view` —es su propia venta, el precio lo fija él en este mismo
+   * modal— y aquel es el directorio completo de Finanzas.
+   */
+  async getLeadSettlement(leadId) {
+    const empty = { total: null, registered: 0, remaining: null, installments: [], cancelled: false };
+    if (!leadId) return empty;
+    const lead = await db('leads').where({ id: leadId })
+      .select('total_amount', 'deal_cancelled_at', 'deal_cancelled_reason').first();
+    if (!lead) return empty;
+
+    const rows = await db('finance_income')
+      .where({ lead_id: leadId })
+      .select('id', 'code', 'cuota', 'monto', 'itf', 'emitir', 'banco', 'estado', 'fecha', 'due_date', 'is_initial_payment')
+      .orderBy('due_date', 'asc')
+      .orderBy('id', 'asc');
+
+    const total = lead.total_amount != null ? Number(lead.total_amount) : null;
+    const registered = Math.round(rows.reduce((sum, row) => sum + Number(row.monto), 0) * 100) / 100;
+    return {
+      total,
+      registered,
+      remaining: total != null ? Math.round((total - registered) * 100) / 100 : null,
+      cancelled: Boolean(lead.deal_cancelled_at),
+      cancelled_reason: lead.deal_cancelled_reason || null,
+      installments: rows.map((row) => ({
+        ...withIsoDates(row),
+        monto: Number(row.monto),
+        is_initial_payment: Boolean(row.is_initial_payment)
+      }))
+    };
+  }
+
+  /**
+   * Pone el marcador de pago inicial en la primera cuota del lead cuando
+   * todavía no lo tiene ninguna. Lo usa el cierre de venta que se registra
+   * sobre cuotas que ya existían: el proyecto que acaba de nacer tiene que
+   * quedar esperando la verificación de ese pago igual que cualquier otro
+   * cierre. Fuera de ese momento el marcador no se repone solo (ver
+   * `#syncInitialPayment`).
+   */
+  async ensureInitialPayment(leadId) {
+    await this.#syncInitialPayment(leadId, { ensure: true });
+  }
+
+  /**
+   * Da por caído un cierre (o lo reactiva). Es lo que pasa cuando el cliente se
+   * arrepiente después de firmar: el cronograma queda ahí —es historia, y
+   * borrarlo se llevaría por delante lo que sí llegó a cobrarse— pero deja de
+   * contar como plata que se espera.
+   *
+   * Lo que cambia es UNA marca en el lead. Deliberadamente NO se tocan los
+   * estados de las cuotas:
+   *
+   *  - Lo ya `verificado` entró de verdad y tiene que seguir en los libros. Un
+   *    cierre caído no deshace un pago cobrado; si hubo devolución, eso es un
+   *    egreso del Libro Diario y se registra como tal.
+   *  - Deshacerlo es borrar la marca. Si se hubieran reescrito las cuotas,
+   *    reactivar exigiría acordarse de en qué estado estaba cada una.
+   *
+   * Quienes leen la marca lo hacen en cada consulta (Cobranzas la excluye de la
+   * lista de a quién llamar, Finanzas deja de esperar su saldo): el dato vive
+   * en un solo sitio y nadie guarda una copia derivada.
+   */
+  async setDealCancelled(leadId, { cancelled, reason = null, actorId = null } = {}) {
+    const lead = await db('leads').where({ id: leadId }).first();
+    if (!lead) throw new Error('Lead no encontrado.');
+
+    if (!cancelled) {
+      await db('leads').where({ id: leadId }).update({
+        deal_cancelled_at: null,
+        deal_cancelled_by: null,
+        deal_cancelled_reason: null
+      });
+      return this.getLeadSettlement(leadId);
+    }
+
+    const text = String(reason || '').trim();
+    await db('leads').where({ id: leadId }).update({
+      deal_cancelled_at: new Date(),
+      deal_cancelled_by: actorId || null,
+      deal_cancelled_reason: text ? text.slice(0, 255) : null
+    });
+    return this.getLeadSettlement(leadId);
   }
 
   /** El pago inicial ya registrado de un lead, si lo tiene (uno por lead). */
@@ -520,7 +651,17 @@ export class FinanceLedgerService {
           due_date: entry.dueDate,
           // Una cuota cobrada conserva el día en que entró el dinero; una
           // pendiente se asienta el día que se pactó hasta que se pague.
-          ...(settled ? {} : { fecha: entry.dueDate, mes: mesEnLetras(entry.dueDate), monto: entry.monto, itf: calcItf(entry.monto) }),
+          //
+          // El ITF se recalcula SOLO si el monto cambió: el cronograma no tiene
+          // campo de ITF, así que recalcularlo siempre le borraría en silencio
+          // la corrección a quien la hizo a mano desde INGRESOS, por abrir el
+          // plan de pagos y guardarlo sin tocar los importes.
+          ...(settled ? {} : {
+            fecha: entry.dueDate,
+            mes: mesEnLetras(entry.dueDate),
+            monto: entry.monto,
+            ...(Math.abs(Number(existing.monto) - entry.monto) > 0.01 ? { itf: calcItf(entry.monto) } : {})
+          }),
           ...(entry.emitir ? { emitir: entry.emitir } : {}),
           ...(entry.banco ? { banco: entry.banco } : {})
         });
@@ -694,7 +835,7 @@ export class FinanceLedgerService {
   }
 
   /** Valida y normaliza los campos editables de un asiento (alta y edición). */
-  #normalizeJournal({ fecha, detalle, monto, moneda, banco, estado, area, asientoPorDestino }) {
+  #normalizeJournal({ fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino }) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!detalle || !detalle.trim()) throw new Error('El detalle es obligatorio.');
     if (!BANCOS.includes(banco)) throw new Error(`El banco debe ser uno de: ${BANCOS.join(', ')}.`);
@@ -706,7 +847,7 @@ export class FinanceLedgerService {
       detalle: detalle.trim(),
       monto: numericMonto,
       moneda: MONEDAS.includes(moneda) ? moneda : 'soles',
-      itf: calcItf(numericMonto),
+      itf: resolveItf(itf, numericMonto),
       banco,
       estado: ESTADOS_DIARIO.includes(estado) ? estado : 'pendiente',
       area: area?.trim() || null,
@@ -753,6 +894,31 @@ export class FinanceLedgerService {
       files.forEach((f) => unlinkQuiet(f.filename));
       throw error;
     }
+  }
+
+  /**
+   * Pasa un asiento de pendiente a pagado y al revés, sin tocar nada más.
+   *
+   * Va aparte de `updateJournal()` porque es otra operación: aquella pide el
+   * asiento entero (fecha, monto, banco, detalle) y es la que se usa desde el
+   * formulario; esta es un clic sobre la celda de estado en la tabla. Mandar el
+   * asiento completo para cambiar una palabra obliga a la pantalla a reenviar
+   * campos que nadie editó, y cualquiera que llegue vacío o normalizado
+   * distinto se reescribe de paso — un recálculo de ITF o una fecha corrida por
+   * una vuelta que solo quería decir "esto ya se pagó".
+   *
+   * De este estado cuelgan los totales de la pestaña: lo pendiente es dinero
+   * que todavía no se movió y suma aparte, así que el clic cambia las cifras de
+   * arriba y no solo el color de la píldora.
+   */
+  async updateJournalEstado(id, estado) {
+    if (!ESTADOS_DIARIO.includes(estado)) {
+      throw new Error(`El estado debe ser uno de: ${ESTADOS_DIARIO.join(', ')}.`);
+    }
+    const existing = await db('finance_journal').where({ id }).first();
+    if (!existing) return null;
+    await db('finance_journal').where({ id }).update({ estado });
+    return this.getJournalById(id);
   }
 
   async deleteJournal(id) {
@@ -915,11 +1081,30 @@ export class FinanceLedgerService {
    * por banco (BCP, Interbank, Efectivo).
    *
    *  - Ingresos = `finance_income` + asientos positivos del libro diario (en soles).
-   *  - Egresos  = asientos negativos del libro diario (en soles, en valor absoluto).
+   *  - Egresos  = asientos negativos del libro diario + **salarios pagados**
+   *               + **comisiones pagadas** + el **ITF** de unos y otros (en
+   *               soles, en valor absoluto).
    *
-   * Solo cuenta el dinero confirmado: los ingresos verificados por finanzas y
-   * los asientos del libro diario ya pagados. Lo pendiente (o pagado pero sin
-   * verificar) todavía no es dinero en caja y falsearía el balance.
+   * Salarios y comisiones nacieron fuera de la contabilidad (ver la cabecera de
+   * `finance_salaries` y de `sales_commissions`) y por eso no entraban acá,
+   * pero son plata que sale: sin ellos el Balance Neto en Caja daba de más —
+   * todo lo cobrado menos los gastos del libro, sin la planilla ni lo que se le
+   * paga al equipo por vender. `totals.egresosPorOrigen` devuelve el desglose,
+   * porque el total ahora mezcla tres pestañas distintas.
+   *
+   * Solo cuenta el dinero confirmado: los ingresos verificados por finanzas,
+   * los asientos del libro ya pagados y los salarios/comisiones ya pagados. Lo
+   * pendiente (o pagado pero sin verificar) todavía no es dinero en caja y
+   * falsearía el balance; lo devengado y sin pagar viaja aparte en
+   * `totals.pendientes` para poder mostrarlo como obligación.
+   *
+   * La ventana de meses es del GRÁFICO (la evolución mensual) y nada más. El
+   * saldo de cada cuenta y los totales se calculan sobre TODO el dinero
+   * confirmado, sin ventana: un saldo recortado a los últimos N meses no es un
+   * saldo — deja afuera la plata que entró antes y sigue en la cuenta, y la
+   * fechada más adelante (una cuota adelantada al mes que viene) se caía del
+   * grid en silencio, así que la tarjeta de BCP Finanzas decía S/ 700.00 con
+   * S/ 3,700.00 verificados en INGRESOS.
    */
   async getOverview({ monthsBack = 6 } = {}) {
     const months = Math.min(Math.max(Number(monthsBack) || 6, 1), 24);
@@ -930,12 +1115,25 @@ export class FinanceLedgerService {
       monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
     }
     const earliest = `${monthKeys[0]}-01`;
+    // Fin de la ventana: el primer día del mes siguiente al último del gráfico.
+    // Se escribe en la consulta en vez de dejar que el grid descarte lo que no
+    // entra, que es lo que escondía el problema.
+    const afterLast = (() => {
+      const [y, m] = monthKeys[monthKeys.length - 1].split('-').map(Number);
+      const d = new Date(y, m, 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    })();
 
     const incomeRows = await db('finance_income')
       .select('banco')
       .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
       .sum('monto as total')
+      // El ITF viaja en la misma consulta agrupada: es una columna más de las
+      // filas que ya se están sumando, y pedirlo aparte serían dos consultas
+      // que pueden terminar contando universos distintos.
+      .sum('itf as itf')
       .where('fecha', '>=', earliest)
+      .where('fecha', '<', afterLast)
       .where('estado', 'verificado')
       .groupBy('banco', 'month');
 
@@ -944,13 +1142,75 @@ export class FinanceLedgerService {
       .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
       .select(db.raw('SUM(CASE WHEN monto >= 0 THEN monto ELSE 0 END) as ingreso'))
       .select(db.raw('SUM(CASE WHEN monto < 0 THEN -monto ELSE 0 END) as egreso'))
+      .sum('itf as itf')
       .where('fecha', '>=', earliest)
+      .where('fecha', '<', afterLast)
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .groupBy('banco', 'month');
 
+    /*
+     * Salarios y comisiones PAGADOS: son plata que salió de la empresa, así
+     * que desde ahora restan en el resumen. Hasta acá los dos módulos vivían
+     * fuera de la contabilidad (ver la cabecera de `finance_salaries` y de
+     * `sales_commissions`) y el Balance Neto en Caja daba de más: mostraba lo
+     * cobrado menos los gastos del libro diario, sin la planilla ni lo que se
+     * le paga al equipo por vender.
+     *
+     * Solo lo PAGADO entra, igual que todo lo demás en esta pantalla: lo
+     * pendiente no salió de ninguna cuenta y falsearía el saldo. Se devuelve
+     * aparte (`totals.pendientes`) para poder mostrarlo como obligación.
+     *
+     * Las comisiones no se descuentan dos veces: acá se pagan por fuera de la
+     * planilla, así que no hay una fila de `finance_salaries` que repita ese
+     * mismo egreso. Si algún día se empiezan a anotar en Salarios, ESTE es el
+     * lugar donde hay que dejar de sumarlas.
+     *
+     * `moneda` se filtra a soles como en el libro diario — el resumen entero
+     * está en soles—, y el monto va en valor absoluto porque la planilla
+     * guarda los egresos en negativo.
+     */
+    const salaryRows = await db('finance_salaries')
+      .select('banco')
+      .select(db.raw("DATE_FORMAT(fecha, '%Y-%m') as month"))
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('fecha', '>=', earliest)
+      .where('fecha', '<', afterLast)
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      // Solo los PAGOS: un acuerdo de salario por proyecto es el compromiso
+      // —como la comisión de la setter— y no plata que salió. Contarlo
+      // además de sus pagos sería descontar dos veces lo mismo.
+      .where('kind', 'pago')
+      .groupBy('banco', 'month');
+
+    /*
+     * La fecha del egreso de una comisión es `paid_at` (el día en que se le
+     * pagó) y no `created_at` (el día en que se devengó): una comisión de una
+     * venta de agosto que se paga en octubre salió de caja en octubre. Sin
+     * `paid_at` no hay mes al que asignarla, así que esa fila no entra en la
+     * evolución mensual aunque sí en el total.
+     */
+    const commissionRows = await db('sales_commissions')
+      .select(db.raw("DATE_FORMAT(paid_at, '%Y-%m') as month"))
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('estado', 'pagado')
+      .whereNotNull('paid_at')
+      .where('paid_at', '>=', earliest)
+      .where('paid_at', '<', afterLast)
+      .groupBy('month');
+
+    /*
+     * Una comisión no tiene cuenta bancaria y un salario puede no tenerla, y
+     * la grilla mensual está indexada por cuenta: sin este cajón, ese dinero
+     * se caía del gráfico en silencio (es la misma razón por la que el TOTAL
+     * cuenta lo que no tiene banco asignado). No entra en `banks` ni en las
+     * tarjetas por cuenta, que reparten solo lo que sí cayó en una conocida.
+     */
+    const SIN_CUENTA = 'Sin cuenta';
+    const seriesKeys = [...BANCOS, SIN_CUENTA];
     const emptyGrid = () => Object.fromEntries(
-      BANCOS.map((b) => [b, Object.fromEntries(monthKeys.map((m) => [m, 0]))])
+      seriesKeys.map((b) => [b, Object.fromEntries(monthKeys.map((m) => [m, 0]))])
     );
     const ingresos = emptyGrid();
     const egresos = emptyGrid();
@@ -959,36 +1219,184 @@ export class FinanceLedgerService {
       if (ingresos[r.banco]?.[r.month] !== undefined) {
         ingresos[r.banco][r.month] += Number(r.total) || 0;
       }
+      // El ITF de esa transferencia no entró nunca: se lo quedó el banco.
+      if (egresos[r.banco]?.[r.month] !== undefined) {
+        egresos[r.banco][r.month] += Number(r.itf) || 0;
+      }
     }
     for (const r of journalRows) {
       if (ingresos[r.banco]?.[r.month] !== undefined) {
         ingresos[r.banco][r.month] += Number(r.ingreso) || 0;
       }
       if (egresos[r.banco]?.[r.month] !== undefined) {
-        egresos[r.banco][r.month] += Number(r.egreso) || 0;
+        egresos[r.banco][r.month] += (Number(r.egreso) || 0) + (Number(r.itf) || 0);
+      }
+    }
+    /** La cuenta de la fila, o el cajón de lo que no cayó en ninguna conocida. */
+    const cuentaDe = (banco) => (banco && egresos[banco] ? banco : SIN_CUENTA);
+    for (const r of salaryRows) {
+      const cuenta = cuentaDe(r.banco);
+      if (egresos[cuenta]?.[r.month] !== undefined) {
+        egresos[cuenta][r.month] += Number(r.egreso) || 0;
+      }
+    }
+    for (const r of commissionRows) {
+      if (egresos[SIN_CUENTA]?.[r.month] !== undefined) {
+        egresos[SIN_CUENTA][r.month] += Number(r.egreso) || 0;
       }
     }
 
-    const toSeries = (grid) => BANCOS.map((banco) => ({
+    const toSeries = (grid) => seriesKeys.map((banco) => ({
       banco,
       values: monthKeys.map((m) => Math.round(grid[banco][m] * 100) / 100)
     }));
-    const bankTotal = (grid, banco) => monthKeys.reduce((s, m) => s + grid[banco][m], 0);
-    const grandTotal = (grid) => BANCOS.reduce((s, b) => s + bankTotal(grid, b), 0);
 
-    const totalIngresos = Math.round(grandTotal(ingresos) * 100) / 100;
-    const totalEgresos = Math.round(grandTotal(egresos) * 100) / 100;
+    // --- Saldo por cuenta: todo el dinero confirmado, sin ventana de meses ---
+    const incomeByBank = await db('finance_income')
+      .select('banco')
+      .sum('monto as total')
+      .sum('itf as itf')
+      .where('estado', 'verificado')
+      .groupBy('banco');
 
+    const journalByBank = await db('finance_journal')
+      .select('banco')
+      .select(db.raw('SUM(CASE WHEN monto >= 0 THEN monto ELSE 0 END) as ingreso'))
+      .select(db.raw('SUM(CASE WHEN monto < 0 THEN -monto ELSE 0 END) as egreso'))
+      .sum('itf as itf')
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .groupBy('banco');
+
+    const saldos = Object.fromEntries(BANCOS.map((b) => [b, { ingresos: 0, egresos: 0 }]));
+    let sumaIngresos = 0;
+    let sumaEgresos = 0;
+    // El total suma TODO lo confirmado —incluido lo que no tiene banco asignado,
+    // que es dinero igual y así lo cuenta la pestaña INGRESOS—; el desglose por
+    // cuenta solo reparte lo que sí cayó en una de las cuentas conocidas.
+    const acumular = (banco, ingreso, egreso) => {
+      sumaIngresos += ingreso;
+      sumaEgresos += egreso;
+      if (saldos[banco]) {
+        saldos[banco].ingresos += ingreso;
+        saldos[banco].egresos += egreso;
+      }
+    };
+    for (const r of incomeByBank) acumular(r.banco, Number(r.total) || 0, 0);
+    for (const r of journalByBank) {
+      acumular(r.banco, Number(r.ingreso) || 0, Number(r.egreso) || 0);
+    }
+
+    // El egreso del libro, apartado antes de sumarle la planilla y las
+    // comisiones: el desglose de la tarjeta de Egresos sale de acá, y sin
+    // separarlo no habría forma de ver de dónde viene cada parte del total.
+    const egresoLibro = sumaEgresos;
+
+    // Un salario pagado desde BCP es plata que salió de BCP: resta también en
+    // la tarjeta de esa cuenta, no solo en el total.
+    const salaryByBank = await db('finance_salaries')
+      .select('banco')
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .where('kind', 'pago')
+      .groupBy('banco');
+    for (const r of salaryByBank) acumular(r.banco, 0, Number(r.egreso) || 0);
+    const egresoSalarios = sumaEgresos - egresoLibro;
+
+    // Las comisiones no tienen cuenta: restan del total, no de una tarjeta.
+    const comisionesPagadas = await db('sales_commissions')
+      .select(db.raw('SUM(ABS(monto)) as egreso'))
+      .where('estado', 'pagado')
+      .first();
+    const egresoComisiones = Number(comisionesPagadas?.egreso) || 0;
+    acumular(null, 0, egresoComisiones);
+
+    /*
+     * El ITF: la comisión que el banco cobra por cada transferencia. Es dinero
+     * que nunca llegó a la cuenta (o que salió de ella) y hasta ahora se
+     * mostraba como una cifra suelta en cada pestaña sin restar en ningún
+     * lado, así que el Balance Neto en Caja daba de más.
+     *
+     * Cuenta el MISMO universo que el resto del resumen —ingresos verificados
+     * y asientos pagados en soles—: el ITF de una cuota que todavía no se
+     * verificó no se cobró todavía. Va a la cuenta de su propia fila, porque
+     * el banco lo descuenta de esa cuenta y no de un fondo común.
+     */
+    let egresoItf = 0;
+    for (const r of [...incomeByBank, ...journalByBank]) {
+      const itf = Number(r.itf) || 0;
+      if (!itf) continue;
+      acumular(r.banco, 0, itf);
+      egresoItf += itf;
+    }
+
+    /*
+     * Lo que se debe y todavía no salió. NO toca el balance —esta pantalla
+     * cuenta dinero confirmado y un salario pendiente sigue en la cuenta—,
+     * pero se devuelve para poder mostrarlo al lado: un balance en verde con
+     * media planilla sin pagar es el número que hace tomar la decisión
+     * equivocada.
+     */
+    /*
+     * Lo que se debe de la planilla, sin contar dos veces lo mismo: los pagos
+     * pendientes MÁS la parte de cada acuerdo de salario que todavía no se
+     * repartió en pagos. Sumar el acuerdo entero junto a sus pagos
+     * pendientes duplicaría la porción ya programada, y mirar solo los pagos
+     * escondería un acuerdo recién registrado del que nadie programó nada —
+     * que es justo el compromiso más fresco.
+     */
+    const pagosPendientes = await db('finance_salaries')
+      .select(db.raw('SUM(ABS(monto)) as total'))
+      .where('moneda', 'soles')
+      .where('estado', 'pendiente')
+      .where('kind', 'pago')
+      .first();
+
+    const acuerdos = await db('finance_salaries as acuerdo')
+      .select('acuerdo.id', 'acuerdo.monto')
+      .select(db.raw('COALESCE((SELECT SUM(ABS(hijo.monto)) FROM finance_salaries hijo WHERE hijo.parent_id = acuerdo.id), 0) as repartido'))
+      .where('acuerdo.kind', 'acuerdo')
+      .where('acuerdo.moneda', 'soles');
+    const sinRepartir = acuerdos.reduce((suma, fila) => {
+      const resto = Math.abs(Number(fila.monto) || 0) - (Number(fila.repartido) || 0);
+      return suma + Math.max(0, resto);
+    }, 0);
+
+    const salariosPendientes = { total: (Number(pagosPendientes?.total) || 0) + sinRepartir };
+    const comisionesPendientes = await db('sales_commissions')
+      .select(db.raw('SUM(ABS(monto)) as total'))
+      .where('estado', 'pendiente')
+      .first();
+
+    const redondear = (n) => Math.round(n * 100) / 100;
+    const totalIngresos = redondear(sumaIngresos);
+    const totalEgresos = redondear(sumaEgresos);
+    const pendienteSalarios = redondear(Number(salariosPendientes?.total) || 0);
+    const pendienteComisiones = redondear(Number(comisionesPendientes?.total) || 0);
+
+    // Se cuenta el mismo universo que suman los totales (todo lo confirmado):
+    // un conteo con otra ventana es justo la clase de cifra que no cuadra con
+    // nada de lo que tiene al lado.
     const [incomeCount] = await db('finance_income')
-      .where('fecha', '>=', earliest)
       .where('estado', 'verificado')
       .count('id as cnt');
     const [journalCount] = await db('finance_journal')
-      .where('fecha', '>=', earliest)
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .count('id as cnt');
-    const totalTransactions = (Number(incomeCount?.cnt) || 0) + (Number(journalCount?.cnt) || 0);
+    const [salaryCount] = await db('finance_salaries')
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .where('kind', 'pago')
+      .count('id as cnt');
+    const [commissionCount] = await db('sales_commissions')
+      .where('estado', 'pagado')
+      .count('id as cnt');
+    const totalTransactions = (Number(incomeCount?.cnt) || 0)
+      + (Number(journalCount?.cnt) || 0)
+      + (Number(salaryCount?.cnt) || 0)
+      + (Number(commissionCount?.cnt) || 0);
 
     const recentIncome = await db('finance_income')
       .leftJoin('leads', 'leads.id', 'finance_income.lead_id')
@@ -1011,6 +1419,26 @@ export class FinanceLedgerService {
       .where('moneda', 'soles')
       .where('estado', 'pagado')
       .orderBy('fecha', 'desc')
+      .orderBy('id', 'desc')
+      .limit(8);
+
+    // Los dos entran también en "últimos movimientos": un egreso que mueve el
+    // balance y no aparece en la lista de al lado obliga a buscarlo de pestaña
+    // en pestaña para entender por qué bajó el saldo.
+    const recentSalaries = await db('finance_salaries')
+      .select('id', 'persona', 'cargo', 'fecha', 'monto', 'banco', 'periodo')
+      .where('moneda', 'soles')
+      .where('estado', 'pagado')
+      .where('kind', 'pago')
+      .orderBy('fecha', 'desc')
+      .orderBy('id', 'desc')
+      .limit(8);
+
+    const recentCommissions = await db('sales_commissions')
+      .select('id', 'beneficiary_name', 'paid_at', 'monto', 'role', 'percent')
+      .where('estado', 'pagado')
+      .whereNotNull('paid_at')
+      .orderBy('paid_at', 'desc')
       .orderBy('id', 'desc')
       .limit(8);
 
@@ -1039,7 +1467,29 @@ export class FinanceLedgerService {
           type: num >= 0 ? 'in' : 'out',
           source: 'journal'
         };
-      })
+      }),
+      ...recentSalaries.map((r) => ({
+        id: `sal-${r.id}`,
+        code: null,
+        fecha: r.fecha,
+        title: r.persona,
+        subtitle: [r.cargo, r.periodo].filter(Boolean).join(' · ') || 'Salario',
+        banco: r.banco,
+        amount: Math.abs(Number(r.monto) || 0),
+        type: 'out',
+        source: 'salary'
+      })),
+      ...recentCommissions.map((r) => ({
+        id: `com-${r.id}`,
+        code: null,
+        fecha: r.paid_at,
+        title: r.beneficiary_name,
+        subtitle: `Comisión ${r.role} (${Number(r.percent) || 0}%)`,
+        banco: null,
+        amount: Math.abs(Number(r.monto) || 0),
+        type: 'out',
+        source: 'commission'
+      }))
     ]
       .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
       .slice(0, 8);
@@ -1052,12 +1502,29 @@ export class FinanceLedgerService {
       totals: {
         ingresos: totalIngresos,
         egresos: totalEgresos,
-        balance: Math.round((totalIngresos - totalEgresos) * 100) / 100,
+        balance: redondear(totalIngresos - totalEgresos),
+        // De dónde sale el total de egresos. Va desglosado y no solo sumado
+        // porque es un número que ahora mezcla tres orígenes que se manejan en
+        // tres pestañas distintas: sin el desglose, "¿por qué subió?" solo se
+        // contesta revisando las tres a mano.
+        egresosPorOrigen: {
+          libro: redondear(egresoLibro),
+          salarios: redondear(egresoSalarios),
+          comisiones: redondear(egresoComisiones),
+          itf: redondear(egresoItf)
+        },
+        // Devengado y sin pagar: no entra en el balance (no salió de ninguna
+        // cuenta), pero se muestra al lado.
+        pendientes: {
+          salarios: pendienteSalarios,
+          comisiones: pendienteComisiones,
+          total: redondear(pendienteSalarios + pendienteComisiones)
+        },
         totalTransactions,
         byBank: BANCOS.map((banco) => ({
           banco,
-          ingresos: Math.round(bankTotal(ingresos, banco) * 100) / 100,
-          egresos: Math.round(bankTotal(egresos, banco) * 100) / 100
+          ingresos: redondear(saldos[banco].ingresos),
+          egresos: redondear(saldos[banco].egresos)
         }))
       },
       recentTransactions

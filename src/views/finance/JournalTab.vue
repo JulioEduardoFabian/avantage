@@ -1,9 +1,10 @@
 <template>
   <section class="ledger-tab">
     <p class="ledger-hint">
-      Código autogenerado por día. El monto admite valores negativos y el ITF se calcula
-      sobre su valor absoluto. Los asientos <strong>pendientes</strong> no suman en los
-      totales de arriba: solo cuenta el dinero que ya se movió.
+      Código autogenerado por día. El monto admite valores negativos y el ITF se propone
+      sobre su valor absoluto, pero se puede corregir con lo que cobró el banco. Los asientos <strong>pendientes</strong> no suman en los
+      totales de arriba: solo cuenta el dinero que ya se movió, así que haz clic en el
+      estado de una fila para cambiarlo.
     </p>
 
     <div class="ledger-controls">
@@ -56,8 +57,20 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">ITF (calculado)</label>
-            <input :value="formatAmount(itfPreview)" type="text" class="form-input" readonly />
+            <label class="form-label">ITF (S/)</label>
+            <input
+              v-model="form.itf"
+              type="number"
+              step="0.01"
+              min="0"
+              class="form-input"
+              :placeholder="formatAmount(itfSugerido)"
+              @input="onItfInput"
+            />
+            <p v-if="itfEditado" class="ledger-receipt-hint">
+              La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
+              <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
+            </p>
           </div>
           <div class="form-group">
             <label class="form-label">Banco</label>
@@ -139,15 +152,21 @@
           <dt>Egresos</dt>
           <dd class="is-out">S/ {{ formatAmount(totals.egresos) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Ingresos menos egresos ya pagados">
+        <!-- El ITF también sale de la cuenta, así que el neto lo descuenta: las
+             columnas de arriba son la suma de las filas y por eso no lo
+             incluyen, pero "lo que quedó" sin restarlo no es lo que quedó. -->
+        <div class="ledger-summary-item" title="Ingresos menos egresos ya pagados, descontando el ITF que cobró el banco">
           <dt>Neto</dt>
-          <dd>S/ {{ formatAmount(totals.ingresos - totals.egresos) }}</dd>
+          <dd>S/ {{ formatAmount(totals.ingresos - totals.egresos - totals.itf) }}</dd>
         </div>
         <div class="ledger-summary-item" title="Saldo de los asientos que siguen pendientes (no entra en el neto)">
           <dt>Pendiente</dt>
           <dd class="is-pending">S/ {{ formatAmount(totals.pendiente) }}</dd>
         </div>
-        <div class="ledger-summary-item" title="Solo asientos pagados">
+        <div
+          class="ledger-summary-item"
+          title="Solo asientos pagados. Lo que el banco cobró por esas operaciones: se descuenta en el Resumen Financiero"
+        >
           <dt>ITF</dt>
           <dd>S/ {{ formatAmount(totals.itf) }}</dd>
         </div>
@@ -211,7 +230,21 @@
                 </td>
                 <td>{{ row.banco }}</td>
                 <td>
-                  <span class="pill" :class="row.estado === 'pagado' ? 'pill-success' : 'pill-warning'">{{ row.estado }}</span>
+                  <!--
+                    El estado se cambia desde la propia celda: marcar un asiento
+                    como pagado es lo que más se hace en esta tabla y abrir el
+                    formulario entero —con su fecha, su monto y sus
+                    comprobantes— para cambiar una palabra invita a tocar de
+                    paso algo que nadie quería tocar.
+                  -->
+                  <button
+                    type="button"
+                    class="pill pill-toggle"
+                    :class="row.estado === 'pagado' ? 'pill-success' : 'pill-warning'"
+                    :disabled="estadoSavingId === row.id"
+                    :title="row.estado === 'pagado' ? 'Marcar como pendiente' : 'Marcar como pagado'"
+                    @click="toggleEstado(row)"
+                  >{{ row.estado }}</button>
                 </td>
                 <td>
                   <span v-if="row.area" class="ledger-eyebrow">{{ row.area }}</span>
@@ -293,7 +326,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { isPdfReceipt, loadReceiptUrl } from './receiptImage.js';
-import { BANCOS } from './incomeOptions.js';
+import { BANCOS, calcItf } from './incomeOptions.js';
 import { currencySymbol, dayOnly, formatAmount, formatDate } from './format.js';
 import { useLedgerTable } from './useLedgerTable.js';
 import LedgerPagination from './LedgerPagination.vue';
@@ -309,6 +342,8 @@ const MAX_RECEIPTS = 10;
 const isFormOpen = ref(false);
 const isSaving = ref(false);
 const isLoading = ref(false);
+/** La fila cuyo estado se está guardando, para no aceptar dos clics seguidos. */
+const estadoSavingId = ref(null);
 const errorMessage = ref('');
 const successMessage = ref('');
 
@@ -365,12 +400,39 @@ const totals = computed(() => {
   return { ingresos, egresos, itf, pendiente };
 });
 
-const itfPreview = computed(() => calcItf(form.monto));
+/**
+ * El ITF que propone la fórmula del área para el monto que se está escribiendo.
+ * Es una PROPUESTA: el campo se puede corregir, porque el banco cobra lo que
+ * cobra (cuentas exoneradas, traspasos entre cuentas propias, redondeos).
+ * `calcItf` sale de `incomeOptions.js`, que es donde vive la fórmula para todo
+ * el módulo: la copia que había acá podía quedar diciendo otra cosa.
+ */
+const itfSugerido = computed(() => calcItf(form.monto));
 
-function calcItf(monto) {
-  const a = Math.abs(Number(monto) || 0);
-  if (a < 1000) return 0;
-  return Math.round(Math.floor(a / 1000) * 0.05 * 100) / 100;
+const itfEditado = computed(() => {
+  if (form.itf === '' || form.itf === null) return false;
+  return Math.abs(Number(form.itf) - itfSugerido.value) > 0.005;
+});
+
+/*
+ * Mientras nadie toque el campo, el ITF sigue al monto (lo que hacía cuando
+ * era de solo lectura). En cuanto alguien lo corrige deja de moverse solo:
+ * recalcularlo por debajo le borraría la corrección a quien acaba de hacerla.
+ */
+const itfTocado = ref(false);
+
+watch(
+  () => form.monto,
+  () => { if (!itfTocado.value) form.itf = itfSugerido.value; }
+);
+
+function onItfInput() {
+  itfTocado.value = true;
+}
+
+function usarItfSugerido() {
+  itfTocado.value = false;
+  form.itf = itfSugerido.value;
 }
 
 function emptyForm() {
@@ -378,6 +440,8 @@ function emptyForm() {
     fecha: new Date().toISOString().slice(0, 10),
     detalle: '',
     monto: '',
+    // Vacío = "usá la fórmula"; se rellena solo al escribir el monto.
+    itf: '',
     moneda: 'soles',
     banco: 'BCP',
     estado: 'pendiente',
@@ -394,6 +458,7 @@ function onFileChange(event) {
 
 function resetForm() {
   Object.assign(form, emptyForm());
+  itfTocado.value = false;
   pendingFiles = [];
   if (fileInput.value) fileInput.value.value = '';
 }
@@ -424,12 +489,16 @@ function startEdit(row) {
     fecha: dayOnly(row.fecha),
     detalle: row.detalle || '',
     monto: row.monto ?? '',
+    itf: row.itf ?? '',
     moneda: row.moneda || 'soles',
     banco: row.banco || 'BCP',
     estado: row.estado || 'pendiente',
     area: row.area || '',
     asientoPorDestino: row.asiento_por_destino || ''
   });
+  // Un ITF guardado que no coincide con la fórmula se corrigió a mano: se marca
+  // como tocado para que cambiar el monto no lo pise en silencio.
+  itfTocado.value = Math.abs(Number(row.itf || 0) - calcItf(row.monto)) > 0.005;
   isFormOpen.value = true;
   errorMessage.value = '';
 }
@@ -493,6 +562,9 @@ async function submit() {
     fd.append('fecha', form.fecha);
     fd.append('detalle', form.detalle);
     fd.append('monto', form.monto);
+    // Vacío viaja como cadena vacía y el servidor lo lee como "calculalo con
+    // la fórmula" (`resolveItf`): un 0 escrito a mano, en cambio, se respeta.
+    fd.append('itf', form.itf ?? '');
     fd.append('moneda', form.moneda);
     fd.append('banco', form.banco);
     fd.append('estado', form.estado);
@@ -519,6 +591,36 @@ async function submit() {
     errorMessage.value = error.message;
   } finally {
     isSaving.value = false;
+  }
+}
+
+/**
+ * Pagado ⇄ pendiente de un clic.
+ *
+ * Al volver, se escribe la fila que ya está en memoria en vez de recargar la
+ * tabla entera: recargar devolvería al usuario al principio de la paginación y
+ * volvería a descargar las miniaturas de los comprobantes, todo para cambiar
+ * una palabra. Los totales de arriba se recalculan solos porque salen de
+ * `filtered`.
+ */
+async function toggleEstado(row) {
+  const siguiente = row.estado === 'pagado' ? 'pendiente' : 'pagado';
+  estadoSavingId.value = row.id;
+  errorMessage.value = '';
+  try {
+    const response = await apiFetch(`/api/finance/journal/${row.id}/estado`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estado: siguiente })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo cambiar el estado del asiento.');
+    // El estado que vale es el que devolvió el servidor, no el que se supuso.
+    row.estado = data.journal?.estado ?? siguiente;
+  } catch (error) {
+    errorMessage.value = error.message;
+  } finally {
+    estadoSavingId.value = null;
   }
 }
 

@@ -12,10 +12,34 @@
  * Se carga al primer clic en un botón de asignar, no al arrancar: quien solo
  * mira el tablero no la pide nunca.
  */
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
 
 export const commercialTeam = ref([]);
+
+/**
+ * ¿Esta persona es setter?
+ *
+ * Por el NOMBRE de su rol, y no por el permiso `setter.view`: los
+ * administradores también lo tienen —tienen todos— y lo que hay que distinguir
+ * acá no es quién puede entrar al Setter Funnel sino a quién se le reparte el
+ * trabajo del setter. Se busca la palabra suelta, así que "Setter Junior" o
+ * "Setter de turno noche" entran solos el día que el equipo los cree, igual que
+ * con el criterio por permiso del área comercial.
+ *
+ * Vive acá, con la lista del equipo, porque es una pregunta sobre esa lista: en
+ * cada pantalla que la copie, el día que el rol se llame distinto una va a
+ * decir una cosa y otra, otra.
+ */
+export function isSetter(user) {
+  const rol = String(user?.role_name || '')
+    .normalize('NFD').replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return rol.split(/[^a-z]+/).includes('setter');
+}
+
+/** Solo los setters, en el mismo orden que el equipo completo. */
+export const setterTeam = computed(() => commercialTeam.value.filter(isSetter));
 
 let pendingLoad = null;
 

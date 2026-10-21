@@ -1,12 +1,14 @@
 import { randomUUID } from 'crypto';
 import { db } from '../db/connection.js';
+import { GENERIC_CONTACT_NAME } from './contactName.js';
 import { WhatsappBotSettingsService } from './whatsappBotSettingsService.js';
 import { buildKnowledgeBlock, meetingDurationLabel } from './whatsappBotPromptDefaults.js';
 import { MIN_BOOKING_LEAD_MINUTES } from './googleCalendarService.js';
 import { normalizeUniversity } from './universityNormalizer.js';
 import { normalizeCareer } from './careerNormalizer.js';
+import { detectProfileCorrection } from './profileCorrection.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
-import { criticalSignal, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
+import { criticalSignal, describesThesisProgress, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
@@ -51,22 +53,51 @@ const EXTRA_MESSAGE_DELAY_MS = (Number(process.env.WHATSAPP_BOT_EXTRA_DELAY_SECO
 // persona: un mensaje largo tarda más en llegar que un "Perfecto 👀", porque
 // escribirlo toma más. Recibir cuatro renglones al mismo tiempo que un acuse
 // de dos palabras es de las cosas que más delatan a un bot.
-const WORD_TYPING_MS = 180;
-const MIN_TYPING_MS = 900;
+// Subidos el 16/10: a este ritmo las respuestas salían demasiado seguidas y
+// se notaba la máquina. El tope se puede estirar porque ahora la burbuja de
+// "escribiendo..." sale SIEMPRE (ver `_typingAnchorFor`): con la burbuja a la
+// vista, una espera larga se lee como alguien redactando; sin ella, se lee
+// como que nadie contesta, que es lo que limitaba este número.
+const WORD_TYPING_MS = 260;
+const MIN_TYPING_MS = 1800;
 // Tope: pasado cierto punto la espera deja de leerse como que alguien está
 // escribiendo y empieza a leerse como que nadie contesta.
-const MAX_TYPING_MS = 4500;
+const MAX_TYPING_MS = 9000;
 
 /**
  * Tiempo verosímil de tecleo para un texto, con una variación aleatoria de
  * ±15% para que dos mensajes del mismo largo no lleguen con el mismo retraso
  * exacto — la regularidad milimétrica es, en sí misma, una señal de bot.
  */
-function typingTimeFor(text) {
+export function typingTimeFor(text) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
   const jitter = 0.85 + Math.random() * 0.3;
   const ms = Math.round(words * WORD_TYPING_MS * jitter);
   return Math.min(Math.max(ms, MIN_TYPING_MS), MAX_TYPING_MS);
+}
+
+/**
+ * Cuándo sale el próximo mensaje a un contacto. Es la regla del RITMO del bot,
+ * y está acá afuera —pura, sin red ni base— para que se pueda probar: es la
+ * que decide si una respuesta se lee como escrita por alguien o como disparada
+ * por una máquina.
+ *
+ *  - `reserved` es el momento ya reservado para el último envío a ese contacto
+ *    (0 si es el primero). Se compara contra él, no contra el último envío
+ *    REAL, para que dos mensajes seguidos se encolen en vez de salir juntos.
+ *  - `gapMs` es la espera normal: el mínimo antispam configurado o lo que
+ *    tardaría alguien en teclear este texto, lo que sea más largo.
+ *  - `floorMs` es la espera cuando el gap ya venció de sobra, que es lo que
+ *    pasa después de cada llamada al LLM (tarda 10-20 s). Acá estaba el bug
+ *    del 16/10: el piso era `TYPING_PAUSE_MS` fijo, o sea 2,5 s para CUALQUIER
+ *    mensaje, así que la respuesta más larga de la conversación salía tan
+ *    rápido como un "Perfecto 👀". El piso también tiene que escalar con el
+ *    largo del texto: nadie escribe cuatro renglones en dos segundos y medio.
+ */
+export function nextSendAt({ now, reserved = 0, configuredGapMs, typingMs }) {
+  const gapMs = Math.max(configuredGapMs, typingMs) + EXTRA_MESSAGE_DELAY_MS;
+  const floorMs = Math.max(TYPING_PAUSE_MS, typingMs) + EXTRA_MESSAGE_DELAY_MS;
+  return reserved === 0 ? now + gapMs : Math.max(now + floorMs, reserved + gapMs);
 }
 
 // Asesor cuyo Google Calendar usa el bot para agendar las llamadas que
@@ -123,6 +154,13 @@ const MAX_SLOT_CHOICE_ATTEMPTS = 2;
 // contacto ya no estaba respondiendo al menú y el bot seguía insistiendo.
 const MAX_STEP_MISSES = 2;
 
+// Cuántas veces se le pregunta por un dato que nos corrigió sin alcanzar a
+// decir el valor correcto ("no es la pontificia", "es esta universidad").
+// Corregir no gasta intentos del paso —el contacto está colaborando, no
+// fallando—, pero preguntar el nombre de la universidad en bucle sí sería
+// otro contestador: pasado el tope, el mensaje vuelve al camino normal.
+const MAX_PROFILE_CORRECTION_ASKS = 2;
+
 // Tope aparte para los turnos que SÍ se atendieron dentro de un mismo paso
 // (preguntas sueltas respondidas y el paso retomado). Responderlas está bien,
 // pero quien lleva cuatro mensajes preguntando cosas sin elegir opción quiere
@@ -136,6 +174,10 @@ const MAX_STEP_TURNS = 4;
 
 // Estados del flujo de agendamiento (todos "esperan respuesta del contacto").
 const SCHEDULING_STATUSES = ['scheduling_mode', 'scheduling_phone', 'scheduling_email', 'scheduling_date', 'scheduling_time', 'scheduling_confirm'];
+
+// Datos del perfil que, si una burbuja tardía los completa, justifican
+// responderle aunque haya llegado tarde: el bot puede estar pidiendo justo eso.
+const LATE_BATCH_DATA_KEYS = ['field', 'university', 'problem', 'level', 'email', 'phone'];
 
 // Paso previo al agendamiento para los leads que llegan del formulario de un
 // anuncio: se les hace UNA pregunta cerrada ("¿coordinamos?") y los horarios
@@ -166,9 +208,14 @@ export function modeLabel(mode) {
  * "sí tengo una duda" o "sí, pero mejor el jueves" siguen sin ser un sí —
  * este último además lo veta `SCHEDULE_CHANGE_HINT_RE`.
  */
-const AFFIRMATIVE_HEAD = String.raw`(?:s[ií]+|sip|sipi|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|confirmo|confirmado|de\s+acuerdo|va|ya|as[ií]\s+es|me\s+parece|excelente|genial|(?:as[ií]\s+)?est[aá]\s+bien)`;
+// "No hay problema" y "sin problema" también son un sí, y los dos se leían como
+// un no: el 09/10 un docente contestó "No hay problema. Estamos en contacto." a
+// "¿Confirmo Sáb, 10 oct, 10:00 a.m.?" y recibió "Sin problema 🙌 Dime qué día y
+// a qué hora te viene mejor" — después de haber elegido él mismo esa hora. Lo
+// mismo con los dedazos de "sí" ("Dii", "zi"), del 10/10.
+const AFFIRMATIVE_HEAD = String.raw`(?:s[ií]+|sip|sipi|di{2,}|zi+|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|confirmo|confirmado|de\s+acuerdo|va|ya|as[ií]\s+es|me\s+parece|excelente|genial|(?:as[ií]\s+)?est[aá]\s+bien|no\s+hay\s+problema|sin\s+problema)`;
 
-const AFFIRMATIVE_TAIL = String.raw`(?:s[ií]|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|excelente|genial|va|ya|pues|entonces|que\s+s[ií]|bien|todo\s+bien|de\s+acuerdo|as[ií]\s+es|(?:as[ií]\s+)?est[aá]\s+bien|me\s+parece|sin\s+problema|adelante|confirmo|confirmado|por\s+favor|porfa|porfis|gracias|muchas\s+gracias)`;
+const AFFIRMATIVE_TAIL = String.raw`(?:s[ií]|claro|dale|ok(?:ey)?|okay|listo|perfecto|correcto|exacto|excelente|genial|va|ya|pues|entonces|que\s+s[ií]|bien|todo\s+bien|de\s+acuerdo|as[ií]\s+es|(?:as[ií]\s+)?est[aá]\s+bien|me\s+parece|sin\s+problema|no\s+hay\s+problema|estamos\s+en\s+contacto|adelante|confirmo|confirmado|por\s+favor|porfa|porfis|gracias|muchas\s+gracias)`;
 
 const AFFIRMATIVE_RE = new RegExp(String.raw`^${AFFIRMATIVE_HEAD}(?:\s+${AFFIRMATIVE_TAIL})*$`, 'i');
 
@@ -190,12 +237,17 @@ export function isAffirmative(text) {
 const EXPLICIT_NO_RE = /^(?:(?:por\s*)?(?:ahora|hoy|ahorita)\s*)?no+(?:\s*(?:gracias|por\s*ahora|por\s*el\s*momento|ahora|ahorita|todav[ií]a|quiero|me\s*interesa))?$/i;
 
 /**
- * La siguiente pregunta que falta hacer, en el orden del prompt: carrera,
- * universidad y después el tema. Devuelve `null` cuando ya no falta ninguna.
+ * La siguiente pregunta que falta hacer, en el orden del prompt: carrera y
+ * universidad juntas, y después el tema. Devuelve `null` cuando ya no falta
+ * ninguna.
  *
- * Carrera y universidad van de UNA EN UNA: pedirlas juntas era pedir dos
- * cosas, y ahí se caía el embudo (el 01/10, 9 de 25 contactos abandonaron sin
- * contestar nada en esa primera pregunta).
+ * Carrera y universidad se piden en UN SOLO mensaje (decisión del equipo
+ * comercial, 16/10). Estuvieron separadas un tiempo por el abandono del 01/10
+ * —9 de 25 contactos no contestaron nada en esa primera pregunta—, pero las
+ * dos son el mismo dato, dónde estudia qué, y se contestan de corrido en una
+ * línea ("Sistemas, UNCP"): preguntarlas por turnos gasta un turno entero en
+ * algo que ya venía en la misma respuesta. Si contesta solo una, las dos
+ * ramas de abajo piden la que falta.
  *
  * Vive acá, en una sola función, porque hacen falta las mismas preguntas en
  * dos sitios —cuando el LLM repite algo ya contestado y cuando el contacto
@@ -203,9 +255,10 @@ const EXPLICIT_NO_RE = /^(?:(?:por\s*)?(?:ahora|hoy|ahorita)\s*)?no+(?:\s*(?:gra
  * un día digan cosas distintas.
  */
 export function nextDataQuestion(answers = {}) {
+  if (!answers.field && !answers.university) return '¡Perfecto! ¿De qué carrera es tu tesis y en qué universidad estudias?';
   if (!answers.field) return '¡Perfecto! ¿De qué carrera es tu tesis?';
   if (!answers.university) return '¡Perfecto! ¿Y en qué universidad estudias?';
-  if (!answers.problem) return '¡Perfecto! ¿Ya tienes un tema o una idea para tu tesis, o empiezas desde cero?';
+  if (!answers.problem) return '¡Perfecto! ¿Ya tienes un tema para tu tesis o empiezas desde cero?';
   return null;
 }
 
@@ -227,12 +280,59 @@ export function isExplicitNo(text) {
  * "¿Coordinamos?", ella contestó "Ok" y el bot le repitió la MISMA pregunta
  * que ya le había hecho dos turnos antes. Ese "Ok" era un sí.
  */
-const EXPLICIT_YES_RE = /^(?:si+|sii+|claro|ok+|oka+y?|dale|listo|dale\s*pues|dale\s*nomas|dale\s*no\s*mas|dale\s*ok|dalee+|dsp|dcl|dele|dale\s*si|dale\s*gracias|dale\s*porfa|me\s*parece|dale\s*entonces|dale\s*va|dale\s*vale|vale|dale\s*listo|perfecto|dale\s*perfecto|de\s*acuerdo|por\s*supuesto|bueno|esta\s*bien|asi\s*es|correcto|afirmativo|coordinemos|coordinamos|agendemos|agendamos|ya|ya\s*pues)(?:\s*(?:gracias|porfa|por\s*favor|pues|nomas|no\s*mas|si|ok|claro|listo))?$/i;
+const EXPLICIT_YES_RE = /^(?:si+|sii+|dii+|zi+|no\s*hay\s*problema|sin\s*problema|claro|ok+|oka+y?|dale|listo|dale\s*pues|dale\s*nomas|dale\s*no\s*mas|dale\s*ok|dalee+|dsp|dcl|dele|dale\s*si|dale\s*gracias|dale\s*porfa|me\s*parece|dale\s*entonces|dale\s*va|dale\s*vale|vale|dale\s*listo|perfecto|dale\s*perfecto|de\s*acuerdo|por\s*supuesto|bueno|esta\s*bien|asi\s*es|correcto|afirmativo|coordinemos|coordinamos|agendemos|agendamos|ya|ya\s*pues)(?:\s*(?:gracias|porfa|por\s*favor|pues|nomas|no\s*mas|si|ok|claro|listo))?$/i;
 
 export function isExplicitYes(text) {
   const clean = normalize((text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!clean) return false;
   return EXPLICIT_YES_RE.test(clean);
+}
+
+/**
+ * ¿Lo que se va a procesar lo escribió el contacto ANTES de que le llegara el
+ * último mensaje del bot? Es la "burbuja tardía": llega mientras el bot está
+ * armando su respuesta (la evaluación con IA del `finalize` tarda 10–20 s), y
+ * el buffer la procesa recién después, como si fuera la respuesta a una
+ * pregunta que el contacto todavía no había visto.
+ *
+ * Del 06 al 13/10 eso produjo el "No te entendí bien 🤔" pegado a la lista de
+ * horarios (Lu, Josselyn, Eberth, Delia: "Culminé en diciembre del año pasado"
+ * leído como elección de horario) y las preguntas dobles de la conversación
+ * libre (Grace, Alina). `lastBotSendAt` es el momento del último envío del bot,
+ * reservado o real (`lastSentAt`).
+ */
+export function wasWrittenBeforeLastReply(lastBubbleAt, lastBotSendAt) {
+  return !!lastBubbleAt && !!lastBotSendAt && lastBubbleAt < lastBotSendAt;
+}
+
+// Arranques de pregunta que la gente escribe sin signos ("Donde es su
+// oficina", "cuanto cuesta"). Ante la duda se considera pregunta: una burbuja
+// tardía que pregunta algo se contesta igual.
+const QUESTION_START_RE = /(?:^|\n)\s*(?:y\s+)?(?:cuant[oa]s?|como|donde|que|cual(?:es)?|quien(?:es)?|cuando|por\s*que|me\s+pued\w*|pued\w*|hacen|tienen|atienden|trabajan)\b/;
+
+export function looksLikeQuestion(text) {
+  const t = String(text || '');
+  if (!t.trim()) return false;
+  return /[?¿]/.test(t) || PRICE_QUESTION_RE.test(t) || QUESTION_START_RE.test(normalize(t.toLowerCase()));
+}
+
+/**
+ * Una burbuja tardía en pleno agendamiento: ¿hay que procesarla o el bot se
+ * calla? El contacto tiene en pantalla la pregunta del paso (los horarios,
+ * el "¿Confirmo…?") y la va a contestar; procesar lo que escribió antes de
+ * verla solo puede salir como "no te entendí" o, peor, como respuesta al paso
+ * (Josselyn mandó "1" a la lista vieja y el "¿Confirmo…?" que le llegó encima
+ * lo leyó como "no").
+ *
+ * Se procesa igual si pregunta algo —una pregunta sin respuesta es peor que
+ * una respuesta un poco tarde— o si es inconfundiblemente el dato del paso
+ * ("2", un correo). En la confirmación, nunca: un "sí" escrito antes de ver la
+ * fecha no puede valer por esa fecha.
+ */
+export function lateBatchNeedsTurn(status, text) {
+  if (looksLikeQuestion(text)) return true;
+  if (status === 'scheduling_confirm') return false;
+  return isObviousStepAnswer(status, text);
 }
 
 // Descuento que se aplica si el lead elige reunión por Google Meet en vez de
@@ -349,8 +449,10 @@ const INACTIVITY_FREEZE_MS = 60 * 60 * 1000;
 // MAX_INACTIVITY_NUDGES sale del largo de esta lista, y el mensaje debe ser
 // DISTINTO del primero — repetir el mismo palabra por palabra es justo lo que
 // delata a un bot.
-const INACTIVITY_NUDGE_TEXTS = [
-  '¿Sigues por ahí? Cuando tengas un momento me cuentas 👀'
+// Se exporta para que las pruebas pregunten "¿salió el genérico?" sin copiar
+// el texto: lo que importa de este recordatorio es CUÁNDO sale, no su redacción.
+export const INACTIVITY_NUDGE_TEXTS = [
+  '¿Seguimos? Cuando puedas me cuentas 👀'
 ];
 
 // Tras este número de recordatorios en la MISMA conversación el bot deja de
@@ -978,10 +1080,6 @@ function formatMeetingDateTimeLabel(isoStr) {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-// Placeholder que usa findOrCreateFromWhatsApp() cuando WhatsApp no compartió
-// un nombre de perfil real — no debe tratarse como el nombre del contacto.
-const GENERIC_CONTACT_NAME = 'Contacto de WhatsApp';
-
 /**
  * Cierra una frase con punto sin duplicar el que ya trae "p.m." al final: las
  * franjas horarias terminan en "6:30 p.m." y quedaba "6:30 p.m.." en pantalla.
@@ -1125,6 +1223,72 @@ export function usableProposedSlot(slot) {
   const startsAt = slot?.startTime ? new Date(slot.startTime).getTime() : NaN;
   if (!Number.isFinite(startsAt)) return null;
   return startsAt > Date.now() + MIN_BOOKING_LEAD_MINUTES * 60 * 1000 ? slot : null;
+}
+
+// Margen con el que un horario ya se da por pasado: una reunión que arranca en
+// cinco minutos no se puede confirmar ni reservar, nadie llega a conectarse.
+const SLOT_PASSED_MARGIN_MS = 10 * 60 * 1000;
+
+/** ¿Este horario ya empezó (o empieza en menos de diez minutos)? */
+export function slotHasPassed(slot, now = Date.now()) {
+  const startsAt = slot?.startTime ? new Date(slot.startTime).getTime() : NaN;
+  if (!Number.isFinite(startsAt)) return false;
+  return startsAt <= now + SLOT_PASSED_MARGIN_MS;
+}
+
+/**
+ * El horario vencido que el paso actual del agendamiento le volvería a
+ * nombrar al contacto, o null si no hay ninguno. Pasa cuando vuelve a escribir
+ * días después de quedarse a medio agendar: el 11/10 a Delia le preguntaron
+ * "¿Confirmo *Vie, 9 oct, 3:00 p.m.*?", y el 05/10 a Alex "¿Confirmo… el
+ * *mar, 29 set*?" — fechas que ya habían pasado.
+ *
+ * En la elección de horario solo cuenta si TODA la lista venció: si queda
+ * alguno vigente la lista sigue sirviendo, y elegir uno vencido lo frena
+ * `bookSlot`.
+ */
+export function staleSchedulingSlot(status, scheduling, now = Date.now()) {
+  if (!scheduling) return null;
+  if (status === 'scheduling_confirm') {
+    const slot = scheduling.awaitingConfirm;
+    return slot && slotHasPassed(slot, now) ? slot : null;
+  }
+  if (status === 'scheduling_phone' || status === 'scheduling_email') {
+    const slot = scheduling.pendingSlot;
+    return slot && slotHasPassed(slot, now) ? slot : null;
+  }
+  if (status === 'scheduling_time') {
+    const slots = scheduling.slots || [];
+    return slots.length > 0 && slots.every((slot) => slotHasPassed(slot, now)) ? slots[0] : null;
+  }
+  return null;
+}
+
+// Cuánto tiempo después de un cierre por "no interesado"/"más adelante" un
+// mensaje de fondo todavía reabre la conversación. Pasado eso, quien vuelve lo
+// atiende el flujo normal de un contacto que regresa.
+const REOPEN_CLOSED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Lo que se contesta a una despedida y no pide nada: "gracias", "ok",
+// "igualmente", un emoji. Eso no reabre la conversación — sería el bot
+// volviendo a hablarle a alguien que solo se despidió.
+const CLOSING_COURTESY_RE = /^(?:(?:ok(?:ey)?|okay|ya|listo|vale|bueno|entendido|de\s+acuerdo|perfecto|igual(?:mente)?|gracias|muchas|mil|chau|chao|bye|adios|saludos|bendiciones|cuidese|cuidate|a\s+usted|a\s+ti|de\s+nada|no\s+hay\s+de\s+que|buen\s+dia|buenas\s+(?:tardes|noches)|hasta\s+luego|exitos)\s*)+$/;
+
+/**
+ * ¿Este mensaje reabre una conversación que el bot cerró por "no interesado"
+ * o "más adelante"? Solo si llega dentro de la semana, trae algo de fondo
+ * (no una cortesía de despedida) y no es otra negativa.
+ */
+export function shouldReopenClosedConversation(session, text, now = Date.now()) {
+  const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
+  if (!['no_interesado', 'pospuesto'].includes(answers.__closedReason)) return false;
+  const closedAt = Date.parse(answers.__closedAt || '');
+  if (!Number.isFinite(closedAt) || now - closedAt > REOPEN_CLOSED_WINDOW_MS) return false;
+
+  const clean = normalize(String(text || '').trim()).replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean || CLOSING_COURTESY_RE.test(clean)) return false;
+  if (isExplicitNo(text) || saysNotInterested(text)) return false;
+  return true;
 }
 
 function sleep(ms) {
@@ -1456,6 +1620,17 @@ export class WhatsappBotService {
     // el panel de WhatsApp que el flujo está funcionando, sin depender de los
     // logs del servidor.
     this.activity = [];
+    // Un solo barrido de inactividad a la vez. `server.js` lo dispara con un
+    // setInterval cada diez minutos sin mirar si el anterior terminó, y con
+    // cientos de conversaciones el barrido tarda más que eso: cada envío
+    // duerme su gap de tecleo y cada turno recuperado espera al LLM. Dos
+    // barridos encima del mismo contacto se atropellan — el segundo lee la
+    // foto de "quién habló último" ANTES de que el saliente del primero llegue
+    // a la base, da el turno por perdido otra vez y lo escala a un asesor
+    // mientras el primero todavía está preparando la respuesta (caso real: un
+    // lead recibió "Perdona la demora", la transferencia y recién después el
+    // saludo, los tres en el mismo minuto).
+    this.sweepInFlight = false;
   }
 
   logActivity(entry) {
@@ -1523,6 +1698,24 @@ export class WhatsappBotService {
     await db('whatsapp_bot_sessions').where({ wa_id: waId }).delete();
     if (this.scheduledMeetingService) await this.scheduledMeetingService.deleteForContact(waId);
     this.logActivity({ type: 'reset', waId });
+  }
+
+  /**
+   * ¿Avan está encendido para TODO el mundo?
+   *
+   * Es distinto de `session.bot_enabled`, que es por contacto y se apaga solo
+   * en cuanto una persona responde a mano. Este es el interruptor del panel de
+   * WhatsApp: apagado, el bot no manda un solo mensaje a nadie y el equipo
+   * atiende — y los leads que entran solos se reparten según `/admin/reparto`
+   * (ver la migración del interruptor y `leadRoutingService.isActive()`).
+   *
+   * No se cachea: la pregunta es una lectura de una fila por mensaje entrante
+   * y una por barrido, y un caché con TTL significa que apretar "Apagar bot"
+   * no apaga nada hasta que venza — que es exactamente el momento en que
+   * alguien lo aprieta con apuro.
+   */
+  async isGloballyEnabled() {
+    return this.settingsService.isBotEnabled();
   }
 
   async setBotEnabled(waId, enabled) {
@@ -1702,7 +1895,63 @@ export class WhatsappBotService {
    * mensaje anterior al mismo contacto (message_gap_seconds), para no caer en
    * comportamiento de spam.
    */
+  /**
+   * El id del mensaje entrante contra el que se muestra "escribiendo...".
+   * WhatsApp no deja activar la burbuja a secas: hay que referenciar un
+   * mensaje del contacto (es la misma llamada que lo marca como leído).
+   *
+   * Hasta ahora ese id vivía SOLO en memoria y solo se escribía al atender un
+   * mensaje entrante, así que la burbuja se saltaba justo en los mensajes que
+   * más parecen de robot: los que el bot empieza por su cuenta (recordatorio
+   * de inactividad, disculpa por el turno perdido, recordatorio de reunión) y
+   * TODOS los de cualquier conversación después de un reinicio del servidor,
+   * hasta que el contacto volviera a escribir. El mensaje aparecía de golpe,
+   * sin el aviso de que alguien estaba escribiéndolo.
+   *
+   * El respaldo es la base, que es donde el dato ya estaba: el último entrante
+   * de ese contacto. Se cachea para no repetir la consulta en cada mensaje de
+   * una misma ráfaga.
+   */
+  async _typingAnchorFor(waId) {
+    const cached = this.lastInboundMessageId.get(waId);
+    if (cached) return cached;
+
+    try {
+      const [row] = await db('whatsapp_messages')
+        .where({ wa_id: waId, direction: 'inbound' })
+        .orderBy('id', 'desc')
+        .limit(1)
+        .select('message_id');
+      const messageId = row?.message_id || null;
+      if (messageId) this.lastInboundMessageId.set(waId, messageId);
+      return messageId;
+    } catch (error) {
+      // Sin ancla no hay burbuja, y eso no puede impedir el envío.
+      this.logActivity({ type: 'typing_anchor_failed', waId, error: error.message });
+      return null;
+    }
+  }
+
   async send(waId, text, { requireOpenWindow = false } = {}) {
+    // Red de último momento del interruptor global. Los caminos que hablan ya
+    // están frenados arriba (handleIncomingMessage y los dos barridos vuelven
+    // antes de tocar nada), así que esto no debería dispararse nunca; está
+    // porque "nunca" dura hasta el próximo camino que alguien agregue, y el
+    // costo de equivocarse es que un lead reciba un mensaje del bot justo
+    // después de que el equipo lo apagó.
+    //
+    // Lanza en vez de devolver en silencio: quien llama suele actualizar la
+    // sesión dando por hecho que el mensaje salió (marca el recordatorio como
+    // mandado, avanza el paso del agendamiento). Un no-op dejaría la sesión
+    // diciendo que habló cuando no habló, que se arregla mucho peor que un
+    // error. `WINDOW_CLOSED`, el otro freno de esta función, ya se maneja así.
+    if (!(await this.isGloballyEnabled())) {
+      const error = new Error('El bot está apagado para todas las conversaciones.');
+      error.code = 'BOT_DISABLED';
+      this.logActivity({ type: 'send_skipped_bot_off', waId, text });
+      throw error;
+    }
+
     // WhatsApp solo acepta texto libre dentro de las 24 h siguientes al último
     // mensaje del contacto. Una respuesta a un mensaje que acaba de llegar
     // siempre está dentro, así que el chequeo solo se exige en los envíos que
@@ -1729,23 +1978,19 @@ export class WhatsappBotService {
     // se hace esperar más que un acuse corto, que es como se comporta alguien
     // del otro lado. El indicador de "escribiendo..." se manda justo abajo,
     // antes de la espera, para que ese rato se vea como lo que simula ser.
-    const gapMs = Math.max(configuredGapMs, typingTimeFor(text)) + EXTRA_MESSAGE_DELAY_MS;
-
     // Reserva el momento del próximo envío ANTES de esperar: si dos send()
     // corren casi a la vez, el segundo ve el timestamp reservado por el
     // primero y se encola detrás con el gap completo (en vez de que ambos
     // calculen la espera sobre el mismo "último envío" y salgan juntos).
     const now = Date.now();
     const reserved = this.lastSentAt.get(waId) || 0;
-    const sendAt = reserved === 0
-      ? now + gapMs
-      : Math.max(now + TYPING_PAUSE_MS + EXTRA_MESSAGE_DELAY_MS, reserved + gapMs);
+    const sendAt = nextSendAt({ now, reserved, configuredGapMs, typingMs: typingTimeFor(text) });
     this.lastSentAt.set(waId, sendAt);
     const waitMs = sendAt - now;
 
     const typingEnabled = settings.typing_indicator_enabled == null ? true : !!settings.typing_indicator_enabled;
     if (typingEnabled) {
-      const inboundId = this.lastInboundMessageId.get(waId);
+      const inboundId = await this._typingAnchorFor(waId);
       if (inboundId) {
         try {
           await this.whatsappMessageService.sendTypingIndicator(inboundId);
@@ -1861,6 +2106,28 @@ export class WhatsappBotService {
   }
 
   async handleIncomingMessage(waId, text, messageId = null) {
+    // El interruptor global va ANTES que todo, incluso antes de "estoy en sala
+    // de espera" —que es la excepción a cualquier otra pausa— porque esto no es
+    // una pausa: es el equipo diciendo que de ahora en más atiende una persona.
+    // Con el bot apagado no hay reunión que el bot haya agendado esperando a
+    // nadie, y un acuse automático contradiría al asesor que está escribiendo
+    // en ese mismo hilo.
+    //
+    // Se vuelve ACÁ y no más abajo para no dejar rastro: ni buffer encolado
+    // (que se procesaría al volver a encenderlo, contestando a un mensaje de
+    // hace horas), ni sesión creada, ni llamada al LLM. El mensaje ya quedó
+    // guardado y el lead ya está creado y repartido — eso pasa en
+    // `whatsappWebhookService` antes de llegar hasta acá.
+    if (!(await this.isGloballyEnabled())) {
+      this.logActivity({
+        type: 'skipped',
+        waId,
+        text,
+        reason: 'El bot está apagado para todas las conversaciones. El lead queda en el Setter Funnel de su responsable para que lo atienda una persona.'
+      });
+      return;
+    }
+
     // Se guarda el id del mensaje entrante para poder mostrar el indicador de
     // "escribiendo..." de WhatsApp (que se envía referenciando ese id) antes
     // de cada respuesta del bot.
@@ -1944,6 +2211,16 @@ export class WhatsappBotService {
         // También pasan por el buffer: quien ya agendó escribe igual de
         // entrecortado que el resto ("gracias" / "una consulta...").
         this.bufferMessage(waId, text, this.debounceForStatus(session.status));
+        return;
+      }
+
+      // Se le cerró por "no interesado" o "más adelante" y vuelve con algo de
+      // fondo: el cierre fue un error de lectura o cambió de idea. El 07/10 a
+      // un lead se le cerró por "Ya tengo el plan aprobado" y su siguiente
+      // mensaje —"Necesito apoyo en ciertos puntos"— no lo leyó nadie.
+      if (shouldReopenClosedConversation(session, text)) {
+        await this.reopenClosedConversation(waId, session);
+        this.bufferMessage(waId, text, this.debounceForStatus('active'));
         return;
       }
 
@@ -2084,7 +2361,10 @@ export class WhatsappBotService {
     this.inboundCounter.set(waId, (this.inboundCounter.get(waId) || 0) + 1);
 
     const pending = this.pendingMessages.get(waId) || { messages: [], timer: null };
-    if (text && text.trim()) pending.messages.push(text.trim());
+    if (text && text.trim()) {
+      pending.messages.push(text.trim());
+      pending.lastBubbleAt = Date.now();
+    }
     // Una burbuja que llega mientras ya hay buffer conserva la espera con la
     // que se abrió (la del estado en que estaba el contacto).
     pending.waitMs = pending.waitMs ?? waitMs;
@@ -2107,6 +2387,10 @@ export class WhatsappBotService {
       // dispara y el turno lee la sesión hay consultas a la base de datos, y
       // una burbuja que cayera justo ahí ya no se detectaría como posterior.
       const mark = this.inboundCounter.get(waId) || 0;
+      // ¿Todo esto lo escribió antes de recibir la última respuesta del bot?
+      // Pasa cuando la burbuja cae mientras el turno anterior se estaba
+      // armando: ver `wasWrittenBeforeLastReply`.
+      const lateBatch = wasWrittenBeforeLastReply(pending.lastBubbleAt, this.lastSentAt.get(waId));
 
       // El buffer NO se borra al disparar: el turno tarda lo que tarde el LLM
       // más la espera del gap de envío (juntos, más de diez segundos), y en
@@ -2137,7 +2421,8 @@ export class WhatsappBotService {
       // A la cola serializada: si todavía hay un turno anterior en curso para
       // este contacto, este espera a que termine (y re-evalúa el estado)
       // en vez de correr en paralelo y duplicar mensajes.
-      this.runSerialized(waId, () => this._runTurnGuarded(waId, joined, mark)).then(done, (error) => {
+      if (lateBatch) this.logActivity({ type: 'late_batch', waId, text: joined });
+      this.runSerialized(waId, () => this._runTurnGuarded(waId, joined, mark, { lateBatch })).then(done, (error) => {
         this.logActivity({ type: 'conversation_turn_failed', waId, error: error.message });
         console.error(`❌ [WhatsApp Bot] Error en el turno de conversación con ${waId}:`, error);
         done();
@@ -2190,12 +2475,12 @@ export class WhatsappBotService {
    * (bot pausado, sesión cerrada, turno obsoleto) no están en un paso de
    * agendamiento y no disparan nada.
    */
-  async _runTurnGuarded(waId, incomingText, inboundMark = null) {
+  async _runTurnGuarded(waId, incomingText, inboundMark = null, { lateBatch = false } = {}) {
     const sentBefore = this.sendCounter.get(waId) || 0;
     let failure = null;
 
     try {
-      await this.runConversationTurn(waId, incomingText, inboundMark);
+      await this.runConversationTurn(waId, incomingText, inboundMark, { lateBatch });
     } catch (error) {
       failure = error;
       this.logActivity({ type: 'turn_error_recovering', waId, text: incomingText, error: error.message });
@@ -2215,7 +2500,10 @@ export class WhatsappBotService {
       this.logActivity({ type: 'turn_recovery_session_failed', waId, error: error.message });
     }
 
-    const owesReply = session?.bot_enabled && SCHEDULING_STATUSES.includes(session.status);
+    // Una burbuja tardía que el turno decidió no contestar no deja ninguna
+    // pregunta colgada: la última palabra la tiene el bot, con la pregunta del
+    // paso que el contacto recién está viendo.
+    const owesReply = session?.bot_enabled && SCHEDULING_STATUSES.includes(session.status) && !(lateBatch && !failure);
     if (!owesReply) {
       if (failure) throw failure;
       return;
@@ -2240,7 +2528,7 @@ export class WhatsappBotService {
     }
   }
 
-  async runConversationTurn(waId, incomingText, inboundMark = null) {
+  async runConversationTurn(waId, incomingText, inboundMark = null, { lateBatch = false } = {}) {
     let session = await this.getSession(waId);
 
     // El lead pudo graduar al Funnel de Ventas mientras este mensaje esperaba
@@ -2281,8 +2569,14 @@ export class WhatsappBotService {
     // caso no se corre otro turno de conversación libre: se redirige el
     // mensaje al handler que corresponde al estado real.
     if (session && session.status !== 'active') {
-      if (SCHEDULING_STATUSES.includes(session.status)) return this.handleSchedulingTurn(waId, session, incomingText);
-      if (session.status === WARMUP_STATUS) return this.handleWarmupTurn(waId, session, incomingText, { inboundMark });
+      if (SCHEDULING_STATUSES.includes(session.status)) {
+        // Volvió cuando el horario que tenía pendiente ya pasó: antes que
+        // nada se le ofrecen horarios al día (ver `staleSchedulingSlot`).
+        const stale = staleSchedulingSlot(session.status, this._readScheduling(session).scheduling);
+        if (stale) return this._reofferBecauseSlotPassed(waId, stale, incomingText);
+        return this.handleSchedulingTurn(waId, session, incomingText, { lateBatch });
+      }
+      if (session.status === WARMUP_STATUS) return this.handleWarmupTurn(waId, session, incomingText, { inboundMark, lateBatch });
       if (session.status === 'completed') {
         // Sesión cerrada pero con reunión agendada: el mensaje (ya agrupado)
         // se clasifica en vez de ignorarse. Sin reunión no se responde nada,
@@ -2433,6 +2727,9 @@ export class WhatsappBotService {
     if (result.reply) result.reply = collapseDuplicatePreposition(result.reply);
 
     const extracted = result.extracted || {};
+    // Qué datos faltaban ANTES de este mensaje: con eso se sabe si una burbuja
+    // tardía trajo algo nuevo (ver el final del turno).
+    const missingBefore = LATE_BATCH_DATA_KEYS.filter((key) => !answers[key]);
 
     // Red de seguridad: si este mensaje trae el patrón de un formulario de
     // Meta Ads ("¿Pregunta?: Respuesta" línea a línea), esos datos priman
@@ -2638,11 +2935,19 @@ export class WhatsappBotService {
     } else if (result.ready && answers.problem && missingAcademic) {
       // El LLM quiso cerrar sin todos los datos: se pide el que falte.
       const askMissing = {
-        both: 'Perfecto 🙌 Antes de coordinar la reunión: ¿de qué carrera es tu tesis y en qué universidad estudias?',
-        field: 'Perfecto 🙌 Antes de coordinar la reunión, cuéntame: ¿de qué carrera es tu tesis?',
-        university: 'Perfecto 🙌 Una última cosa antes de coordinar la reunión: ¿en qué universidad estudias?'
+        both: 'Perfecto 🙌 Antes de coordinar: ¿de qué carrera es tu tesis y en qué universidad estudias?',
+        field: 'Perfecto 🙌 Antes de coordinar: ¿de qué carrera es tu tesis?',
+        university: 'Perfecto 🙌 Una última cosa: ¿en qué universidad estudias?'
       };
       await this.send(waId, askMissing[missingAcademic]);
+    } else if (lateBatch && !missingBefore.some((key) => answers[key]) && !looksLikeQuestion(incomingText)) {
+      // Burbuja tardía que no trajo ningún dato nuevo ni pregunta nada: el
+      // contacto tiene en pantalla la pregunta que el bot le acaba de hacer y
+      // la va a contestar. Responderle encima es la pregunta doble (Grace, el
+      // 12/10: "¿Cuál es el tema?" y, catorce segundos después, otra vez
+      // "¿Cuál es el tema…?"). Lo que dijo igual queda en el hilo que lee el
+      // LLM en el turno siguiente.
+      this.logActivity({ type: 'late_batch_reply_suppressed', waId, text: incomingText, reply: result.reply });
     } else {
       await this._sendConversationalReply(waId, result.reply, answers, history);
     }
@@ -2661,9 +2966,9 @@ export class WhatsappBotService {
 
     if (lastBot && messageSimilarity(reply, lastBot) >= 0.6) {
       const rephrase = !answers.problem
-        ? 'Para seguir necesito una idea de tu tema: ¿de qué trataría tu tesis, aunque sea en una frase?'
+        ? '¿De qué trataría tu tesis, aunque sea en una frase?'
         : (!answers.field && !answers.university
-          ? 'Me falta ubicarte: ¿qué carrera llevas y en qué universidad estudias?'
+          ? '¿Qué carrera llevas y en qué universidad estudias?'
           : (!answers.field
             ? '¿Qué carrera estás llevando?'
             : (!answers.university ? '¿Y en qué universidad estudias?' : null)));
@@ -2812,13 +3117,12 @@ export class WhatsappBotService {
       const question = pending
         .replace(/^¡Perfecto!\s*/, '')
         // El "Y" de "¿Y en qué universidad estudias?" encadena con la pregunta
-        // anterior, que acá no existe: sin quitarlo queda "una sola cosa: ¿y
-        // en qué...", que suena a que viene de otra frase.
+        // anterior, que acá no existe: sin quitarlo queda "del asesor: ¿y en
+        // qué...", que suena a que viene de otra frase.
         .replace(/^¿\s*[yY]\s+/, '¿')
         .replace(/\p{L}/u, (letra) => letra.toLowerCase());
       this.logActivity({ type: 'inactivity_nudge_pending_data', waId: session.wa_id });
-      return `¿Seguimos? Me quedó pendiente una sola cosa: ${question} `
-        + 'Con eso te paso los horarios libres del asesor 🙌';
+      return `¿Seguimos? Con esto te paso los horarios del asesor: ${question}`;
     }
 
     if (!isWarmup && !['scheduling_date', 'scheduling_time'].includes(session.status)) return generic;
@@ -2845,12 +3149,13 @@ export class WhatsappBotService {
         await this.updateSession(session.wa_id, { answers: JSON.stringify(answers) });
       } else {
         scheduling.awaitingConfirm = slot;
+        delete scheduling.confirmReasked;
         await this.updateSession(session.wa_id, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
       }
       this.logActivity({ type: 'inactivity_nudge_slot_offer', waId: session.wa_id, slot: slot.label, step: session.status });
 
-      return `¿Te reservo *${slot.label}* con el asesor? Respóndeme *sí* y te llega la confirmación 🙌 ` +
-        'Si te viene mejor otro día u hora, dímelo y lo busco.';
+      return `¿Te reservo *${slot.label}* con el asesor? Respóndeme *sí* 🙌 ` +
+        'Si te viene mejor otro día, dímelo.';
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] No se pudo armar el recordatorio con horario para ${session.wa_id}:`, error.message);
       return generic;
@@ -2921,7 +3226,7 @@ export class WhatsappBotService {
    * lead que rompió el silencio para preguntar algo y recibe un menú de
    * horarios como respuesta es exactamente el bot que este cambio quita.
    */
-  async handleWarmupTurn(waId, session, incomingText, { inboundMark = null } = {}) {
+  async handleWarmupTurn(waId, session, incomingText, { inboundMark = null, lateBatch = false } = {}) {
     const answers = typeof session.answers === 'string' ? JSON.parse(session.answers) : (session.answers || {});
     const text = String(incomingText || '').trim();
 
@@ -2953,7 +3258,7 @@ export class WhatsappBotService {
     // vuelva a agendar se le recalculan los bloques.
     delete answers.__warmupSlot;
     await this.updateSession(waId, { status: 'active', answers: JSON.stringify(answers) });
-    return this.runConversationTurn(waId, incomingText, inboundMark);
+    return this.runConversationTurn(waId, incomingText, inboundMark, { lateBatch });
   }
 
   /**
@@ -3179,6 +3484,23 @@ Enlace: ${meeting.meet_link}` : '';
    * No se le transfiere a un asesor: no hay nada que atender y meterlo en la
    * cola del closer haría que alguien lo llame para insistirle.
    */
+  /**
+   * Deshace un cierre por "no interesado"/"más adelante": la sesión vuelve a la
+   * conversación libre y el lead a "En Calificación". Ver
+   * `shouldReopenClosedConversation`.
+   */
+  async reopenClosedConversation(waId, session) {
+    const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
+    const reason = answers.__closedReason;
+    delete answers.__closedReason;
+    delete answers.__closedAt;
+    await db('whatsapp_bot_sessions').where({ wa_id: waId }).update({
+      status: 'active', nudge_sent_at: null, nudge_count: 0, answers: JSON.stringify(answers), updated_at: db.fn.now()
+    });
+    await this.moveFunnelStage(waId, 'calificando');
+    this.logActivity({ type: 'closed_conversation_reopened', waId, reason });
+  }
+
   async closeAsNotInterested(waId, text) {
     const session = await this.getSession(waId);
     const answers = typeof session?.answers === 'string' ? JSON.parse(session.answers) : (session?.answers || {});
@@ -3213,7 +3535,7 @@ Enlace: ${meeting.meet_link}` : '';
     // que el bot lo resolviera) seguía pidiendo "apaga tu bot, quiero hablar
     // con alguien" justo después de este mensaje, sin darse cuenta de que ya
     // se le había transferido.
-    await this.send(waId, 'Te paso con un asesor para que te ayude directamente 🙌 En breve te escribe por aquí para coordinar todo.');
+    await this.send(waId, 'Te paso con un asesor 🙌 En breve te escribe por aquí.');
     await this.notifySalesperson(waId, reason);
   }
 
@@ -3544,9 +3866,16 @@ Enlace: ${meeting.meet_link}` : '';
    *   - Solo pregunta → se responde y se retoma el paso en el mismo mensaje,
    *     sin cambiar de estado ni tratar el texto como un dato inválido.
    */
-  async handleSchedulingTurn(waId, session, text) {
+  async handleSchedulingTurn(waId, session, text, { lateBatch = false } = {}) {
     const { scheduling } = this._readScheduling(session);
     const trimmed = (text || '').trim();
+
+    // Burbuja tardía: lo escribió antes de ver la pregunta de este paso (ver
+    // `lateBatchNeedsTurn`). Una negativa sí se respeta aunque llegue tarde.
+    if (lateBatch && scheduling && !this._isSchedulingRefusal(trimmed) && !lateBatchNeedsTurn(session.status, trimmed)) {
+      this.logActivity({ type: 'late_batch_ignored', waId, status: session.status, text: trimmed });
+      return;
+    }
 
     // Casos que la máquina de estados ya resuelve bien por sí sola: no se
     // gasta una llamada al LLM en ellos.
@@ -3558,6 +3887,13 @@ Enlace: ${meeting.meet_link}` : '';
     if (!scheduling || this._isSchedulingRefusal(trimmed) || isObviousStepAnswer(session.status, trimmed) || asksPhoneCall) {
       return this.dispatchByStatus(waId, text);
     }
+
+    // Nos está corrigiendo la carrera o la universidad, no eligiendo un
+    // horario. Va ANTES del clasificador porque es determinístico y porque de
+    // esto depende lo que queda escrito en la ficha; y va acá y no en el
+    // handler del paso para que no gaste ninguno de los dos intentos que
+    // terminan en una transferencia.
+    if (await this._applyProfileCorrection(waId, session, trimmed)) return;
 
     const step = this._describeSchedulingStep(session.status, scheduling);
 
@@ -3668,6 +4004,82 @@ Enlace: ${meeting.meet_link}` : '';
     }
 
     await this.send(waId, restate ? `${aside.answer}\n\n${restate}` : aside.answer);
+  }
+
+  /**
+   * El contacto nos corrige la carrera o la universidad en medio del
+   * agendamiento. Devuelve true si consumió el turno.
+   *
+   * El bot le devuelve los dos datos escritos justo antes de pasar a los
+   * horarios (ver `offerScheduling`) "para que pueda corregirnos si
+   * interpretamos mal" — pero cuando corregía, el mensaje llegaba al paso de
+   * elección de horario, que solo sabe leer números y días. Caso real del
+   * 15/10/2026 (+51933977853): el bot leyó su universidad mal, él escribió
+   * tres veces que no era esa, recibió dos "No te entendí bien 🤔" con la
+   * misma lista, se agotaron los intentos y la conversación se transfirió. Un
+   * minuto después escribió "10:00 am" —un horario de la lista— y ya nadie lo
+   * leyó: la reunión nunca se agendó.
+   *
+   * Dos reglas sostienen el arreglo:
+   *   - la corrección NO gasta los intentos del paso (no es una respuesta
+   *     fallida: es el contacto arreglando un error nuestro), y
+   *   - el acuse sale pegado al paso que estaba en curso, así que corregir no
+   *     cuesta un turno de agendamiento.
+   */
+  async _applyProfileCorrection(waId, session, text) {
+    const { answers, scheduling } = this._readScheduling(session);
+    if (!scheduling) return false;
+
+    const correction = detectProfileCorrection(text, { university: answers.university, field: answers.field });
+    if (!correction) return false;
+
+    const step = this._describeSchedulingStep(session.status, scheduling);
+    const resume = step.restateShort || step.restate;
+    const isUniversity = correction.field === 'university';
+
+    // No alcanzó a decir el valor correcto: se le pregunta, mostrándole lo que
+    // tenemos para que confirme o corrija de una vez. Pasado el tope se deja
+    // seguir por el camino normal, para no quedar preguntando lo mismo.
+    if (!correction.value) {
+      const asks = Number(scheduling.correctionAsks || 0);
+      if (asks >= MAX_PROFILE_CORRECTION_ASKS) return false;
+
+      scheduling.correctionAsks = asks + 1;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'profile_correction_ask', waId, campo: correction.field, text, attempt: asks + 1 });
+
+      const label = isUniversity ? 'el nombre de tu universidad' : 'tu carrera';
+      const current = isUniversity ? (answers.university || '') : (answers.field || '');
+      const ask = whatsappBotCopy.profileCorrectionAsk(label, current);
+      await this.send(waId, resume ? `${ask}\n\n${resume}` : ask);
+      return true;
+    }
+
+    // Misma regla que al extraer el dato de la conversación: una corrección
+    // sin verificar no reemplaza lo que escribió el contacto, así que solo se
+    // adopta el nombre oficial cuando el catálogo lo reconoce.
+    let value;
+    if (isUniversity) {
+      const resolved = await normalizeUniversity(correction.value);
+      value = resolved.confidence === 'alta' ? resolved.name : correction.value;
+    } else {
+      value = normalizeCareer(correction.value);
+    }
+
+    answers[isUniversity ? 'university' : 'field'] = value;
+    // La corrección es progreso de la conversación, no un intento fallido: se
+    // limpia lo que venía contando para transferir.
+    scheduling.attempts = 0;
+    scheduling.correctionAsks = 0;
+    this._clearStepMisses(scheduling);
+    await this.updateSession(waId, { answers: JSON.stringify(answers) });
+    await this._syncLeadProfile(waId, answers);
+
+    this.logActivity({ type: 'profile_correction', waId, campo: correction.field, text, valor: value });
+
+    const ack = whatsappBotCopy.profileCorrected(value);
+    await this.send(waId, resume ? `${ack}\n\n${resume}` : ack);
+    return true;
   }
 
   /**
@@ -4075,6 +4487,13 @@ Enlace: ${meeting.meet_link}` : '';
     if (criticalSignal(text) === 'humanRequest') {
       await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.');
       return true;
+    }
+
+    // "Ya tengo el plan aprobado" contesta lo que se le preguntó; no es una
+    // despedida (ver `describesThesisProgress`).
+    if (describesThesisProgress(text)) {
+      this.logActivity({ type: 'refusal_skipped_progress', waId, text });
+      return false;
     }
 
     if (saysNotInterested(text)) {
@@ -4871,8 +5290,11 @@ ${numberedList(fullSlotLabels(offer))}
     const session = await this.getSession(waId);
     const { answers, scheduling } = this._readScheduling(session);
     if (!scheduling) { await this.updateSession(waId, { status: 'completed' }); return; }
+    // Eligió de una lista vieja un horario que ya pasó.
+    if (slotHasPassed(slot)) return this._reofferBecauseSlotPassed(waId, slot);
 
     scheduling.awaitingConfirm = slot;
+    delete scheduling.confirmReasked;
     await this.updateSession(waId, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
     this.logActivity({ type: 'booking_confirmation_asked', waId, slot: slot.label, mode: scheduling.mode || 'meet' });
 
@@ -4895,6 +5317,30 @@ ${numberedList(fullSlotLabels(offer))}
    * vez: así se perdió una reunión ya confirmada el 28/09. El pedido extra se
    * atiende DESPUÉS de reservar, nunca en vez de reservar.
    */
+  /**
+   * El horario que se le iba a confirmar o reservar ya pasó: se suelta todo lo
+   * que lo nombra y se le ofrecen horarios al día, diciéndole por qué —
+   * cambiarle la lista sin una palabra se lee como que el bot se olvidó de lo
+   * que habían hablado. Si lo que escribió nombra un día o una hora ("mejor el
+   * jueves"), se usa para buscar los horarios (`scheduling.when`, que consume
+   * `promptForDate`).
+   */
+  async _reofferBecauseSlotPassed(waId, slot, text = null) {
+    const { answers, scheduling } = this._readScheduling(await this.getSession(waId));
+    if (!scheduling) return;
+
+    for (const key of ['awaitingConfirm', 'pendingSlot', 'lastProposed', 'slots', 'availableDays', 'availableWindows']) {
+      delete scheduling[key];
+    }
+    this._clearStepMisses(scheduling);
+    if (text && SCHEDULE_CHANGE_HINT_RE.test(text)) scheduling.when = text;
+
+    await this.updateSession(waId, { status: 'scheduling_time', answers: JSON.stringify(answers) });
+    this.logActivity({ type: 'stale_slot_reoffered', waId, slot: slot?.label || null, text });
+    await this.send(waId, `El horario que teníamos${slot?.label ? ` (*${slot.label}*)` : ''} ya pasó 🙈 Te paso los próximos libres:`);
+    return this.promptForDate(waId);
+  }
+
   async handleSchedulingConfirmReply(waId, session, text) {
     const { answers, scheduling } = this._readScheduling(session);
     if (!scheduling) { await this.updateSession(waId, { status: 'completed' }); return; }
@@ -4923,6 +5369,7 @@ ${numberedList(fullSlotLabels(offer))}
 
     if (decision === 'confirm') {
       delete scheduling.awaitingConfirm;
+      delete scheduling.confirmReasked;
       await this.updateSession(waId, { answers: JSON.stringify(answers) });
       // El pedido que venía pegado al sí queda en la bitácora del panel. No
       // hace falta contestarlo aparte: `confirmSlot` manda el link y los datos
@@ -4957,6 +5404,22 @@ ${numberedList(fullSlotLabels(offer))}
       return this.bookSlot(waId, slot);
     }
 
+    // No dijo que sí, pero tampoco pidió otra cosa: soltarle el horario que él
+    // mismo eligió y preguntarle "¿qué día te viene mejor?" se lee como que no
+    // se le leyó (el docente del 09/10 contestó "Usted está hablando del
+    // sábado, y ahora no sabe de qué se trata"). Se le vuelve a preguntar UNA
+    // vez por ese mismo horario; la segunda, sí se abre la elección.
+    if (decision !== 'change' && !SCHEDULE_CHANGE_HINT_RE.test(trimmed) && !scheduling.confirmReasked) {
+      scheduling.awaitingConfirm = slot;
+      scheduling.confirmReasked = true;
+      delete scheduling.lastProposed;
+      await this.updateSession(waId, { status: 'scheduling_confirm', answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'confirm_reasked', waId, slot: slot.label, text: trimmed });
+      await this.send(waId, `Para dejarlo listo: ¿te reservo *${slot.label}*? Responde *sí*, o dime qué día u hora prefieres 🙂`);
+      return;
+    }
+    delete scheduling.confirmReasked;
+
     // Nombró un día o una hora: es una corrección, se reinterpreta como si
     // estuviera eligiendo de nuevo.
     await this.updateSession(waId, { status: 'scheduling_date', answers: JSON.stringify(answers) });
@@ -4971,6 +5434,9 @@ ${numberedList(fullSlotLabels(offer))}
     const session = await this.getSession(waId);
     const { answers, scheduling } = this._readScheduling(session);
     if (!scheduling) { await this.updateSession(waId, { status: 'completed' }); return; }
+    // Un sí (o el teléfono/correo que faltaba) que llegó cuando el horario ya
+    // pasó: crear el evento sería una reunión en el pasado.
+    if (slotHasPassed(slot)) return this._reofferBecauseSlotPassed(waId, slot);
 
     const isPhone = scheduling.mode === 'phone';
     const contactPhone = formatPhoneForAdvisor(scheduling.phone || (waIdIsPhone(waId) ? waId : null));
@@ -5116,6 +5582,13 @@ ${numberedList(fullSlotLabels(offer))}
    * la cita se agenda para hoy o mañana y en el medio no recibía nada.
    */
   async sendMeetingReminders() {
+    // Con el bot apagado tampoco recuerda reuniones. Es el mismo criterio que
+    // el de más abajo para un contacto que ya tomó un asesor ("el recordatorio
+    // lo manda él"), aplicado a todos: lo que cambió es quién atiende, y el
+    // recordatorio es parte de atender. Y como ahí, NO se marca como enviado,
+    // así que si el bot vuelve a encenderse antes de la reunión el recordatorio
+    // sale igual.
+    if (!(await this.isGloballyEnabled())) return;
     if (!this.scheduledMeetingService) return;
 
     const pending = await this.scheduledMeetingService.getPendingReminders({
@@ -5256,6 +5729,41 @@ ${numberedList(fullSlotLabels(offer))}
    * ese contacto (no vuelve a insistir solo).
    */
   async checkStaleConversations() {
+    // Un barrido a la vez por proceso. El tick que cae mientras el anterior
+    // sigue corriendo se DESCARTA en vez de encolarse: no hay nada que se
+    // pierda por saltearlo (ninguna rama de acá marca su trabajo como hecho
+    // sin hacerlo, y lo que no se atendió lo toma el barrido siguiente diez
+    // minutos después), mientras que dejarlos correr juntos le manda al mismo
+    // contacto dos veces lo mismo.
+    //
+    // Esto NO reemplaza las reservas en la base (`nudge_sent_at`,
+    // `missed_reply_at`) ni la revalidación de `_recoverMissedReply`: el
+    // candado es de este proceso, y en producción el hosting puede levantar
+    // más de un worker, cada uno con su propio temporizador.
+    if (this.sweepInFlight) {
+      this.logActivity({
+        type: 'stale_sweep_skipped_overlap',
+        reason: 'El barrido anterior todavía está corriendo: este tick se descarta.'
+      });
+      return;
+    }
+    this.sweepInFlight = true;
+    try {
+      await this._runStaleConversationsSweep();
+    } finally {
+      this.sweepInFlight = false;
+    }
+  }
+
+  async _runStaleConversationsSweep() {
+    // Con el bot apagado el barrido ni siquiera corre. No alcanza con que
+    // `send()` frene el envío: este bucle RESERVA la fila antes de mandar
+    // (marca `nudge_sent_at`, congela sesiones, consume el cupo de
+    // recordatorios del barrido), así que dejarlo correr contra un envío que
+    // falla gasta el único recordatorio que a ese lead le tocaba — y al
+    // encender el bot otra vez, ya no se lo manda nadie.
+    if (!(await this.isGloballyEnabled())) return;
+
     const now = Date.now();
 
     const awaitingReply = await db('whatsapp_bot_sessions')
@@ -5661,8 +6169,18 @@ ${numberedList(fullSlotLabels(offer))}
       this.logActivity({ type: 'orphan_inbound_recovered', waId: row.wa_id, text: row.body });
 
       try {
-        await this.send(row.wa_id, whatsappBotCopy.missedReplyApology());
-        await this.runSerialized(row.wa_id, () => this.runConversationTurn(row.wa_id, row.body || ''));
+        // La disculpa va DENTRO de la cola serializada junto con el turno, no
+        // suelta antes: así el contacto está marcado como "en curso"
+        // (`turnChains`) desde el primer envío, que es lo que mira
+        // `_recoverMissedReply` para no dar por perdido un turno que se está
+        // respondiendo. Suelta, quedaba un hueco de varios segundos —el gap de
+        // tecleo de `send()`— en el que no había ni turno en curso ni saliente
+        // en la base, y por ahí entraba la transferencia a un asesor encima de
+        // la respuesta que ya venía en camino.
+        await this.runSerialized(row.wa_id, async () => {
+          await this.send(row.wa_id, whatsappBotCopy.missedReplyApology());
+          await this.runConversationTurn(row.wa_id, row.body || '');
+        });
       } catch (error) {
         console.error(`❌ [WhatsApp Bot] Error al recuperar el mensaje sin procesar de ${row.wa_id}:`, error);
       }
@@ -5688,6 +6206,43 @@ ${numberedList(fullSlotLabels(offer))}
   async _recoverMissedReply(session, lastText) {
     const waId = session.wa_id;
 
+    // Un turno de este contacto corriendo AHORA en este proceso es justamente
+    // la respuesta que este método viene a recuperar: la recuperación de
+    // huérfanos (`_recoverOrphanInbounds`) arranca el turno y recién al
+    // terminar deja el saliente en la base, así que entre medio el contacto
+    // "sigue sin respuesta" para cualquier otro barrido.
+    if (this.turnChains.has(waId)) {
+      this.logActivity({
+        type: 'missed_reply_skipped_turn_running',
+        waId,
+        reason: 'Ya hay un turno en curso para este contacto: la respuesta está en camino.'
+      });
+      return;
+    }
+
+    // Revalidación contra la base, y no contra la foto que tomó el barrido al
+    // arrancar: entre esa consulta y este momento pasan minutos (el barrido
+    // recorre cientos de conversaciones y cada envío duerme su gap), y encima
+    // `send()` guarda el saliente DESPUÉS de dormir ese gap y de llamar a la
+    // Graph API. Si en ese rato ya le contestó alguien —el turno de otro
+    // barrido, o un asesor desde el panel o desde WhatsApp Business, que deja
+    // su eco por `recordOutboundEcho`— acá no hay ningún turno perdido que
+    // recuperar, y seguir adelante le manda una disculpa y una transferencia
+    // encima de una conversación que ya está andando.
+    const [ultimo] = await db('whatsapp_messages')
+      .where({ wa_id: waId })
+      .orderBy('id', 'desc')
+      .limit(1)
+      .select('direction');
+    if (!ultimo || ultimo.direction !== 'inbound') {
+      this.logActivity({
+        type: 'missed_reply_skipped_answered',
+        waId,
+        reason: 'El contacto ya recibió una respuesta: no hay turno perdido que recuperar.'
+      });
+      return;
+    }
+
     const claimed = await db('whatsapp_bot_sessions')
       .where({ id: session.id })
       .whereNull('missed_reply_at')
@@ -5709,11 +6264,15 @@ ${numberedList(fullSlotLabels(offer))}
     this.logActivity({ type: 'missed_reply_recovered', waId, text: lastText });
 
     try {
-      await this.send(waId, whatsappBotCopy.missedReplyApology());
-      // Se reencola por la cola serializada del contacto, igual que un
-      // mensaje nuevo: si justo ahora entrara otro mensaje suyo, los dos
-      // turnos se ordenan en vez de pisarse.
-      await this.runSerialized(waId, () => this.runConversationTurn(waId, lastText));
+      // Se encola por la cola serializada del contacto, igual que un mensaje
+      // nuevo: si justo ahora entrara otro mensaje suyo, los dos turnos se
+      // ordenan en vez de pisarse. La disculpa va adentro por la misma razón
+      // que en `_recoverOrphanInbounds`: marca el contacto como "en curso"
+      // desde el primer envío.
+      await this.runSerialized(waId, async () => {
+        await this.send(waId, whatsappBotCopy.missedReplyApology());
+        await this.runConversationTurn(waId, lastText);
+      });
     } catch (error) {
       // El próximo barrido verá que el último mensaje SIGUE siendo del
       // contacto y, con la fila ya reservada, lo pasará a un asesor.

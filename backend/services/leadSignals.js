@@ -156,6 +156,28 @@ export function saysNotInterested(text) {
  */
 const MAYBE_REFUSAL_RE = /\bno\b|\bnop\b|\bnah\b|otro\s+lado|otra\s+parte|otro\s+sitio|por\s+mi\s+cuenta|deja(?:lo|me)?\s+as[ií]|olvida(?:lo)?|ya\s+(?:consegui|contrate|encontre|resolvi|tengo)|gracias\s+igual|igual\s+gracias|mas\s+adelante|otro\s+ciclo|proximo\s+ciclo|despues\s+vemos|lo\s+dejo|lo\s+dejamos|no\s+gracias|ya\s+no/;
 
+/**
+ * ¿El contacto está contando en qué va su tesis? "Ya tengo el plan aprobado",
+ * "Ya tengo título", "ya estoy en revisión del asesor de la universidad" no son
+ * despedidas: son justo lo que el bot le preguntó. Pero empiezan con "ya
+ * tengo", que `MAYBE_REFUSAL_RE` manda al LLM, y el 07/10 el LLM lo leyó como
+ * "ya no lo necesito": a un lead de maestría de la UNCP se le contestó "Cierro
+ * por acá para no molestarte más", y su mensaje siguiente —"Necesito apoyo en
+ * ciertos puntos"— quedó sin respuesta. Lo mismo el 08/10 con "Ya tengo
+ * titulo", que es de quien viene por la maestría.
+ *
+ * Gana sobre cualquier otra lectura, salvo que el mismo mensaje rechace en
+ * serio ("ya tengo quien me haga la tesis", "ya tengo la tesis, no gracias").
+ */
+const THESIS_PROGRESS_RE = /\bya\s+(?:tengo|cuento\s+con|estoy|termine|culmine|egrese|presente|inscribi|aprobe|me\s+aprobaron|avance)\b.*\b(?:plan|proyecto|tema|titulo|tesis|capitulo|informe|borrador|avance|observacion|jurado|asesor\s+de\s+(?:la\s+)?(?:u|universidad|facultad|tesis)|bachiller|maestria|doctorado|carrera|ciclo|matriz|instrumento|marco|resultados|revision)/;
+const SERIOUS_DECLINE_RE = /no\s+(?:me\s+interesa|gracias|necesito|quiero|deseo)|ya\s+no\b|otro\s+lado|otra\s+parte|contrate|consegui|ya\s+tengo\s+(?:a\s+)?(?:quien|alguien|otr[oa]|un\s+asesor\b(?!\s+de)|asesor\b(?!\s+de))/;
+
+export function describesThesisProgress(text) {
+  const clean = normalize(text);
+  if (!clean || clean.length > 300 || SERIOUS_DECLINE_RE.test(clean)) return false;
+  return THESIS_PROGRESS_RE.test(clean);
+}
+
 export function mayBeRefusal(text) {
   const clean = normalize(text);
   if (!clean || clean.length > 160) return false;

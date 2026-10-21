@@ -1,4 +1,4 @@
-import { PERU_UNIVERSITIES } from '../data/peruUniversities.js';
+import { PERU_UNIVERSITIES, AMBIGUOUS_UNIVERSITY_TERMS } from '../data/peruUniversities.js';
 
 function normalizeToken(text) {
   return String(text || '')
@@ -18,22 +18,78 @@ function escapeRegExp(text) {
  * Busca `rawText` en el catálogo cerrado, comparando por palabra completa
  * (no substring) para que alias cortos como "uni"/"unt" no matcheen dentro
  * de otra palabra ("universidad" contiene "uni" pero no debe confundirse).
+ *
+ * Gana el candidato MÁS ESPECÍFICO de TODO el catálogo (el nombre completo
+ * sobre cualquier alias, y entre alias el más largo) y no el de la primera
+ * entrada de la lista: varias universidades peruanas comparten palabras
+ * ("católica", "nacional"), y con el primero ganando ese término genérico
+ * tapaba el nombre propio de otra entrada. Caso real del 15/10/2026:
+ * "Universidad católica Sedes Sapientiae" se confirmó como "Pontificia
+ * Universidad Católica del Perú" porque "catolica" era alias de la PUCP y su
+ * entrada iba antes en la lista — y lo mismo le pasaba a la de Santa María,
+ * la de San Pablo y todas las demás católicas del país.
  */
 function matchCatalog(rawText) {
   const normalized = normalizeToken(rawText);
   if (!normalized) return null;
 
+  let best = null;
   for (const entry of PERU_UNIVERSITIES) {
-    if (normalized === normalizeToken(entry.name)) return entry;
-    for (const alias of entry.aliases) {
-      const normalizedAlias = normalizeToken(alias);
-      if (!normalizedAlias) continue;
-      if (normalized === normalizedAlias) return entry;
-      const wordBoundaryRe = new RegExp(`(?:^|\\s)${escapeRegExp(normalizedAlias)}(?:$|\\s)`);
-      if (wordBoundaryRe.test(normalized)) return entry;
+    for (const candidate of [entry.name, ...entry.aliases]) {
+      const normalizedCandidate = normalizeToken(candidate);
+      if (!normalizedCandidate) continue;
+      const isExact = normalized === normalizedCandidate;
+      if (!isExact) {
+        const wordBoundaryRe = new RegExp(`(?:^|\\s)${escapeRegExp(normalizedCandidate)}(?:$|\\s)`);
+        if (!wordBoundaryRe.test(normalized)) continue;
+      }
+      const score = normalizedCandidate.length + (isExact ? 1000 : 0);
+      if (!best || score > best.score) best = { entry, score };
     }
   }
-  return null;
+  return best?.entry || null;
+}
+
+/**
+ * Todas las universidades del catálogo que aparecen nombradas en `rawText`,
+ * en el orden en que aparecen.
+ *
+ * `normalizeUniversity()` contesta "¿cuál es esta universidad?" y devuelve
+ * UNA. Esta contesta otra pregunta: "¿de qué universidades habla este
+ * mensaje?", que es la que hay que hacerse cuando el contacto nos corrige —
+ * "No es la pontificia / Es la Sapientiae" nombra DOS, y quedarse con la
+ * primera (o con la más larga) es volver a guardar justo la que acaba de
+ * descartar. Ver `profileCorrection.js`.
+ */
+export function findUniversityMentions(rawText) {
+  const normalized = normalizeToken(rawText);
+  if (!normalized) return [];
+
+  const found = [];
+  for (const entry of PERU_UNIVERSITIES) {
+    let earliest = -1;
+    for (const candidate of [entry.name, ...entry.aliases]) {
+      const normalizedCandidate = normalizeToken(candidate);
+      if (!normalizedCandidate) continue;
+      const wordBoundaryRe = new RegExp(`(?:^|\\s)${escapeRegExp(normalizedCandidate)}(?:$|\\s)`);
+      const match = wordBoundaryRe.exec(normalized);
+      if (!match) continue;
+      if (earliest === -1 || match.index < earliest) earliest = match.index;
+    }
+    if (earliest !== -1) found.push({ name: entry.name, index: earliest });
+  }
+  return found.sort((a, b) => a.index - b.index).map((item) => item.name);
+}
+
+/**
+ * ¿El texto del contacto es, en esencia, solo un término que varias
+ * universidades comparten ("la católica", "nacional")? Entonces no hay nada
+ * que confirmar, por más seguro que suene el LLM: en el Perú "la católica"
+ * son seis universidades distintas.
+ */
+function isAmbiguousTerm(rawText) {
+  const normalized = normalizeToken(rawText).replace(/^(?:la|el|en|de)\s+/, '');
+  return AMBIGUOUS_UNIVERSITY_TERMS.has(normalized);
 }
 
 /**
@@ -58,6 +114,12 @@ function matchCatalog(rawText) {
  *   universidad y quedarse con el texto tal cual escribió el contacto.
  */
 export async function normalizeUniversity(rawText, { resolveWithLLM } = {}) {
+  // Un término compartido no sube a confianza alta ni por el catálogo ni por
+  // el LLM: no hay forma de saber cuál de las seis "católicas" es.
+  if (isAmbiguousTerm(rawText)) {
+    return { name: rawText, confidence: 'media', source: 'termino_ambiguo' };
+  }
+
   const catalogMatch = matchCatalog(rawText);
   if (catalogMatch) {
     return { name: catalogMatch.name, confidence: 'alta', source: 'catalogo' };

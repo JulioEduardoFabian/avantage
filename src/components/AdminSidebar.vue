@@ -61,6 +61,21 @@
         </router-link>
 
         <router-link
+          v-if="hasPermission('leads.report')"
+          to="/admin/reporte-leads"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/reporte-leads' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <path d="M14 2v6h6"/>
+            <path d="M9 17v-4M12 17v-6M15 17v-3"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Reporte de Leads</span>
+        </router-link>
+
+        <router-link
           v-if="hasPermission('campaigns.view')"
           to="/admin/campaigns"
           class="nav-item"
@@ -254,6 +269,23 @@
             <path d="M8 13h8M8 17h5"/>
           </svg>
           <span class="nav-label" v-if="!isCollapsed">Contratos</span>
+        </router-link>
+
+        <router-link
+          v-if="hasPermission('leads.routing')"
+          to="/admin/reparto"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/reparto' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--accent-pink);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 3 21 3 21 8"/>
+            <line x1="4" y1="20" x2="21" y2="3"/>
+            <polyline points="21 16 21 21 16 21"/>
+            <line x1="15" y1="15" x2="21" y2="21"/>
+            <line x1="4" y1="4" x2="9" y2="9"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Reparto de leads</span>
         </router-link>
 
         <router-link

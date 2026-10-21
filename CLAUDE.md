@@ -155,6 +155,33 @@ antes de tocar el arranque de producción.
   del `PUT /api/contracts/:id`, que imprime la tabla con el marcador `{{cronograma_pagos}}`) y desde
   Finanzas — `financeLedgerService.replaceScheduleForLead()` es el único camino, y rechaza quitar o
   cambiar el monto de una cuota ya cobrada, o pasarse de `leads.total_amount`.
+  Una venta firmada que **no llega a concretarse** (el cliente se retracta) se marca desde su propia
+  fila en INGRESOS: `leads.deal_cancelled_at` / `_by` / `_reason`,
+  `PATCH /api/finance/leads/:id/deal-cancelled` → `setDealCancelled()`. Se marca el **cierre** y no
+  cada cuota porque el trato es del lead —ahí viven el precio total y el cronograma—, así que la
+  decisión se escribe una vez: marcando fila por fila, basta olvidar una para que el cliente
+  reaparezca en Cobranzas. Y **no se toca `finance_income.estado`**: lo ya verificado entró de
+  verdad y sigue en los libros (una devolución es un egreso del Libro Diario, no un cobro que se
+  borra), y deshacerlo es borrar la marca en vez de tener que recordar en qué estado estaba cada
+  cuota. Los efectos se derivan en cada lectura, no se guardan: Cobranzas excluye esos leads
+  (`whereNull('leads.deal_cancelled_at')` en `collectionService.list()`, y `summary()` lo hereda
+  porque reusa `list()`) y la pestaña INGRESOS saca lo que ya no va a entrar de «Por cobrar» y lo
+  muestra aparte como «No concretado» — el precio pactado no se reescribe, que es historia. Esa
+  resta vive en `src/views/finance/dealCancellation.js` y no copiada en la tira de totales y en la
+  banda de la fila, que son los dos sitios que la dicen. El `getOverview()` de Finanzas no cambia:
+  ya contaba solo lo `verificado`.
+  Como el dinero puede nacer por cualquiera de esos tres caminos, **el cierre de venta no da por
+  hecho que la plata empieza en él**: el modal lee primero lo ya asentado
+  (`getLeadSettlement()`, `GET /api/leads/:id/win-preview`), lo muestra cuota por cuota y propone
+  solo el saldo. Si las cuotas que ya existen cubren el precio total, el cierre **no registra otro
+  ingreso** — solo gana el lead, abre su proyecto y adopta ese cronograma, poniéndole el marcador de
+  pago inicial a la primera cuota (`ensureInitialPayment()`) para que el proyecto espere su
+  verificación igual que cualquier otro cierre. Antes se pedía igual "el primer pago" y el alta
+  chocaba contra `#assertWithinLeadTotal` ("supera el saldo pendiente de este lead: S/ 0.00"): un
+  cliente que pagaba todo de una no se podía ganar. Las reglas de plata del cierre viven en
+  `backend/services/winDeal.js` (`planWinDeal()`) y corren **antes** de mover nada: puestas después,
+  como estaban, un monto que no cuadraba dejaba el lead ya ganado y su proyecto abierto pero sin
+  ingreso, y el vendedor solo veía el error.
 - Un hito de la línea de tiempo puede atarse a una cuota (`project_updates.income_id`): el cliente
   lo ve en su portal con el adjunto **bloqueado** hasta que Finanzas verifique ese pago. Como
   `projects.is_locked`, el `is_locked` del hito se deriva del estado del ingreso en cada lectura —
@@ -220,13 +247,116 @@ antes de tocar el arranque de producción.
   desplazamiento horizontal. Unificarla con la densidad del resto del panel deshace justo lo que se
   pidió. Los nombres de estado que se ven en pantalla salen de `STATE_META` en la vista, no de
   `row.state_label` (el vocabulario del dominio): dentro de esa pantalla se habla un solo idioma.
+  Tiene **dos pestañas sobre los mismos datos**: «Por cliente» (la lista de siempre, que contesta
+  qué le falta a cada proyecto) y «Calendario» (un mes de lunes a domingo, que contesta qué toca
+  esta semana — la otra mitad del trabajo, que obligaba a abrir las tarjetas una por una para
+  descubrir las fechas). El calendario **no pide otra ruta ni calcula otro estado**: se arma sobre
+  `visibleProjects`, así que los recuadros de estado y la búsqueda filtran las dos vistas por igual
+  y los colores son los mismos de las tarjetas. Dos pantallas con dos criterios propios de "lo
+  urgente" es como se llega a que cada una diga un número distinto. Una entrega se ubica en su
+  **fecha pactada** (`due_date`) incluso ya entregada: el calendario es el plan, y ver cumplido el
+  día que se prometió es justo lo que se revisa. Tocar un día lo abre debajo con las mismas
+  tarjetas y el mismo botón de entregar, y los entregables **sin fecha** —que no caen en ningún
+  día y desaparecerían sin que nadie lo note— se listan al pie, que es donde se les pone fecha.
+  En el celular el mes se vuelve un mapa de números y puntos de color y el detalle se lee en el
+  día abierto: el nombre de una entrega no entra en una celda de 50 px, y apretarlo para que entre
+  deja texto cortado que no dice nada. La vista elegida se recuerda en `localStorage`
+  (`entregables.view`), entre `try` porque en una ventana privada el acceso lanza.
+- El **gráfico de Flujo de Fondos** del Resumen (`OverviewTab.vue`, geometría en
+  `src/views/finance/chartGeometry.js`) tiene tres reglas que vinieron de arreglarlo y no conviene
+  deshacer: (1) la curva es **monótona** (Fritsch–Carlson) y no una spline Catmull-Rom — aquella se
+  pasaba de los datos: entre un mes en cero y el siguiente dibujaba ingresos **negativos** y
+  exageraba el pico, o sea el gráfico decía algo distinto de la tabla; (2) el eje sube a una cifra
+  **limpia** (`niceAxisMax`) y no al máximo × 1.15, que daba "S/ 22.5k · 14.9k · 7.4k", números con
+  los que no se estima nada; (3) el `viewBox` sigue al ancho **medido** del contenedor
+  (`ResizeObserver`) en vez de ser fijo y estirarse con `preserveAspectRatio="none"`, que deformaba
+  los trazos, convertía los puntos en óvalos y estrechaba la tipografía del eje. Los huecos
+  laterales están medidos contra la etiqueta más larga posible; el gráfico **crece con la tarjeta**
+  (antes tenía 250 px fijos y dejaba medio panel vacío); los dos colores tienen un paso **propio
+  para el modo oscuro**, validados con el script de la guía de visualización contra cada fondo; y el
+  texto del gráfico usa tokens de texto, nunca el color de la serie — la identidad la da el punto
+  de color que tiene al lado. El último valor de cada línea va **escrito**: es la única cifra que se
+  lee sin pasar el mouse, y es lo que releva el aviso de contraste de esos dos tonos sobre el fondo
+  claro.
+- El **ITF resta**: es la comisión que el banco cobra por cada transferencia, o sea dinero que
+  nunca llegó a la cuenta (o que salió de ella). Se mostraba como una cifra suelta en cada pestaña
+  sin descontarse en ningún lado, así que el Balance Neto en Caja daba de más. Entra en los egresos
+  de `getOverview()` —con su propia línea en `egresosPorOrigen`, en la gráfica mensual y en la
+  tarjeta de SU cuenta, porque el banco lo descuenta de esa cuenta y no de un fondo común— contando
+  el **mismo universo** que el resto del resumen: ingresos `verificado` y asientos `pagado` en
+  soles (el ITF de una cuota que no se verificó todavía no se cobró). Viaja en las MISMAS consultas
+  agrupadas que ya suman esas filas, no en consultas aparte: dos consultas distintas terminan
+  contando universos distintos. En el Libro Diario el **Neto** también lo descuenta; las columnas
+  de Ingresos y Egresos no, porque son la suma de las filas y tienen que seguir cuadrando con ellas.
+- El **ITF se propone, no se impone** (`resolveItf()` en `financeLedgerService.js`, usado por el
+  alta y la edición de INGRESOS y del Libro Diario). La fórmula del Excel del área
+  (`|monto| < 1000 ? 0 : INT(|monto|/1000) × 0.05`, en `calcItf`) sigue siendo el valor por
+  defecto, pero el campo es editable: el banco cobra lo que cobra —cuentas exoneradas, traspasos
+  entre cuentas propias, redondeos— y con el campo de solo lectura esa diferencia se quedaba fuera
+  de los libros. Un `itf` **ausente, nulo o vacío** significa "calculalo"; un **cero escrito a
+  mano** se respeta, porque es justamente el caso de la cuenta exonerada y tratarlo como ausente
+  volvería imposible registrar lo que más justifica que el campo se pueda editar. En pantalla el
+  campo sigue al monto **mientras nadie lo toque** (lo que hacía de solo lectura) y se congela en
+  cuanto alguien lo corrige — recalcularlo por debajo le borraría la corrección a quien acaba de
+  hacerla—; al abrir una fila para editarla, un valor que no coincide con la fórmula se considera
+  corregido a mano. Por lo mismo, `replaceScheduleForLead()` recalcula el ITF **solo si el monto
+  cambió**: el cronograma no tiene campo de ITF, así que recalcularlo siempre borraría la
+  corrección por abrir el plan de pagos y guardarlo sin tocar importes. `calcItf` vive en
+  `src/views/finance/incomeOptions.js` para todo el frontend (el Libro Diario tenía su propia
+  copia, que podía quedar diciendo otra cosa).
+- El **estado de un asiento del Libro Diario** (`finance_journal.estado`, `pagado`/`pendiente`) se
+  cambia de un clic sobre su propia celda: la píldora de la tabla es un `<button>` y llama a
+  `PATCH /api/finance/journal/:id/estado` → `updateJournalEstado()`. Va aparte del
+  `PUT /api/finance/journal/:id` del formulario a propósito: ese pide el asiento entero (y pasa por
+  multer porque admite comprobantes), y reenviarlo para cambiar una palabra reescribe de paso
+  campos que nadie tocó — una fecha normalizada distinto, un ITF corregido a mano que el
+  formulario vuelve a mandar. De ese estado cuelgan
+  los totales de la pestaña (lo pendiente es dinero que todavía no se movió y suma aparte), así que
+  el clic cambia las cifras de arriba y no solo el color; al volver se escribe **la fila en
+  memoria** y no se recarga la tabla, que devolvería al usuario al principio de la paginación y
+  volvería a bajar las miniaturas de los comprobantes. La píldora pulsable es `.pill` + `.pill-toggle`
+  de `src/style.css` —no una copia en el `<style scoped>` de cada pestaña—, y `.pill-toggle` agrega
+  **solo** el cursor y el realce: el color, el borde y la tipografía los sigue poniendo `.pill-*`,
+  que es lo que la mantiene indistinguible de una píldora de solo lectura. La misma pareja la usa
+  la pestaña de Salarios.
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
-  registro de pagos al personal **independiente de la contabilidad**: no se relaciona con
-  `finance_income` ni con `finance_journal`, no tiene llaves hacia ellas y no debe sumarse en los
-  totales ni en el flujo de caja de `getOverview()`. Guarda la persona como texto libre (se paga a
+  registro de pagos al personal **sin llaves hacia la contabilidad**: no se relaciona con
+  `finance_income` ni con `finance_journal`. Guarda la persona como texto libre (se paga a
   gente sin cuenta en el panel) y la fecha del pago es el dato que ordena la planilla. Cada fila
   tiene `estado` (`pagado`/`pendiente`) y el `monto` se guarda en **negativo** por ser un egreso
   (el formulario lo pide en positivo y `normalize()` le pone el signo).
+  Desde el 16/10/2026 la planilla tiene **dos niveles**, en la MISMA tabla y no en una nueva: el
+  **acuerdo** (`kind: 'acuerdo'`) es cuánto se le paga a quien consiguió el lead por ESE proyecto
+  (`project_id`), y de él cuelgan sus **pagos** (`kind: 'pago'`, `parent_id`, CASCADE). Es la
+  estructura que el equipo ya estaba escribiendo a mano en el campo de texto ("Pago del 40% del
+  usuario Juan Diego"), y comparten persona, moneda, banco y comprobantes, así que partirlos en dos
+  tablas obligaría a duplicar todo eso y a unirlas en cada lectura.
+  **Un acuerdo no es dinero que salió**: es el compromiso, como la comisión de la setter, así que
+  NO se descuenta en `getOverview()` — las cuatro consultas de salarios filtran `kind = 'pago'`, y
+  contar el acuerdo además de sus pagos descontaría dos veces lo mismo. Lo que sí viaja a
+  `totals.pendientes` son los pagos pendientes **más la parte del acuerdo que nadie repartió
+  todavía**: sumar el acuerdo entero duplicaría la porción ya programada, y mirar solo los pagos
+  escondería un acuerdo recién registrado, que es el compromiso más fresco.
+  `kind` es **explícito** y no se deduce de que la fila tenga proyecto o hijos: de él depende qué
+  plata resta en el Resumen, y una regla implícita ahí se rompe sola. El **porcentaje de cada pago
+  no se guarda** (`percentOf()`): se deriva del monto sobre el acuerdo en cada lectura, por lo mismo
+  que `is_locked` de un hito — corregido el acuerdo, un porcentaje guardado seguiría diciendo el
+  viejo. A quién se le paga tampoco se pregunta: sale del **responsable del proyecto**
+  (`resolveProjectOwner()`: el líder y, si todavía no tiene, el responsable comercial del lead —
+  ese segundo paso es el que sostiene el alta desde el cierre, cuando el proyecto se acaba de abrir
+  y nadie le asignó líder). Se escriben las DOS columnas, `user_id` y `persona`, por la misma razón
+  que `leads.assigned_user_id`/`assigned_to`. Un proyecto tiene **un** acuerdo (409 si se repite):
+  dos partirían los pagos en dos cuentas que no suman.
+  Se registra por **dos caminos**: el botón de la pestaña y el campo opcional del modal de cierre
+  (`POST /api/leads/:id/win` con `salaryAmount`), que es el momento en que el vendedor conoce el
+  trato y le evita entrar a Finanzas —que además exige un permiso que no tiene por qué tener—. Ese
+  segundo camino **no puede tumbar la venta**: si falla, el lead queda ganado, el proyecto abierto y
+  el salario se carga después (misma regla que la comisión de la setter).
+  **Sí resta en el Resumen Financiero**, desde el 16/10/2026 y por decisión del equipo: lo que sale
+  por planilla es plata que sale, y sin ella el Balance Neto en Caja daba de más. Entra solo lo
+  `pagado` y solo en soles, el mismo criterio que el resto de `getOverview()` — lo `pendiente` no
+  salió de ninguna cuenta y viaja aparte en `totals.pendientes`. La tabla sigue sin llaves hacia la
+  contabilidad: lo que se agregó es una **lectura** en `getOverview()`, no una relación.
 - Los **documentos de marca** (cotización, contrato, comprobante de pago) comparten paleta, logo e
   iconos desde `quotationDocument.js`: si cambia la marca, cambian los tres juntos. El comprobante
   tiene además una versión **PDF** (`paymentReceiptPdf.js`, dibujada con `pdf-lib` en JavaScript
@@ -244,6 +374,45 @@ antes de tocar el arranque de producción.
   (el desplegable reagrega ese valor como "Registrado anteriormente"); renombrar con
   `propagate: true` sí reescribe `leads.field_of_study` y `projects.field_of_study`, nunca
   cotizaciones ni contratos ya emitidos.
+- El **buscador de los dos tableros** es `src/leadSearch.js` y **tolera tildes y dedazos**
+  (Levenshtein): "Rodrigez" encuentra a "Rodríguez" y "castanida" a "Castañeda". Eso no lo hace más
+  rápido —la distancia cuesta más que un `includes`—, así que el orden importa: primero la
+  coincidencia exacta, que resuelve casi todo sin calcular nada, y la corrección solo sobre lo que
+  no coincidió. El texto buscable de cada lead se normaliza **una vez** y queda en un `WeakMap`
+  (con la concatenación cruda como firma, para que reasignar un lead —que reescribe `assigned_to`
+  sobre el mismo objeto— no deje el índice viejo): sin eso, cada tecla volvía a quitarle las tildes
+  a nueve campos de cada lead y una consulta de dos palabras sobre 2.000 fichas costaba ~95 ms por
+  pulsación (ahora ~13 ms, y 2 ms cuando la coincidencia es exacta).
+  **Los números no se corrigen**: una consulta de puros dígitos mira solo id, celular y documento, y
+  por substring. En un teléfono un dígito de diferencia es otra persona, y un buscador que lo
+  "corrige" muestra la ficha equivocada justo cuando alguien está por llamar. Tampoco se corrige
+  nada de menos de 4 caracteres (con "ana" y una letra de margen entra media agenda).
+  Los campos son los mismos en los dos tableros: antes cada pantalla tenía su lista —el de Ventas no
+  miraba la universidad ni el canal, el del setter no miraba las notas— y el mismo texto encontraba
+  cosas distintas según dónde se buscara.
+- Las **etapas del Setter Funnel** son `setter_funnel_columns` (`setterFunnelColumnService.js`,
+  `/api/setter-funnel-columns`, cliente en `src/setterFunnelColumns.js`), **tabla propia y no filas
+  de `funnel_columns` con un campo "tablero"**: `loadSalesFunnelStatuses()` trata TODA clave de
+  `funnel_columns` como "este lead ya es del closer" y `loadWinningStatuses()` toma las `final` como
+  venta ganada, así que compartir la tabla haría que cada etapa que el setter cree graduara leads
+  (sacándolos de su propio tablero y dejando al bot sin trabajarlos) y que su "Ganado / Cerrado"
+  —`final` de fábrica— abriera proyectos y devengara comisiones. El precio de separarlas es un
+  servicio más; el de unirlas, revisar cada lectura de `funnel_columns` que exista y las que vengan.
+  Hasta el 16/10/2026 vivían en el `localStorage` del navegador y el tablero era de la **máquina**,
+  no del equipo: la misma persona veía 7 etapas en una computadora y 4 en otra, con los mismos 17
+  leads repartidos distinto. Y no era cosmético — arrastrar un lead escribe `leads.status` con la
+  clave de la columna, que sí es compartida, así que un lead movido a una etapa que solo existía en
+  una máquina caía en la primera columna de todas las demás ("si no coincide, ubicar en la primera
+  columna", `SetterFunnelView.vue`). La migración siembra las 7 de fábrica y **rescata** las etapas
+  huérfanas: toda clave que algún lead no graduado tenga en `status` y no sea de fábrica, ni de
+  Ventas, ni un desenlace o bandeja, entra como "Etapa recuperada" — su nombre vivía en el navegador
+  y se perdió, pero sin la columna esos leads se amontonarían en la primera sin que nadie sepa por
+  qué. Por la misma razón `resetToDefaults()` conserva las etapas propias **que tengan leads**:
+  restablecer es recuperar las de fábrica borradas, no vaciarle el tablero a quien tenga trabajo
+  repartido. Borrar una etapa mueve primero los leads y recién después borra la columna (al revés,
+  un borrado que sale bien con una reasignación que falla deja leads con un `status` que ya no es
+  columna de nadie), y la clave de una etapa nueva la genera el **servidor**: dos personas creándola
+  a la vez en dos máquinas es justo lo que esto vino a arreglar.
 - Los dos tableros de leads leen la **misma** columna `leads.status`, pero "¿este lead ya es del
   closer?" **no** se deduce de ese texto: se sella en `leads.sales_funnel_at` al entrar al funnel
   comercial. La deducción por status dejaba de reconocer al lead en cuanto el equipo borraba o
@@ -267,6 +436,38 @@ antes de tocar el arranque de producción.
   ponerle una etapa fuera del funnel comercial — el bot y los automatismos reciben el lead sin
   cambios. Cada movimiento (y cada intento rechazado, con `blocked`) queda en `lead_stage_changes`,
   que se lee desde la ficha del lead en el Funnel de Ventas y por `GET /api/leads/:id/stage-history`.
+- El módulo **Reporte de Leads** (`/admin/reporte-leads`, `LeadReportView.vue`, permiso
+  `leads.report`, `leadReportService.js`, `GET /api/lead-report`) es esa misma bitácora leída de
+  corrido: todos los leads con su trazabilidad —quién movió a cada uno, hacia qué etapa y en qué
+  fecha y hora—, filtrable por persona (incluido el bot y el sistema), etapa actual, rango de
+  fechas de los movimientos y "solo intentos bloqueados". **No tiene tabla propia**, como
+  Cobranzas: inventarle una obligaría a escribir cada movimiento en dos lados, y el día que se
+  separen nadie sabría cuál dice la verdad. Hasta ahora `lead_stage_changes` solo se podía leer de
+  a un lead entrando a su ficha, así que "¿qué movió ayer cada persona?" se contestaba abriendo
+  fichas de una en una.
+  **La visibilidad es la del funnel y no una propia**: reusa `applyLeadVisibility()` —extraída de
+  `getAllLeads()` justamente para esto— vía `leadService.visibilityQueryFor()`, así que el reporte
+  no puede ser una puerta de atrás a los leads que alguien no ve en su tablero (`scope` viaja en la
+  respuesta para que la pantalla lo explique en vez de parecer vacía por error). El permiso es
+  propio porque es una herramienta de **supervisión**, no de trabajar leads, y la migración lo
+  siembra a quien ya administra el área comercial (`leads.manage_all`).
+  Dos reglas de la pantalla: (1) los **filtros eligen leads** (`whereExists` sobre la bitácora) y de
+  cada uno se muestra la historia **completa** — media historia, justo la mitad que el filtro dejó
+  afuera, es con lo que se saca una conclusión equivocada; (2) el **alta del lead es el primer hito**
+  de la línea de tiempo, derivado en cada lectura de `created_at`/`created_by`/`source` y marcado
+  con `derived: true`: la bitácora nace con su migración (26/10/2026), así que de los leads
+  anteriores no tiene una sola fila, y una trayectoria que arranca en la nada se lee como una
+  pantalla rota. Los nombres de etapa salen de `buildStatusLabeler()` en el servidor (la otra mitad
+  de `buildStageResolver()`, la que no necesita un lead: `from_status` ya no es el de la ficha) para
+  que el reporte, el tablero y la bandeja de WhatsApp digan lo mismo, y quién movió el lead lo
+  nombra `actorLabel()` en un solo sitio, porque lo dicen la línea de tiempo y el desplegable que
+  filtra por esa misma persona. El desplegable de actores sale de la bitácora y no del área
+  comercial: ahí figuran el bot, los automatismos y la gente que ya no está en el panel —a quien se
+  busca justamente cuando se investiga un movimiento viejo—, y no figura quien nunca movió nada.
+  Los filtros y la paginación se resuelven en el **servidor** (25 leads por página, y los
+  movimientos de esa página en UNA consulta, `listForLeads()`): filtrar en el navegador sobre lo
+  cargado es "busca entre los primeros 25", y el movimiento que se viene a investigar es el que no
+  está a mano.
 - `leadService.findByPhone()` cruza primero la cadena exacta y después los últimos 9 dígitos
   (`phoneMatchKey`): el `wa_id` del bot (`51987654321`) y lo que escribe la persona en el formulario
   de Meta (`+51 987 654 321`) son el mismo contacto, y compararlos tal cual hacía que el bot le
@@ -293,7 +494,15 @@ antes de tocar el arranque de producción.
   Asignar **no mueve el funnel**: no pasa por `updateLeadStatus()` ni deja nada en
   `lead_stage_changes`. La tarjeta tiene alto fijo (`--lead-card-h`, calibrado para que entren
   cinco/diez por columna sin scroll), así que el círculo va en una franja reservada a la derecha y
-  el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado.
+  el menú se teletransporta al `body`: dentro de la tarjeta quedaría recortado. Por lo mismo, la
+  **fecha de registro comparte renglón con el celular** en los dos tableros en vez de sumar una
+  línea, y cuando falta espacio lo que se recorta es el celular —se reconoce por sus últimos
+  dígitos— y no la fecha. Cómo se escribe vive en `src/leadCardDate.js` y no en cada vista: es la
+  misma tarjeta del mismo lead, y con una copia por pantalla el mismo lead terminaría diciendo dos
+  fechas distintas según desde dónde se lo mire. El año sale solo si no es el actual (en 52 px cada
+  carácter compite con el nombre) y la fecha completa con la hora queda en el `title` y en la ficha;
+  `limaDay()` está ahí también porque de él cuelgan los filtros "Registrado: desde / hasta", y con
+  el huso del navegador un lead de las 23:00 cae en otro día.
 - **Una persona es un lead, no uno por cada formulario que llena.** Los tres caminos que crean leads
   desde afuera cruzan primero por teléfono (`findByPhone`, por los últimos 9 dígitos) y cuelgan lo
   nuevo de la ficha que ya existe: el webhook de Meta (`attachMetaLeadToExisting`), el primer
@@ -311,6 +520,55 @@ antes de tocar el arranque de producción.
   recién creada, y una moneda al aire en cuanto las dos graduaban.
   `backend/scripts/diagnosticarLeadCampana.js` (solo lee) imprime todas las fichas de una persona,
   de dónde salió cada una, cuál elige Campañas y por qué.
+- **El alta manual tampoco carga a la misma persona dos veces.** El celular y el DNI son los dos
+  datos con los que se reconoce a alguien, así que el formulario de alta manual (modal del Setter
+  Funnel y ficha de la Base de Datos, los dos contra `POST /api/leads`) pregunta primero si ya hay
+  un lead con ese celular —últimos 9 dígitos, el mismo `phoneMatchKey` del bot— o con ese documento
+  (`dniMatchKey`: sin espacios, guiones, puntos ni barras, y admitiendo letras porque un carné de
+  extranjería las tiene). La regla es `duplicateReasons()` en `leadService.js` —la consulta solo
+  trae candidatos y esa función pura es la que decide— y el tope es
+  `registerManualLead()`, que es **otro método** que `createProspect()`: por ahí siguen entrando los
+  leads de Meta, donde un alta rechazada no se reintenta nunca y el lead se pierde en silencio (y el
+  webhook ya cruza por teléfono antes de llamar, ver `persistMetaLead`). La ruta responde **409** con
+  las fichas repetidas adjuntas.
+  Editar la ficha pasa por el mismo tope (`updateLead()`, también 409): cambiarle el número a una
+  para que coincida con otra es el mismo duplicado por otra puerta. Pero se miran **solo los campos
+  que de verdad cambian** y no el estado final de la ficha: en la base quedaron gemelos de antes, y
+  chequear el valor ya guardado haría imposible corregirle el nombre o el correo a uno de ellos — un
+  tope que impide arreglar justo lo que viene a evitar.
+  La pregunta se hace **sobre toda la tabla** y no sobre lo que el que carga puede ver: el duplicado
+  que más daño hace es justamente el del lead que trabaja otra persona, que no le aparece en su
+  tablero y por eso lo vuelve a cargar de buena fe. De una ficha ajena viaja un **resumen**
+  (`findDuplicates()`: nombre, celular, documento, etapa y de quién es) y nunca el lead, y `visible`
+  dice si además la puede abrir, para no ofrecerle un enlace que `requireLeadVisible` le va a negar.
+  Desde ese modal se puede **eliminar la ficha repetida**, pero `deleteLead()` se niega si de ella
+  cuelga trabajo (`deletionBlockReason()`: proyecto, cuotas de Finanzas, contratos, cotizaciones o
+  comisiones; la ruta responde **409**). No es una precaución de más: `projects`, `quotes`,
+  `sales_commissions`, las notas y el historial de etapas están en **CASCADE**, así que borrar el
+  lead borra el proyecto con todo lo suyo; y `finance_income` y `contracts` están en **SET NULL**,
+  así que las cuotas sobreviven pero se quedan **sin cliente** —desaparecen del cierre en INGRESOS y
+  de Cobranzas y ya no hay forma de saber de quién eran—. Hasta el 16/10/2026 el borrado no
+  comprobaba nada y el botón nuevo quedaba justo al lado de una ficha marcada "🏆 con proyecto". El
+  motivo viaja al listado (`delete_blocked_reason`, calculado con la MISMA función que aplica el
+  borrado, igual que `delivery_blocked` en Entregables) y se lee debajo de la fila, no solo en el
+  título del botón: es lo que hay que saber ANTES de elegir cuál de las dos se borra. El botón sale
+  solo en las fichas visibles —`requireLeadVisible` rechaza las ajenas y un botón que siempre falla
+  es peor que no tenerlo— y el cálculo del trabajo colgante son **cinco consultas agrupadas para
+  toda la lista** (`workloadByLead()`), no cinco por ficha.
+  La ficha dice además **quién cargó el lead a mano** (`leads.created_by`, escrito solo por
+  `registerManualLead()`; viaja como `created_by_name` y se muestra al lado del canal en el modal
+  del Setter Funnel y en la ficha de la Base de Datos). No es lo mismo que el responsable comercial
+  que figura al lado: ese se asigna aparte y el que reparte puede cambiarlo, así que sin el autor
+  una ficha incompleta que apareció en el tablero no tiene a quién consultarle. Lo que entró por el
+  bot, por Meta o por el evaluador **no tiene autor** y ahí la ficha calla: el canal ya dice de
+  dónde salió, e inventar un nombre es peor que no decir nada. Es la misma columna y las mismas
+  razones que la de la reunión cargada a mano en `scheduled_meetings`.
+  En pantalla el aviso sale **mientras se escribe** (`GET /api/leads/check-duplicate`, el composable
+  `src/leadDuplicateCheck.js` y el componente `LeadDuplicateAlert.vue`, compartidos por las tres
+  pantallas que piden esos dos datos): un error recién al apretar "Registrar" llega después de haber
+  tipeado la ficha entera. Pero el aviso **no es la regla** — si la comprobación falla no se bloquea
+  el alta, y lo que impide el duplicado es el 409, que vale aunque el formulario estuviera abierto
+  desde antes de que otra persona cargara ese contacto.
 - En **Campañas**, "venta ganada" no es la cadena `'ganado'`: es lo que devuelve
   `loadWinningStatuses()` —el desenlace fijo más la clave de la columna que el equipo marcó como
   `final`, que se genera sola (`col_mtc2nwec_fij`)— **o** que el lead ya tenga un proyecto abierto
@@ -344,6 +602,88 @@ antes de tocar el arranque de producción.
   dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
   El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
   y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
+- Lo que Meta nos manda **vuelve a Meta**: `metaConversionsService.js` le devuelve, por la
+  **Conversions API**, en qué etapa del funnel terminó cada lead que llegó de un anuncio
+  (`/api/meta-capi` bajo `webhooks.view`, pantalla en `MetaConversionsPanel.vue` dentro de
+  `/admin/webhooks`). Sin esa vuelta, la optimización de Meta solo puede perseguir "más
+  formularios llenados", que es justo la métrica que se llena de números equivocados y curiosos.
+  **No se hace a través de YCloud** aunque el WhatsApp pase por ahí: su reporte de conversiones
+  solo cubre las conversaciones nacidas de un Click-to-WhatsApp (los leads de formulario, que son
+  la mayoría, no pasan por YCloud), solo admite dos eventos (`Lead` y `Purchase`) y para saber que
+  un lead pasó a "Cotizado" habría que llamarlo igual desde acá — un salto extra para un dato que
+  el CRM ya tiene y el proveedor no.
+  Un lead se reporta solo si **Meta puede reconocerlo**, y hay dos caminos: su `lead_id`
+  (`leads.meta_leadgen_id`, formularios instantáneos → `action_source: 'system_generated'` +
+  `custom_data.event_source: 'crm'`) o su `ctwa_clid` (el click id que viaja en el `referral` del
+  primer mensaje y que `whatsapp_messages` ya guarda entero → `action_source:
+  'business_messaging'` + `messaging_channel: 'whatsapp'`). El del evaluador público o el cargado a
+  mano no se reportan: no hay anuncio al que atribuirlos.
+  Y cada origen va a **su propio conjunto de datos** (`datasetFor()`): el de CRM
+  (`META_CAPI_DATASET_ID`, el que se crea en Events Manager > Integraciones > CRM) y el que Meta
+  mantiene ligado a la cuenta de WhatsApp Business (`META_CAPI_MESSAGING_DATASET_ID`, el único
+  contra el que un `ctwa_clid` se atribuye al anuncio). Cruzarlos **no da error**: Meta acepta el
+  evento y no lo atribuye a nada, así que la campaña sigue optimizando a ciegas y nadie se entera —
+  por eso, sin el de mensajería, esa mitad queda apagada y la pantalla lo dice, en vez de enviar a
+  un destino que no sirve. **No viaja ningún importe** — Meta recibe
+  la etapa, no cuánto facturó el cliente, misma regla que el resto del sistema.
+  La integración quedó funcionando el **20/10/2026** con los dos canales enviando: conjunto de CRM
+  (formularios) + conjunto propio de mensajería creado desde "Conectar datos > Mensajes > Página de
+  Facebook", un token con los dos conjuntos asignados (se consigue generando el de la Dataset
+  Quality API y marcando ambos) y el `page_id` de la Página. Dato verificado contra Meta ese día:
+  **`Purchase` se acepta sin divisa ni importe**, así que la decisión de no mandarle cifras del
+  negocio no cuesta la señal de venta.
+  El evento de Click-to-WhatsApp lleva además, dentro de `user_data`, el **`page_id`** (o el
+  `whatsapp_business_account_id`) del conjunto al que se envía: el `ctwa_clid` identifica el clic,
+  no el negocio que lo recibió, y sin eso Meta lo rechaza. Sale de `META_CAPI_PAGE_ID` o, si no
+  está, del `META_PAGE_ID` que ya se usa para los formularios; sin ninguno, esa mitad se omite
+  antes de gastar la llamada y la pantalla lo dice en la configuración. El ejemplo de la
+  documentación de Meta NO lo incluye —el asistente de Events Manager sí lo marca como
+  obligatorio—, así que el que manda es el asistente.
+  **Los nombres de evento solo son libres en la mitad de formularios.** Con
+  `action_source: business_messaging` Meta rechaza los nombres propios ("proporciona un valor
+  válido como Purchase o LeadSubmitted", error real del 20/10/2026), así que esa mitad se traduce
+  sola en `messagingEventName()`: la etapa ganadora —preguntada con `loadWinningStatuses()`, que la
+  columna la crea el equipo— viaja como `Purchase`, las demás como `LeadSubmitted`, y los
+  desenlaces de pérdida NO se reportan por ahí (mandarlos como `LeadSubmitted` le diría a Meta que
+  calificó justo el lead que no calificó, y Meta no optimiza en contra de un evento). No es
+  configurable a propósito: el conjunto válido es de Meta y es chico, así que ofrecerlo en la
+  pantalla solo daría la oportunidad de escribir algo inválido. La bitácora guarda el nombre que de
+  verdad viajó y la etapa de la que salió, que no coinciden en esa mitad.
+  Qué etapa se reporta y con qué nombre de evento vive en `meta_capi_stage_events` y **no** en una
+  constante: las columnas del funnel las crea el equipo y sus claves se generan solas
+  (`col_mtc2nwec_fij`), así que la migración siembra las etapas clave resolviéndolas como el resto
+  del sistema (el desenlace fijo, la columna marcada `final`, la de cotización por `quoted` o por
+  su nombre) y la pantalla deja editarlas. Dos etapas pueden compartir el nombre del evento
+  (`ganado` y la columna `final` son la misma venta) y entonces se manda **una sola vez por lead**:
+  reabrir y volver a ganar no es una segunda venta. Eso se decide con `meta_capi_events`, la
+  bitácora de envíos, que además es lo que hace posible el botón "Reenviar últimos 7 días" — Meta
+  solo acepta eventos con esa antigüedad, así que lo que no se mande en esa ventana ya no entra
+  nunca y no puede depender de que alguien se dé cuenta el mismo día. El `event_time` se compara
+  contra `meta_created_time` (cuándo se llenó el formulario en Meta) y no contra `created_at`
+  (cuándo entró acá): un lead recuperado por la conciliación tres días después tiene las dos fechas
+  muy separadas, y Meta descarta el evento anterior a la generación del lead.
+  El disparador es `leadService.updateLeadStatus()` —el punto único por el que cambia la etapa,
+  igual que la comisión de la setter— y se lanza **sin esperarlo**: arrastrar una tarjeta en el
+  Kanban no puede quedarse esperando a que responda la Graph API, y un envío que falla se reenvía
+  mientras un movimiento perdido no se recupera. Las credenciales son del `.env`
+  (`META_CAPI_DATASET_ID`, `META_CAPI_ACCESS_TOKEN`, que cae a `META_ADS_ACCESS_TOKEN` porque es el
+  que ya tiene `ads_management`); sin ellas la integración queda apagada y no se intenta nada.
+  Buscar el `ctwa_clid` de un lead tiene los **dos** caminos de `resolveWaIdForPhone()`: primero la
+  coincidencia exacta del `wa_id` y después los últimos 9 dígitos. La exacta no es un atajo — hay
+  conversaciones cuyo identificador no es un teléfono sino un id de usuario de la empresa
+  (`PE.2379096279586501`, el 40% de los contactos de anuncio del período medido el 20/10/2026) y el
+  lead que nace de ellas guarda ESE texto en `phone`, donde `phoneKey()` devuelve null con razón:
+  no son teléfonos y cruzarlos por sus últimos dígitos emparejaría contactos distintos.
+  `backend/scripts/diagnosticarCtwa.js` (solo lee) contesta si el proveedor de WhatsApp está
+  reenviando el `ctwa_clid` y cuántos leads se reportarían por él: sin ese click id no hay conjunto
+  de datos ni configuración que arregle la mitad de Click-to-WhatsApp, y conviene medirlo antes de
+  salir a buscar el `META_CAPI_MESSAGING_DATASET_ID`.
+  La **versión de la Graph API de este endpoint es propia** (`META_CAPI_GRAPH_API_VERSION`, v26.0
+  por defecto) y no cae a `META_GRAPH_API_VERSION` (v21.0, la que usan los webhooks, Instagram y
+  las métricas de anuncios): los campos de mensajería son recientes y una versión vieja no los
+  rechaza —acepta el evento y no atribuye nada—, el mismo fallo silencioso que el conjunto de
+  datos cruzado. Aparte: v21.0 **expira el 21/01/2027**, así que la versión global hay que subirla
+  igual, pero eso toca todas las integraciones y es un cambio con sus propias pruebas.
 - **Cada quien ve sus leads.** Los dos tableros (y la Base de Datos) muestran solo los leads cuyo
   responsable es quien mira; `leads.manage_all` —"administrador del área comercial"— es el que ve el
   total y el **único** que puede asignar (`PATCH /api/leads/:id/assignee` lo exige, y el círculo de
@@ -366,21 +706,133 @@ antes de tocar el arranque de producción.
   (`BulkLeadTeamModal.vue`, botón en los dos tableros, `POST /api/leads/bulk-team`): el lote son los
   leads que el tablero muestra con sus filtros, y cada campo tiene tres estados — no cambiar, una
   persona o dejar vacío — porque un campo que no viaja no se toca.
+  Desde el **Funnel de Ventas el lote son los DOS tableros**: sus columnas más los leads que
+  todavía están en el Setter Funnel, agrupados por su etapa y pasados por los mismos filtros de la
+  barra (`setterGroups` en `LeadsView.vue`). Repartir es un solo trabajo, y hacerlo dos veces —una
+  por pantalla— es como se termina con la mitad del equipo sin leads; además el que reparte
+  (`leads.manage_all`) es el único que ve los dos tableros completos, así que es el único que puede
+  hacerlo de una sola vez. El modal acepta grupos de más de un tablero (`group.board`) y recién ahí
+  dibuja el selector «Tablero» y antepone su nombre a la etapa de cada fila —«Cita Agendada» existe
+  en los dos—; el Setter Funnel sigue abriendo el mismo modal con un solo tablero y no ve ninguna de
+  las dos cosas. Las etiquetas de las etapas del setter salen de `src/setterFunnelColumns.js`, que
+  es el cliente de esas columnas: con la lista copiada en la otra pantalla, una etapa renombrada se
+  llamaría distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
+  de desaparecer: un lead que no se lista no se puede repartir.
+  En «Responsable» y «Setter» el desplegable lista **solo a los setters** (`isSetter()` en
+  `src/data/commercialTeam.js`, por el nombre del rol): el área comercial se define por permiso, y
+  por eso ahí aparecían también los administradores —que lo tienen por tenerlos todos, no porque
+  trabajen leads— y elegir uno por error deja el lote a nombre de alguien que no lo va a trabajar.
+  La palabra se busca suelta, así que «Setter Junior» entra solo. «Closer» sigue con el área
+  completa: ese es el otro oficio. El servidor no cambia —`bulkSetLeadTeam()` sigue aceptando a
+  cualquiera del área comercial—: esto acota lo que se OFRECE, no lo que es válido.
   Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para
   recorrer el tablero de cada persona y **no abre leads** — filtra lo que el servidor ya mandó.
+- El **interruptor global del bot** (`whatsapp_bot_settings.bot_enabled`, botón en la barra de
+  `/admin/whatsapp`, `GET`/`PATCH /api/whatsapp/bot/global`) decide **quién atiende**: Avan o el
+  equipo. Es otra cosa que la pausa por contacto (`whatsapp_bot_sessions.bot_enabled`, que se pone
+  sola en cuanto alguien responde a mano). Leerlo es `whatsapp.view`; cambiarlo, `bot.manage`.
+  Con el bot **apagado** no sale un solo mensaje: el freno está al tope de `handleIncomingMessage()`
+  —antes incluso que "estoy en sala de espera", que es la excepción a cualquier otra pausa— y en los
+  dos barridos que le hablan al lead (`checkStaleConversations`, `sendMeetingReminders`). Se vuelve
+  ahí y no en `send()` para no dejar rastro: ni buffer encolado (se procesaría al reencenderlo,
+  contestando un mensaje de hace horas), ni sesión creada, ni llamada al LLM; y los barridos RESERVAN
+  la fila antes de mandar, así que dejarlos correr contra un envío que falla gasta el único
+  recordatorio que a ese lead le tocaba. `send()` igual lanza `BOT_DISABLED` como red de último
+  momento, porque "ningún camino llega hasta acá" dura hasta el próximo camino que alguien agregue.
+  Los barridos **no marcan** lo que no mandaron, así que al encender el bot el recordatorio sale.
+- El **reparto automático de leads** (`/admin/reparto`, `LeadRoutingView.vue`, permiso
+  `leads.routing`, `leadRoutingService.js`) decide quién recibe los leads que entran solos (bot,
+  formularios de Meta, evaluador) y en qué proporción. **Corre exactamente cuando el bot está
+  apagado** (`leadRoutingService.isActive()`): mientras Avan atiende, él califica y agenda, y
+  repartir a la vez pondría a una persona a trabajar en paralelo la misma conversación. No hay un
+  interruptor propio del reparto y `lead_routing_pools.enabled` dejó de decidir nada (queda para el
+  día que haya más de un grupo): con dos interruptores, la combinación "bot apagado + reparto
+  apagado" deja los leads sin responsable Y sin bot — ni los ve nadie ni los contesta nadie, que es
+  el peor estado posible. Cada persona tiene un **peso** (`lead_routing_members.weight`): de cada vuelta
+  (la suma de los pesos) le tocan tantos leads como su peso, así que "5 a la setter por cada 1 al
+  closer" es peso 5 y peso 1, y con más gente se suman filas sin tocar código. El algoritmo es el
+  reparto ponderado **suave** (`backend/services/leadRouting.js`, con su espejo `src/leadRouting.js`
+  para la vista previa y un test que verifica que digan lo mismo): intercala (S S S C S S) en vez de
+  mandar ráfagas, y su estado (`current_weight`) se guarda para seguir donde quedó. Cada cambio en
+  la pantalla pone la vuelta en cero, así la secuencia que se ve es la que va a salir. Se saltea a
+  quien está en pausa o dejó de ser del área comercial; sin nadie elegible el lead queda sin
+  responsable, como hoy. La pantalla avisa si alguien del reparto **no tiene `setter.view`**: los
+  leads automáticos nacen en el Setter Funnel, y el rol Closer tal como viene no lo ve.
+  Existe `lead_routing_pools` aunque hoy haya un solo grupo para que repartir distinto por origen
+  (campaña, universidad) sea agregar reglas y no migrar miembros. El enganche está en
+  `leadService.createLead()` —el punto común de los caminos automáticos— y solo para leads
+  **nuevos**: los que se cuelgan de una ficha existente por teléfono siguen con quien la tenía. El
+  parámetro es `autoRoute` y viene en **`true`**: el que tiene que acordarse de algo es el alta
+  MANUAL, que es una sola (`registerManualLead()`) y lo pone en `false`; al revés, el cuarto camino
+  automático que aparezca se olvidaría y nadie se enteraría, porque un lead sin repartir no falla,
+  solo queda sin dueño. El reparto **le gana al texto** `assignedTo`, incluido el valor por defecto
+  "Kevin" (un resto de cuando el campo era libre, que hoy además nombra a una persona real):
+  respetarlo haría que todos los leads de Meta y del evaluador siguieran cayéndole a él.
+  `pickAssignee()` lee y escribe `current_weight` en una transacción con `forUpdate`: dos webhooks
+  simultáneos sin eso le dan el lead a la misma persona y la proporción configurada deja de
+  cumplirse. La pregunta de quién sigue siendo del área comercial se resuelve ANTES de abrir la
+  transacción, para no alargar el bloqueo en el camino por el que entra cada lead. Un fallo del
+  reparto nunca tumba el alta: un lead sin responsable se asigna a mano, uno que no se guardó se
+  perdió.
+- **Al lead se le responde desde su propia ficha** (`LeadConversation.vue`, el panel lateral del
+  modal en los dos tableros). Era el bloque que estaba copiado en `SetterFunnelView` y `LeadsView` y
+  ahora es un componente, porque pasó a tener estado de verdad: cuadro de respuesta, ventana de 24 h,
+  autor de cada mensaje y la pausa de Avan. Pide `/api/leads/:id/whatsapp` (GET hilo, POST responder,
+  `PATCH .../bot` para devolverle la conversación a Avan, y `.../media/:messageId` para los adjuntos)
+  y **no** las rutas de la bandeja: aquellas exigen `whatsapp.view`, que son TODAS las conversaciones
+  de todo el mundo, y el setter no la tiene — hasta ahora el panel le respondía 403 y la conversación
+  se veía vacía sin decir por qué. Estas van con `requireAnyPermission('leads.view','setter.view')` +
+  `requireLeadVisible`, la misma regla de "cada quien ve sus leads", y la ruta del adjunto comprueba
+  además que el mensaje sea de ESA conversación y no solo que exista.
+  El `wa_id` **no** se toma de `lead.phone` tal cual: se resuelve con `resolveWaIdForPhone()`
+  (exacto y después los últimos 9 dígitos, el mismo criterio que `findByPhone`), porque la ficha y el
+  webhook escriben el número distinto — el hilo salía vacío para los leads de Meta, y ahora que desde
+  ahí se ENVÍA, el mensaje se iría a un identificador que no existe.
+  `whatsapp_messages.sent_by` guarda **quién** mandó cada saliente (nulo = Avan, o un eco de la app
+  de WhatsApp Business): todo lo saliente se pintaba como "Avan" porque era verdad, y desde que
+  responde gente el hilo es una mezcla — sin eso no se sabe si al lead ya le contestaron. El hilo
+  lleva además **separador por día** ("Hoy", "Ayer", la fecha): solo con la hora, "10:50" puede ser de
+  hace un minuto o de hace tres semanas, y de eso depende si corresponde contestar o presentarse de
+  nuevo. El sondeo de 12 s **no arrastra la vista** si el operador subió a releer (`stuckToBottom`).
 - El módulo de **Calendario** (`/admin/calendario`, `CalendarView.vue`, permiso `calendar.view`) es
   la agenda del closer: las reuniones que agendó el bot por WhatsApp y las cargadas a mano, en una
   grilla mensual. Lee `scheduled_meetings`, que dejó de ser solo del bot — `wa_id` admite nulos (una
   reunión manual no tiene conversación detrás) y se guarda `created_by`, `attendee_email` y
   `source` (`bot` | `manual`), que es lo que después deja ver si está agendando el bot o el equipo.
+  Cada reunión dice **quién la cargó** y no solo a quién: `created_by` se guarda desde que existe
+  el alta manual, y la agenda lo muestra (`originOf()` en `CalendarView.vue`, "cargada a mano por
+  Lucía"). No es un adorno: el asesor que figura al lado es a quien se le agendó, y como la agenda
+  es del equipo —cualquiera del área comercial puede agendarle a cualquiera— casi nunca son la
+  misma persona, así que sin el autor no había a quién preguntarle por una cita que apareció sola.
+  Sin autor conocido (las anteriores a que se guardara, o las de alguien dado de baja) dice
+  "cargada a mano" a secas en vez de inventar un nombre.
   Agendar a mano (`scheduledMeetingService.bookManual()`, `POST /api/meetings`) crea el evento en el
   Google Calendar **del closer**; si él no tiene su cuenta conectada, lo crea en el de quien agenda
-  y lo invita por correo, para que le llegue igual. Si no hay ninguna conexión, **la reunión se
-  guarda lo mismo** sin evento ni enlace de Meet y la pantalla lo avisa: perder la reunión por no
-  poder crear el evento sería el peor desenlace. Borrarla del panel no cancela el evento en Google
-  (el panel no puede tocar el calendario de otra persona) y eso también se dice.
+  y lo invita por correo, para que le llegue igual. Borrarla del panel no cancela el evento en
+  Google (el panel no puede tocar el calendario de otra persona) y eso también se dice.
+  **Una reunión por Meet exige que haya una conexión con Google** (`modality`, `meet` | `llamada`).
+  Antes se guardaba igual sin evento ni enlace y la pantalla lo avisaba, pero eso deja al asesor con
+  una videollamada sin sala: el aviso se lee una vez y la cita queda ahí, con su hora y su cliente,
+  pareciendo completa. La comprobación es `meetBlockedReason()` y corre **antes** de guardar nada
+  —así no queda a medias—, y si el evento falla igual (token revocado entre medio, red) tampoco se
+  guarda. `modality: 'llamada'` es la salida legítima: la reunión telefónica no necesita sala, se
+  guarda aunque no haya ninguna conexión y su evento va al calendario sin Meet
+  (`createMeetEvent({ withMeet: false })`). Queda escrita en la fila en vez de deducirse de que
+  falte el enlace, que es lo mismo que le pasa a una reunión rota. El modal aplica la misma regla
+  antes de dejar elegir la hora (`meetBlockedReason` en `MeetingModal.vue`, con
+  `viewerGoogleConnected` de `/api/meetings/advisors`): lo que se ve y lo que se hace no pueden
+  decir cosas distintas, y el servidor es el que manda.
+  **Con quién es la reunión se guarda en la reunión** (`scheduled_meetings.contact_name`) y no se
+  deduce solo del lead: desde el Calendario no hay lead ninguno, y la ficha que abrió el bot muchas
+  veces todavía no tiene nombre de verdad. Qué se muestra lo resuelve `meetingContactName()` en un
+  solo sitio y en cada lectura (viaja como `contact_label`): el nombre escrito al agendar, el del
+  lead, y de último el **teléfono**. El marcador `'Contacto de WhatsApp'` que `findOrCreateFromWhatsApp()`
+  le pone a un contacto sin nombre de perfil **no cuenta como nombre** en ninguno de los dos pasos
+  —llenaba la agenda de filas idénticas que no identifican a nadie, mientras que un número sí—, ni
+  se precarga en el formulario, donde se confirmaría sin mirar. La regla vive en
+  `backend/services/contactName.js` y su espejo `src/contactName.js`.
   El mismo modal (`MeetingModal.vue`) se abre desde la ficha del lead en los **dos funnels**: es la
   misma reunión y el mismo endpoint, y copiado en cada pantalla el tercero se queda con el
   formulario viejo. **La hora no se escribe: se elige entre las que de verdad se pueden** — el
@@ -424,6 +876,33 @@ antes de tocar el arranque de producción.
   franja no se tira: se lista al pie. En el celular el mes queda como mapa (número, franja de
   disponibilidad y una raya por reunión con el color de su asesor) y el detalle se mira en la vista
   de día, que es la que entra en una columna.
+  El botón **"Sincronizar con Google"** (`POST /api/meetings/sync`, `calendarSyncService.js` +
+  `calendarSync.js` para las reglas puras) trae al panel lo que pasó en el Google Calendar de los
+  asesores. Es **de Google al panel y en un solo sentido**: no crea, no mueve y no cancela ningún
+  evento, así que apretarlo nunca puede estropear el calendario de nadie — por eso puede ser un
+  botón y no un proceso supervisado. Cubre las tres fugas de la mitad que faltaba: el asesor mueve
+  la reunión en su calendario y el panel seguía mostrando la hora vieja (con la que el bot le
+  mandaba el recordatorio al lead), la borra y la reunión seguía en la agenda del equipo, o agenda
+  algo directamente en Google y el panel no se enteraba. Recorre a **todo el área comercial** que
+  tenga su Google conectado y solo el **rango visible**, y un asesor con el token caducado no
+  detiene a los demás: su error viaja en el resumen. Lo que cambió se le dice al que apretó
+  (`syncSummary()`), incluido "nada que cambiar" — un botón que no dice qué hizo obliga a revisar el
+  mes a mano.
+  Una reunión que ya no está en Google se **marca** (`scheduled_meetings.cancelled_at`) y no se
+  borra: de ella cuelgan el lead, el autor y el estado del recordatorio, y un botón que destruye
+  filas es un botón que nadie aprieta. Marcada, deja de contar en todas las lecturas
+  (`getUpcoming`, `getForDay`, `getPendingReminders`, `getLatestForContact`) **menos** en el
+  Calendario, donde se ve tachada para que alguien se entere; si el evento reaparece en Google se
+  des-cancela sola. Si la reunión se movió y su recordatorio ya había salido, `reminder_sent_at`
+  vuelve a null (el que salió decía la hora vieja) salvo que la reunión ya haya pasado.
+  Dos cosas que parecen detalles y no lo son: una reunión del panel cuyo evento **no vino** en el
+  rango consultado NO se cancela —pudo haberse movido a otro mes— sino que se pregunta de a una con
+  `events.get()`; y `calendar_event_id` se compara contra **todo** el panel, no contra el asesor en
+  curso, porque un evento con varios invitados es el MISMO evento en los dos calendarios y si no
+  entraría dos veces. Los eventos de **día completo** no se importan (no caen en una grilla de
+  horas) pero se cuentan y el resumen lo dice. Y quitar del panel una reunión cuyo evento sigue vivo
+  en Google es temporal: la próxima sincronización la vuelve a traer, y la pantalla lo avisa al
+  quitarla — en esta dirección Google es la verdad.
   El botón "Ver horario" (`AvailabilityPeekModal.vue`, `GET /api/availability/:userId` bajo
   `calendar.view`) muestra el horario semanal de UN asesor de **solo lectura**, en rangos y no en
   casillas. La ruta va **después** de `/api/availability/me` (Express resuelve por orden y `:userId`
@@ -522,9 +1001,34 @@ antes de tocar el arranque de producción.
   volver a cerrar no paga dos veces. La etapa ganadora se pregunta con `loadWinningStatuses()`
   (`ganado` + la columna marcada `final`), no comparando contra una constante: el que renombra la
   columna no sabe que de eso cuelga la comisión. El porcentaje y la base se guardan en cada fila:
-  cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago — cuando se le abone,
-  ese egreso se registra en Salarios, y por eso las comisiones no entran en `finance_journal` ni en
-  los totales de Finanzas.
+  cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago, y sigue sin entrar en
+  `finance_journal`.
+  En el **Resumen Financiero sí resta**, desde el 16/10/2026: la comisión `pagada` cuenta como
+  egreso (fechada en `paid_at`, el día en que salió, no en el que se devengó) y la `pendiente` va
+  aparte en `totals.pendientes`, sin tocar el balance. **No se descuenta dos veces** porque acá las
+  comisiones se pagan por fuera de la planilla, así que no hay una fila de `finance_salaries` que
+  repita ese mismo egreso — si algún día se empiezan a anotar en Salarios, el único lugar donde hay
+  que dejar de sumarlas es `getOverview()`, donde está dicho en un comentario.
+- En la bandeja de WhatsApp, cada conversación muestra la **etapa del funnel** del lead
+  (`funnel_stage`, resuelto en `funnelStageLabel.js`): quien contesta un mensaje no tenía forma de
+  saber si del otro lado hay un contacto recién llegado o un cliente al que ya se le cotizó, y de
+  eso depende cómo se le escribe. En la lista va en su **propio renglón**, bajo el nombre y el
+  último mensaje, y no pegada al nombre: puesta ahí (primer intento, 16/10/2026) se quedaba con el
+  ancho y el nombre desaparecía — filas enteras mostrando solo la etiqueta, y nombres reducidos a
+  "R..". En esa columna el nombre es lo único que identifica al contacto, así que es lo último que
+  se recorta: ceden primero el alias y después la propia píldora. La hora de la lista sigue la
+  convención de cualquier bandeja (la hora si es de hoy, "Ayer", el día de la semana, y la fecha más
+  atrás) en vez del "16/10, 10:21 a. m." que gastaba el ancho que le faltaba al nombre. Traducir un `leads.status` a algo
+  legible necesita las dos tablas de columnas (`funnel_columns` y `setter_funnel_columns`) **y**
+  saber a qué tablero pertenece el lead, que no se deduce del texto del status sino de
+  `leadHasGraduated()` — por eso la traducción vive en un módulo y no copiada en cada pantalla.
+  Gana la etiqueta del tablero del lead y solo después la del otro: una clave que existe en los dos
+  (`cita_agendada`) puede llamarse distinto en cada uno, y mostrar la del otro es decirle a quien
+  contesta que el lead está donde no está. Un status sin columna —un desenlace fijo que el equipo
+  no configuró, o el `nuevo` de `createLead()`— igual se nombra (`ESTADOS_FIJOS`), que es justo el
+  caso en el que saber la etapa más importa. La etapa se resuelve **una vez por página**, no una
+  por conversación: la bandeja se refresca sola cada pocos segundos. Sin lead no hay etapa y no se
+  dibuja nada: "sin etapa" repetido en media bandeja es ruido.
 - La **bandeja de WhatsApp** (`/api/whatsapp/conversations`) está **paginada**: devolvía las 100 más
   recientes y el resto no existía para el panel, y además leía la tabla entera de mensajes en cada
   refresco para plegarla en memoria (crece con cada mensaje de cada conversación). Ahora primero se
@@ -585,9 +1089,14 @@ antes de tocar el arranque de producción.
   Comparte el marcador `paused_alert_at` con `_alertPausedInbound` porque los dos avisan del mismo
   silencio y dos avisos son ruido.
   Cinco reglas de UX conversacional salieron de revisar las conversaciones del 01/10/2026 (1 cita de
-  25 contactos) y conviene no deshacerlas: (1) la apertura pide **solo la carrera**, y la universidad
-  en el turno siguiente — pedirlas juntas abandonaba 9 de 25 ahí (`nextDataQuestion()` es el único
-  sitio donde vive ese orden); (2) la franja de silencio es **22:00–08:00** y lo acumulado sale
+  25 contactos) y conviene no deshacerlas: (1) la apertura pide la **carrera y la universidad juntas**,
+  en una sola pregunta — son el mismo dato, dónde estudia qué, y se contestan de corrido en una línea
+  ("Sistemas, UNCP"), así que separarlas gastaba un turno en algo que ya venía en la misma respuesta
+  (decisión del equipo comercial, 16/10/2026, que revierte la separación que se había hecho por el
+  abandono del 01/10: 9 de 25 contactos no contestaron nada en esa primera pregunta — si el embudo
+  vuelve a caer ahí, es lo primero a mirar). `nextDataQuestion()` es el único sitio donde vive ese
+  orden, y el prompt (`describeMissingPriority` + la regla 1 de `ollamaService.js`) tiene que decir
+  lo mismo; (2) la franja de silencio es **22:00–08:00** y lo acumulado sale
   escalonado (`NUDGE_BURST_LIMIT`), porque antes era 01:00–05:00 y tres contactos recibieron su
   recordatorio a las 05:06 en el mismo minuto; (3) un contacto que escribe con el **bot pausado**
   dispara un aviso al equipo (`_alertPausedInbound`, espaciado por `paused_alert_at`): antes solo
@@ -597,6 +1106,73 @@ antes de tocar el arranque de producción.
   (`BARE_FORM_LABEL_RE`); (5) un "ok/sí/dale" **suelto** después de una propuesta es una aceptación
   (`isExplicitYes` + `answers.__awaitingYes`), no un mensaje al que responder repitiendo la pregunta
   anterior.
+  De revisar las conversaciones del 06 al 13/10 salieron más reglas:
+  **Las burbujas tardías no se contestan como respuestas.** Lo que el contacto escribe mientras el bot
+  arma su respuesta (el `finalize` tarda 10–20 s por la evaluación con IA) se procesaba después como
+  respuesta a una pregunta que todavía no había visto: "Culminé en diciembre" leído como elección de
+  horario ("No te entendí bien 🤔") y preguntas dobles en la conversación libre. El buffer marca el
+  lote como tardío si su última burbuja es anterior al último envío del bot
+  (`wasWrittenBeforeLastReply`). En el agendamiento se ignora salvo que pregunte algo o sea
+  inconfundiblemente el dato del paso, y en la confirmación nunca vale como sí
+  (`lateBatchNeedsTurn`); en la conversación libre se guarda lo extraído pero solo se contesta si
+  trajo un dato que faltaba o pregunta algo. Ese silencio es deliberado y no dispara la red de
+  `_runTurnGuarded`.
+  **Nunca se nombra un horario que ya pasó.** Quien se quedó a medio agendar y vuelve días después
+  recibía "¿Confirmo *Vie, 9 oct*?" con la fecha vencida. `staleSchedulingSlot()` lo detecta antes de
+  enrutar el paso (confirmación, teléfono/correo pendiente, o una lista con todos los horarios
+  vencidos) y `bookSlot()`/`confirmSlot()` lo frenan si se elige uno vencido de una lista vieja; en
+  los tres casos `_reofferBecauseSlotPassed()` dice que ese horario ya pasó y ofrece los vigentes.
+  **Contar el avance no es despedirse.** "Ya tengo el plan aprobado" o "Ya tengo título" empiezan con
+  "ya tengo", que `mayBeRefusal` manda al LLM, y el LLM los cerraba como "no interesado".
+  `describesThesisProgress()` (leadSignals) los saca del camino del rechazo salvo que el mismo
+  mensaje rechace en serio ("ya tengo quien me haga la tesis"). Si igual se cierra por error, un
+  mensaje de fondo dentro de la semana reabre la conversación (`shouldReopenClosedConversation`; una
+  cortesía como "gracias" no). "No hay problema", "sin problema" y los dedazos de "sí" ("Dii") son un
+  sí, y una respuesta ambigua al "¿Confirmo…?" repregunta una vez por el mismo horario
+  (`confirmReasked`) en vez de soltarlo y preguntar "¿qué día te viene mejor?".
+- **Al contacto que nos corrige la carrera o la universidad se le hace caso en cualquier paso del
+  agendamiento** (`profileCorrection.js` → `detectProfileCorrection()`, enganchado en
+  `handleSchedulingTurn()` antes del clasificador de dudas). El bot le devuelve los dos datos
+  escritos justo antes de pasar a los horarios *para* que pueda corregirnos (ver `offerScheduling`),
+  pero la corrección caía en el paso de elección de horario, que solo sabe leer números y días: el
+  15/10/2026 un lead escribió tres veces que su universidad no era esa, recibió dos "No te entendí
+  bien 🤔" con la misma lista, se agotaron los intentos y lo transfirieron — un minuto después eligió
+  "10:00 am" de la lista y, con el bot ya en pausa, nadie lo leyó. Corregir **no gasta** los intentos
+  del paso (es el contacto arreglando un error nuestro, no una respuesta fallida) y el acuse sale
+  pegado al paso en curso, así que no cuesta un turno. Si descartó lo nuestro sin alcanzar a decir lo
+  correcto ("no es la pontificia", "es esta universidad") se le muestra lo anotado para que confirme
+  o corrija de una vez, con tope de `MAX_PROFILE_CORRECTION_ASKS` para no preguntar en bucle. Se
+  resuelve con reglas y no con el LLM porque de esto depende lo que queda escrito en la ficha —y
+  después en la cotización y en el contrato—, y el veto más importante es el del día y la hora: los
+  pasos del agendamiento son los dueños de esas frases.
+- El **catálogo de universidades** (`backend/data/peruUniversities.js`) gana el match **más
+  específico de todo el catálogo**, no el de la primera entrada que coincida, y los términos que
+  varias comparten (`AMBIGUOUS_UNIVERSITY_TERMS`: "católica", "nacional") **no resuelven a ninguna**
+  — devuelven confianza media, que es "quedarse con lo que escribió el contacto". Con el primero
+  ganando, el alias genérico `catolica` de la PUCP tapaba el nombre propio de todas las demás
+  católicas del país: "Universidad católica Sedes Sapientiae" se confirmaba como "Pontificia
+  Universidad Católica del Perú" con confianza alta (caso real del 15/10/2026), y lo mismo le pasaba
+  a la de Santa María, San Pablo, Santo Toribio y Trujillo. Un alias nuevo que ya sea palabra de otra
+  entrada va con el nombre completo detrás (`catolica de santa maria`) o a la lista de ambiguos.
+  `findUniversityMentions()` contesta otra pregunta —"¿de qué universidades habla este mensaje?"— y
+  es la que usa la corrección: "No es la pontificia / Es la Sapientiae" nombra DOS, y quedarse con la
+  primera es volver a guardar justo la que el contacto descartó.
+- **El ritmo con el que contesta el bot es parte del producto.** `nextSendAt()` decide cuándo sale
+  cada mensaje: la espera normal es el mínimo antispam configurado
+  (`whatsapp_bot_settings.message_gap_seconds`) o lo que tardaría alguien en teclear ese texto
+  (`typingTimeFor`), lo que sea más largo; y cuando ese gap ya venció —lo normal después de cada
+  llamada al LLM, que tarda 10-20 s— queda el **piso**, que también escala con el largo del texto.
+  El piso era una constante de 2,5 s y ahí se perdía todo: la respuesta más larga de la conversación
+  salía tan rápido como un "Perfecto 👀", que es de las cosas que más delatan a un bot. La regla está
+  afuera de la clase, pura y exportada, para poder probarla (`botPacing.test.js`).
+  La burbuja de **"escribiendo..."** no se puede activar sola: WhatsApp exige referenciar un mensaje
+  del contacto (es la misma llamada que lo marca como leído). Ese id vivía solo en memoria y solo se
+  escribía al atender un entrante, así que la burbuja se saltaba justo en los mensajes que más
+  parecen de robot —los que el bot empieza por su cuenta (recordatorios, disculpa por el turno
+  perdido) y todos los de cualquier conversación después de un reinicio—. `_typingAnchorFor()` cae a
+  la base a buscar el último entrante de ese contacto. De esa burbuja depende el tope de
+  `MAX_TYPING_MS`: con ella a la vista una espera larga se lee como alguien redactando, sin ella se
+  lee como que nadie contesta.
 - El **conteo de seguidores de la página de Meta** se sondea periódicamente
   (`FOLLOWER_POLL_INTERVAL_MS` en `server.js`) porque Meta no lo notifica vía webhook.
 - Los **webhooks de Meta/WhatsApp** validan la firma `X-Hub-Signature-256` contra `req.rawBody`

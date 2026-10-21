@@ -13,6 +13,36 @@
       <div class="modal-body">
         <p v-if="errorMessage" class="info-box win-alert">⚠️ {{ errorMessage }}</p>
 
+        <!--
+          El dinero de un lead no siempre nace en este modal: el cronograma del
+          contrato y la pantalla de Finanzas escriben las mismas cuotas. Si ya
+          hay algo asentado se muestra acá antes de pedir nada, porque es lo que
+          explica por qué el primer pago que se pide es menor — o por qué no se
+          pide ninguno.
+        -->
+        <div v-if="settlement.registered > 0" class="win-registered">
+          <p class="win-registered-head">
+            Este lead ya tiene <strong>S/ {{ money(settlement.registered) }}</strong> registrado en Finanzas
+          </p>
+          <ul class="win-registered-list">
+            <li v-for="row in settlement.installments" :key="row.id">
+              <span class="win-reg-cuota">{{ row.cuota }}</span>
+              <span class="win-reg-monto">S/ {{ money(row.monto) }}</span>
+              <span :class="['pill', estadoPill(row.estado)]">{{ row.estado }}</span>
+              <span class="win-reg-due">vence {{ shortDate(row.due_date) }}</span>
+            </li>
+          </ul>
+          <p class="win-hint">
+            <template v-if="fullyRegistered">
+              El precio total ya está cubierto por esas cuotas: no hay un pago nuevo que
+              registrar, solo falta marcar la venta como ganada.
+            </template>
+            <template v-else>
+              Registra abajo solo lo que falta: quedan <strong>S/ {{ money(pendingAmount) }}</strong>.
+            </template>
+          </p>
+        </div>
+
         <form @submit.prevent="submit">
           <div class="win-grid">
             <div class="form-group">
@@ -28,7 +58,7 @@
                 required
               />
             </div>
-            <div class="form-group">
+            <div v-if="!fullyRegistered" class="form-group">
               <label class="form-label">Monto de este primer pago (S/) *</label>
               <input
                 v-model="monto"
@@ -40,19 +70,43 @@
                 required
               />
             </div>
+            <!--
+              El salario que le toca a quien consiguió el lead, por ESTE
+              proyecto. Se pide acá porque es el momento en que se conoce el
+              trato, y así el vendedor no necesita entrar a Finanzas (que
+              además exige un permiso que no tiene por qué tener). Es
+              opcional: si no se sabe todavía, se carga después desde la
+              pestaña de Salarios.
+            -->
+            <div class="form-group">
+              <label class="form-label">Salario por este proyecto (S/)</label>
+              <input
+                v-model="salaryAmount"
+                type="number"
+                step="0.01"
+                min="0"
+                class="form-input win-monto-input"
+                placeholder="Opcional"
+              />
+            </div>
           </div>
           <p class="win-hint">
+            El salario se le asigna automáticamente al responsable del proyecto y queda como un
+            acuerdo en Salarios, donde después se registran sus pagos. No descuenta del balance
+            hasta que se pague.
+          </p>
+          <p v-if="!fullyRegistered" class="win-hint">
             Si el cliente aún no paga el total, registra aquí solo lo que ya pagó y programa
             abajo las cuotas que faltan.
           </p>
 
-          <div class="form-group win-schedule">
+          <div v-if="!fullyRegistered" class="form-group win-schedule">
             <label class="form-label">Cronograma de las cuotas que faltan</label>
             <PaymentScheduleEditor
               v-model="installments"
               :total="totalNumber"
-              :base-amount="montoNumber"
-              :offset="1"
+              :base-amount="montoNumber + settlement.registered"
+              :offset="scheduleOffset"
             />
             <p class="win-hint">
               Estas cuotas nacen ya registradas en Finanzas y son las que se imprimen en el
@@ -61,7 +115,7 @@
             </p>
           </div>
 
-          <div class="win-grid">
+          <div v-if="!fullyRegistered" class="win-grid">
             <div class="form-group">
               <label class="form-label">Banco</label>
               <select v-model="banco" class="form-select">
@@ -76,7 +130,7 @@
             </div>
           </div>
 
-          <div class="form-group">
+          <div v-if="!fullyRegistered" class="form-group">
             <label class="form-label">Voucher del pago (opcional)</label>
             <input
               type="file"
@@ -100,7 +154,7 @@
           <div class="win-flow">
             <span :class="['win-step', 'is-done']">1. Venta cerrada</span>
             <span class="win-arrow">→</span>
-            <span :class="['win-step', vouchers.length > 0 ? 'is-done' : '']">2. Voucher</span>
+            <span :class="['win-step', vouchers.length > 0 || fullyRegistered ? 'is-done' : '']">2. Voucher</span>
             <span class="win-arrow">→</span>
             <span class="win-step">3. Finanzas verifica</span>
             <span class="win-arrow">→</span>
@@ -111,8 +165,8 @@
             <button type="button" class="btn-secondary" :disabled="isSaving" @click="close">
               Cancelar
             </button>
-            <button type="submit" class="btn-primary win-submit" :disabled="isSaving">
-              {{ isSaving ? 'Registrando...' : '🏆 Registrar y ganar el lead' }}
+            <button type="submit" class="btn-primary win-submit" :disabled="isSaving || isLoading">
+              {{ submitLabel }}
             </button>
           </div>
         </form>
@@ -122,7 +176,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import PaymentScheduleEditor from './PaymentScheduleEditor.vue';
 import { BANCOS } from '../views/finance/incomeOptions.js';
@@ -134,13 +188,63 @@ const EMITIR_OPCIONES = ['factura', 'boleta', 'nrus', 'rxh', 'c. interno'];
 
 const monto = ref('');
 const totalAmount = ref('');
+const salaryAmount = ref('');
 const banco = ref('BCP');
 const emitir = ref('boleta');
 const vouchers = ref([]);
 const installments = ref([]);
 const isSaving = ref(false);
+const isLoading = ref(true);
 const errorMessage = ref('');
 const montoInput = ref(null);
+
+/** Lo que el lead ya tiene asentado en Finanzas antes de este cierre. */
+const settlement = ref({ total: null, registered: 0, remaining: null, installments: [] });
+
+/**
+ * El precio total ya está cubierto por cuotas que existen: este cierre no
+ * registra un pago nuevo, solo gana el lead y adopta ese cronograma. Pedir
+ * "el primer pago" acá obligaba a duplicar un ingreso que el servidor rechaza.
+ */
+const fullyRegistered = computed(() => {
+  const total = Number(totalAmount.value);
+  if (!Number.isFinite(total) || total <= 0) return false;
+  return settlement.value.registered >= total - 0.01;
+});
+
+const pendingAmount = computed(() => {
+  const total = Number(totalAmount.value);
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.round((total - settlement.value.registered) * 100) / 100);
+});
+
+/**
+ * Las cuotas nuevas se numeran después de las que ya existen: el cronograma es
+ * uno solo, no empieza de cero en cada cierre.
+ */
+const scheduleOffset = computed(() => settlement.value.installments.length + 1);
+
+const submitLabel = computed(() => {
+  if (isLoading.value) return 'Cargando...';
+  if (isSaving.value) return 'Registrando...';
+  return fullyRegistered.value ? '🏆 Ganar el lead' : '🏆 Registrar y ganar el lead';
+});
+
+function money(value) {
+  return Number(value || 0).toFixed(2);
+}
+
+function shortDate(value) {
+  if (!value) return 'sin fecha';
+  const [y, m, d] = String(value).slice(0, 10).split('-');
+  return d ? `${d}/${m}/${y}` : value;
+}
+
+function estadoPill(estado) {
+  if (estado === 'verificado') return 'pill-success';
+  if (estado === 'pagado') return 'pill-warning';
+  return 'pill-neutral';
+}
 
 const totalNumber = computed(() => {
   const value = Number(totalAmount.value);
@@ -154,7 +258,37 @@ const clientName = computed(() => {
   return (lead.full_name || '').trim() || lead.topic || `Lead #${lead.id}`;
 });
 
-onMounted(() => montoInput.value?.focus());
+/**
+ * Lo ya registrado se lee al abrir, no al guardar: con el total prellenado el
+ * vendedor ve de entrada cuánto falta, en vez de descubrirlo por un error del
+ * servidor después de llenar el formulario.
+ */
+onMounted(async () => {
+  try {
+    const response = await apiFetch(`/api/leads/${props.lead.id}/win-preview`);
+    const data = await response.json();
+    if (response.ok) {
+      settlement.value = data;
+      if (data.total != null) totalAmount.value = String(data.total);
+      else if (data.registered > 0) totalAmount.value = String(data.registered);
+      // Solo se propone un monto cuando hay algo cobrado antes: en un cierre
+      // normal el vendedor escribe lo que el cliente acaba de pagar, no el total.
+      if (data.registered > 0 && data.remaining > 0) monto.value = String(data.remaining);
+    }
+  } catch {
+    // Sin este dato el modal sigue sirviendo: el servidor vuelve a validar.
+  } finally {
+    isLoading.value = false;
+    if (!fullyRegistered.value) montoInput.value?.focus();
+  }
+});
+
+// Subir el precio total a mano vuelve a dejar un saldo por registrar: el campo
+// del primer pago reaparece y se propone ese saldo.
+watch(fullyRegistered, (covered) => {
+  if (covered) monto.value = '';
+  else if (!monto.value && pendingAmount.value > 0) monto.value = String(pendingAmount.value);
+});
 
 function onVoucherChange(event) {
   vouchers.value = Array.from(event.target.files || []).slice(0, 10);
@@ -171,18 +305,27 @@ function close() {
  * y así no quedan proyectos ganados sin su primer pago registrado.
  */
 async function submit() {
-  const amount = Number(monto.value);
+  const covered = fullyRegistered.value;
+  const amount = covered ? 0 : Number(monto.value);
   const total = Number(totalAmount.value);
+  const registered = settlement.value.registered;
   if (!Number.isFinite(total) || total <= 0) {
     errorMessage.value = 'El precio total del cierre debe ser mayor a 0.';
     return;
   }
-  if (!Number.isFinite(amount) || amount <= 0) {
+  if (total < registered - 0.01) {
+    errorMessage.value =
+      `El precio total no puede ser menor a lo ya registrado en Finanzas (S/ ${money(registered)}).`;
+    return;
+  }
+  if (!covered && (!Number.isFinite(amount) || amount <= 0)) {
     errorMessage.value = 'El monto del primer pago debe ser mayor a 0.';
     return;
   }
-  if (amount > total) {
-    errorMessage.value = 'El primer pago no puede ser mayor al precio total del cierre.';
+  if (registered + amount > total + 0.01) {
+    errorMessage.value = registered > 0
+      ? `El pago (S/ ${money(amount)}) más lo ya registrado (S/ ${money(registered)}) supera el precio total de S/ ${money(total)}.`
+      : 'El primer pago no puede ser mayor al precio total del cierre.';
     return;
   }
 
@@ -190,16 +333,16 @@ async function submit() {
   for (const [index, row] of installments.value.entries()) {
     const value = Number(row.monto);
     if (!Number.isFinite(value) || value <= 0) {
-      errorMessage.value = `La cuota ${index + 2} del cronograma necesita un monto mayor a 0.`;
+      errorMessage.value = `La cuota ${scheduleOffset.value + index + 1} del cronograma necesita un monto mayor a 0.`;
       return;
     }
     if (!row.dueDate) {
-      errorMessage.value = `La cuota ${index + 2} del cronograma necesita una fecha de vencimiento.`;
+      errorMessage.value = `La cuota ${scheduleOffset.value + index + 1} del cronograma necesita una fecha de vencimiento.`;
       return;
     }
     schedule.push({ monto: value, dueDate: row.dueDate, emitir: emitir.value, banco: banco.value });
   }
-  const planned = amount + schedule.reduce((sum, row) => sum + row.monto, 0);
+  const planned = registered + amount + schedule.reduce((sum, row) => sum + row.monto, 0);
   if (planned > total + 0.01) {
     errorMessage.value = `El cronograma suma S/ ${planned.toFixed(2)} y el precio total es S/ ${total.toFixed(2)}.`;
     return;
@@ -209,8 +352,11 @@ async function submit() {
   errorMessage.value = '';
   try {
     const fd = new FormData();
-    fd.append('monto', String(amount));
+    // Un cierre sobre cuotas que ya existen no manda monto: lo que no viaja no
+    // se registra, y así el servidor no tiene que adivinar si el 0 es un pago.
+    if (!covered) fd.append('monto', String(amount));
     fd.append('totalAmount', String(total));
+    if (Number(salaryAmount.value) > 0) fd.append('salaryAmount', String(Number(salaryAmount.value)));
     fd.append('banco', banco.value);
     fd.append('emitir', emitir.value);
     // El cronograma viaja como JSON porque el mismo POST sube los vouchers
@@ -282,6 +428,56 @@ async function submit() {
 }
 
 .win-schedule { margin-top: 1rem; }
+
+/* Lo que el lead ya tiene asentado en Finanzas, antes de pedir nada. */
+.win-registered {
+  margin-bottom: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.win-registered-head {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-sub);
+}
+
+.win-registered-head strong {
+  font-family: var(--font-mono);
+  color: var(--text-main);
+}
+
+.win-registered-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.win-registered-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.win-reg-cuota {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.win-reg-monto {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.win-reg-due { color: var(--text-muted); }
 
 .win-grid {
   display: grid;

@@ -3,13 +3,14 @@
     <header class="webhook-header">
       <div class="header-titles">
         <h2 class="section-heading">
-          <span class="heading-icon">🔌</span> Prueba de Webhook — Meta Lead Ads
+          <span class="heading-icon">🔌</span> Integración con Meta
         </h2>
         <p class="section-subheading">
-          Aquí aparece, en vivo, cada solicitud que Meta envía a
-          <code>/api/webhooks/meta</code>. Úsalo para confirmar que la suscripción
-          está conectada antes de pasar la app a producción, sin necesidad de
-          publicarla ni de aprobar los permisos todavía.
+          Los dos sentidos de la conexión con Meta en una sola pantalla: lo que
+          <strong>recibimos</strong> (los leads de sus formularios, por el webhook de
+          <code>/api/webhooks/meta</code>) y lo que le <strong>devolvemos</strong> (en qué etapa
+          terminó cada lead, por la Conversions API), que es lo que le permite optimizar por
+          calidad de lead.
         </p>
       </div>
 
@@ -34,6 +35,13 @@
     </header>
 
     <p v-if="errorMessage" class="info-box alert-box">⚠️ {{ errorMessage }}</p>
+
+    <!-- Lo que le devolvemos a Meta. Va primero porque es lo que se configura y
+         se revisa; el log de webhooks de abajo es una herramienta de diagnóstico
+         que se mira cuando algo no llega. -->
+    <MetaConversionsPanel />
+
+    <h3 class="webhook-section-title">📥 Webhooks que recibimos</h3>
 
     <section class="info-box">
       <h4>📋 Cómo probarlo</h4>
@@ -71,6 +79,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import MetaConversionsPanel from '../components/MetaConversionsPanel.vue';
 
 const events = ref([]);
 const isLoading = ref(false);
@@ -341,5 +350,11 @@ onUnmounted(() => {
   .webhook-page-wrapper {
     padding: 1rem;
   }
+}
+
+.webhook-section-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  color: var(--text-main);
 }
 </style>

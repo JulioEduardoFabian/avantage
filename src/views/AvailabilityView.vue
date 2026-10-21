@@ -91,13 +91,20 @@
             <span class="meeting-time">{{ formatMeetingTime(meeting.start_time) }}</span>
           </div>
           <div class="meeting-info">
-            <strong class="meeting-name">{{ meeting.lead_full_name || 'Contacto de WhatsApp' }}</strong>
+            <!--
+              `contact_label` lo resuelve el servidor (`meetingContactName()`):
+              el nombre que se escribió al agendar, el del lead si lo tiene, y
+              de último el teléfono. El marcador "Contacto de WhatsApp" que
+              salía acá no identificaba a nadie — un número sí.
+            -->
+            <strong class="meeting-name">{{ meeting.contact_label || 'Sin nombre' }}</strong>
             <span class="meeting-topic">{{ meeting.lead_topic || meeting.topic || 'Sin tema registrado' }}</span>
-            <span class="meeting-contact">📱 {{ meeting.wa_id }}<template v-if="meeting.lead_email"> · ✉️ {{ meeting.lead_email }}</template></span>
+            <span class="meeting-contact">📱 {{ meeting.wa_id || meeting.lead_phone || 'Sin teléfono' }}<template v-if="meeting.lead_email"> · ✉️ {{ meeting.lead_email }}</template></span>
           </div>
           <a v-if="meeting.meet_link" :href="meeting.meet_link" target="_blank" rel="noopener" class="btn-action-primary meeting-join-btn">
             🎥 Unirse
           </a>
+          <span v-else-if="meeting.modality === 'llamada'" class="meeting-phone-tag">📞 Por llamada</span>
         </li>
       </ul>
     </section>
@@ -676,6 +683,13 @@ onUnmounted(() => {
   max-width: 440px;
   line-height: 1.45;
   margin: 0;
+}
+
+.meeting-phone-tag {
+  align-self: center;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  color: var(--text-muted);
 }
 
 .meetings-list {

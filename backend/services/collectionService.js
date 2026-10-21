@@ -117,6 +117,16 @@ export class CollectionService {
       .leftJoin('users as cobrador', 'cobrador.id', 'i.collected_by')
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .whereIn('i.estado', estado ? [estado] : ESTADOS_COBRANZA)
+      /*
+       * Un cierre que no llegó a concretarse sale del tablero: sus cuotas
+       * siguen en `finance_income` (son historia, y pueden incluir lo que sí
+       * se cobró antes de que el cliente se cayera) pero no hay a quién
+       * llamar. Dejarlas era llenar la lista de deudas que nadie va a cobrar
+       * nunca, que es como se deja de confiar en el tablero. La marca vive en
+       * el lead y se consulta en cada lectura: reactivar el cierre las
+       * devuelve solas.
+       */
+      .whereNull('leads.deal_cancelled_at')
       .select(
         'i.id', 'i.code', 'i.cuota', 'i.monto', 'i.estado', 'i.fecha', 'i.due_date',
         'i.banco', 'i.emitir', 'i.lead_id', 'i.collected_at',
