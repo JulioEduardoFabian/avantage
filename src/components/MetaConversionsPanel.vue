@@ -84,6 +84,16 @@
           final y el estado <code>ganado</code> son la misma venta) y entonces se reporta una sola
           vez por lead. Dejar el nombre vacío saca la etapa del reporte.
         </p>
+        <!-- Meta rechaza los nombres propios en business_messaging, así que
+             esa mitad se traduce sola: configurarlo acá solo daría la
+             oportunidad de escribir un nombre inválido. -->
+        <p class="capi-hint">
+          <strong>Esto vale para los leads de formulario.</strong> En los de Click-to-WhatsApp Meta
+          solo admite sus nombres estándar, así que la etapa ganadora viaja como
+          <code>Purchase</code>, las demás como <code>LeadSubmitted</code> y los desenlaces de
+          pérdida no se reportan por esa vía (decirle a Meta que calificó el lead que no calificó
+          es peor que no decir nada).
+        </p>
       </div>
 
       <div class="data-table-wrapper">
@@ -157,6 +167,11 @@
           <div class="capi-log-main">
             <span class="pill" :class="statePill(event.state)">{{ stateLabel(event.state) }}</span>
             <strong>{{ event.event_name }}</strong>
+            <!-- En Click-to-WhatsApp el nombre enviado no es el de la etapa:
+                 se muestran los dos para poder seguir el rastro. -->
+            <span v-if="event.status_key && event.status_key !== event.event_name" class="capi-log-kind">
+              ({{ event.status_key }})
+            </span>
             <span class="capi-log-lead">
               {{ event.lead_name || 'Lead sin nombre' }}
               <template v-if="event.lead_id">(#{{ event.lead_id }})</template>

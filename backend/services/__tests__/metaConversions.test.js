@@ -6,6 +6,7 @@ import {
   datasetFor,
   eventTimeFor,
   leadIdValue,
+  messagingEventName,
   resolveIdentifier,
   tokenFor
 } from '../metaConversionsService.js';
@@ -175,4 +176,27 @@ test('sin token propio de mensajería se usa el principal', () => {
   const config = { accessToken: 'T-UNICO', messagingAccessToken: 'T-UNICO' };
   assert.equal(tokenFor('ctwa_clid', config), 'T-UNICO');
   assert.equal(tokenFor('ctwa_clid', { accessToken: 'T-UNICO' }), 'T-UNICO');
+});
+
+test('en Click-to-WhatsApp el nombre del evento es uno de los estándar de Meta', () => {
+  // Meta rechaza los nombres propios con action_source business_messaging:
+  // "proporciona un valor válido como Purchase o LeadSubmitted". Los nombres
+  // que puso el equipo solo valen para la mitad de formularios.
+  const ganadoras = new Set(['ganado', 'col_mtc2nwec_fij']);
+  assert.equal(messagingEventName('cita_agendada', ganadoras), 'LeadSubmitted');
+  assert.equal(messagingEventName('ganado', ganadoras), 'Purchase');
+});
+
+test('la etapa ganadora se pregunta, no se compara contra una constante', () => {
+  // La columna "Ganado" la crea el equipo y su clave se genera sola.
+  assert.equal(messagingEventName('col_mtc2nwec_fij', new Set(['ganado', 'col_mtc2nwec_fij'])), 'Purchase');
+  assert.equal(messagingEventName('col_mtc2nwec_fij', new Set(['ganado'])), 'LeadSubmitted');
+});
+
+test('un desenlace de pérdida no se reporta por Click-to-WhatsApp', () => {
+  // Mandarlo como LeadSubmitted diría "este lead calificó" justo del que no
+  // calificó; Meta tampoco optimiza en contra de un evento.
+  assert.equal(messagingEventName('perdido', new Set(['ganado'])), null);
+  assert.equal(messagingEventName('descartado', new Set(['ganado'])), null);
+  assert.equal(messagingEventName(null, new Set()), null);
 });

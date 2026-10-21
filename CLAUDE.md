@@ -626,6 +626,16 @@ antes de tocar el arranque de producción.
   por eso, sin el de mensajería, esa mitad queda apagada y la pantalla lo dice, en vez de enviar a
   un destino que no sirve. **No viaja ningún importe** — Meta recibe
   la etapa, no cuánto facturó el cliente, misma regla que el resto del sistema.
+  **Los nombres de evento solo son libres en la mitad de formularios.** Con
+  `action_source: business_messaging` Meta rechaza los nombres propios ("proporciona un valor
+  válido como Purchase o LeadSubmitted", error real del 20/10/2026), así que esa mitad se traduce
+  sola en `messagingEventName()`: la etapa ganadora —preguntada con `loadWinningStatuses()`, que la
+  columna la crea el equipo— viaja como `Purchase`, las demás como `LeadSubmitted`, y los
+  desenlaces de pérdida NO se reportan por ahí (mandarlos como `LeadSubmitted` le diría a Meta que
+  calificó justo el lead que no calificó, y Meta no optimiza en contra de un evento). No es
+  configurable a propósito: el conjunto válido es de Meta y es chico, así que ofrecerlo en la
+  pantalla solo daría la oportunidad de escribir algo inválido. La bitácora guarda el nombre que de
+  verdad viajó y la etapa de la que salió, que no coinciden en esa mitad.
   Qué etapa se reporta y con qué nombre de evento vive en `meta_capi_stage_events` y **no** en una
   constante: las columnas del funnel las crea el equipo y sus claves se generan solas
   (`col_mtc2nwec_fij`), así que la migración siembra las etapas clave resolviéndolas como el resto

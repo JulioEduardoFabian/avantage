@@ -1,6 +1,7 @@
 import { db } from '../db/connection.js';
 import { WA_ID_MATCH_KEY_SQL, phoneKey } from './whatsappMessageService.js';
 import { loadFunnelStageIndex, stageOptions } from './funnelStageLabel.js';
+import { loadWinningStatuses } from './salesFunnelStage.js';
 
 /**
  * Conversiones hacia Meta (Conversions API): devolverle a Meta en qué etapa
@@ -197,6 +198,36 @@ export function buildEvent({ eventName, eventTime, identifier, leadEventSource =
  */
 export function datasetFor(identifierKind, { datasetId, messagingDatasetId } = {}) {
   return (identifierKind === 'ctwa_clid' ? messagingDatasetId : datasetId) || null;
+}
+
+/**
+ * Qué nombre de evento lleva un cambio de etapa cuando el lead se identifica
+ * por `ctwa_clid`.
+ *
+ * Meta **no acepta nombres propios** con `action_source: business_messaging`:
+ * contesta "el valor del parámetro de nombre del evento no es válido,
+ * proporciona uno válido como Purchase o LeadSubmitted". O sea que las etapas
+ * que el equipo nombró a su gusto —"Cotizado", "Cita agendada"— solo valen
+ * para la mitad de formularios, donde el flujo de CRM sí admite el nombre de
+ * cada etapa.
+ *
+ * La traducción se hace acá y no se le pide al equipo en la pantalla, por dos
+ * razones: el conjunto válido es de Meta y chiquito (configurarlo solo da la
+ * oportunidad de escribir algo inválido), y la etapa ganadora no se puede
+ * escribir en el código —la columna la crea el equipo— así que se pregunta por
+ * `loadWinningStatuses()`, igual que la comisión de la setter.
+ *
+ * Los desenlaces de pérdida no se reportan por esta vía: mandarlos como
+ * `LeadSubmitted` le diría a Meta "este lead calificó" justo del que no
+ * calificó, que es peor que no decir nada. Meta tampoco optimiza en contra de
+ * un evento, así que no se pierde señal.
+ */
+export const MESSAGING_LOSS_STATUSES = ['perdido', 'descartado'];
+
+export function messagingEventName(status, winningStatuses = new Set()) {
+  if (!status) return null;
+  if (MESSAGING_LOSS_STATUSES.includes(status)) return null;
+  return winningStatuses.has(status) ? 'Purchase' : 'LeadSubmitted';
 }
 
 /**
@@ -402,7 +433,19 @@ export class MetaConversionsService {
         };
       }
 
-      if (await this.alreadySent(lead.id, stage.event_name)) {
+      /*
+       * El nombre del evento depende del origen: la mitad de formularios usa
+       * el que puso el equipo y la de Click-to-WhatsApp, el estándar que Meta
+       * admite ahí. Se resuelve ANTES del control de repetidos para que la
+       * pregunta "¿ya se mandó esto?" use el nombre que de verdad viaja.
+       */
+      let eventName = stage.event_name;
+      if (identifier.kind === 'ctwa_clid') {
+        eventName = messagingEventName(status, await loadWinningStatuses());
+        if (!eventName) return { state: 'omitido', reason: 'etapa_sin_evento_estandar' };
+      }
+
+      if (await this.alreadySent(lead.id, eventName)) {
         return { state: 'omitido', reason: 'ya_enviado' };
       }
 
@@ -412,12 +455,12 @@ export class MetaConversionsService {
         createdAt: lead.created_at
       });
       if (!time.ok) {
-        await this.#log({ lead, stage, identifier, stageChangeId, state: 'omitido', reason: time.reason });
+        await this.#log({ lead, stage, eventName, identifier, stageChangeId, state: 'omitido', reason: time.reason });
         return { state: 'omitido', reason: time.reason };
       }
 
       const event = buildEvent({
-        eventName: stage.event_name,
+        eventName,
         eventTime: time.eventTime,
         identifier,
         leadEventSource: config.leadEventSource
@@ -427,6 +470,7 @@ export class MetaConversionsService {
       await this.#log({
         lead,
         stage,
+        eventName,
         identifier,
         stageChangeId,
         eventTime: new Date(time.eventTime * 1000),
@@ -437,9 +481,9 @@ export class MetaConversionsService {
       });
 
       if (result.ok) {
-        console.log(`📤 [Meta CAPI] Lead #${lead.id} → "${stage.event_name}" (${identifier.kind}).`);
+        console.log(`📤 [Meta CAPI] Lead #${lead.id} → "${eventName}" (${identifier.kind}).`);
       } else {
-        console.error(`❌ [Meta CAPI] Lead #${lead.id} → "${stage.event_name}": ${result.error}`);
+        console.error(`❌ [Meta CAPI] Lead #${lead.id} → "${eventName}": ${result.error}`);
       }
       return { state: result.ok ? 'enviado' : 'error', reason: result.error || null };
     } catch (error) {
@@ -596,7 +640,10 @@ export class MetaConversionsService {
       }
 
       const event = buildEvent({
-        eventName: 'Prueba de integración',
+        // En Click-to-WhatsApp el nombre tiene que ser uno de los estándar de
+        // Meta: una prueba con nombre propio falla por el nombre y no diría
+        // nada del permiso, que es lo que se quiere probar.
+        eventName: candidato.origin === 'ctwa_clid' ? 'LeadSubmitted' : 'Prueba de integración',
         eventTime: Math.floor(Date.now() / 1000),
         identifier,
         leadEventSource: config.leadEventSource
@@ -692,13 +739,15 @@ export class MetaConversionsService {
     return resumen;
   }
 
-  async #log({ lead, stage, identifier, stageChangeId, eventTime = null, state, reason = null, httpStatus = null, response = null }) {
+  async #log({ lead, stage, eventName = null, identifier, stageChangeId, eventTime = null, state, reason = null, httpStatus = null, response = null }) {
     try {
       await db('meta_capi_events').insert({
         lead_id: lead?.id || null,
         stage_change_id: stageChangeId || null,
         status_key: stage?.status_key || null,
-        event_name: stage?.event_name || '',
+        // El nombre que de verdad viajó a Meta, que en Click-to-WhatsApp no es
+        // el de la etapa sino el estándar que Meta admite ahí.
+        event_name: eventName || stage?.event_name || '',
         event_time: eventTime,
         identifier_kind: identifier?.kind || null,
         // Del `ctwa_clid` se guarda el dato entero porque es lo que hace
