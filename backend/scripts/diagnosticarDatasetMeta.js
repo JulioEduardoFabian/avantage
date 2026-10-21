@@ -33,6 +33,13 @@ const token = (process.env.META_CAPI_ACCESS_TOKEN || process.env.META_ADS_ACCESS
 
 if (!token) {
   console.error('❌ No hay token (META_CAPI_ACCESS_TOKEN o META_ADS_ACCESS_TOKEN) en el .env de este entorno.');
+  console.error('');
+  console.error('   Si el token está puesto como variable del hosting (hPanel > Node.js >');
+  console.error('   Variables), NO está en esta terminal: el hosting la inyecta en el proceso de');
+  console.error('   la app, no en la sesión de la consola. Dos salidas:');
+  console.error('     · usa el botón "Revisar acceso a los conjuntos" del panel, en');
+  console.error('       /admin/webhooks, que corre dentro de la app y sí la tiene; o');
+  console.error('     · pásala en la misma línea: META_CAPI_ACCESS_TOKEN=xxx node backend/scripts/diagnosticarDatasetMeta.js');
   process.exit(1);
 }
 

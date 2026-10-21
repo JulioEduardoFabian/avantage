@@ -615,6 +615,68 @@ export class MetaConversionsService {
     return null;
   }
 
+  /**
+   * ¿El token puede ver cada conjunto de datos configurado?
+   *
+   * Cuando Meta rechaza un envío contesta "does not exist, cannot be loaded
+   * due to missing permissions, or does not support this operation": tres
+   * causas en una frase, y cada una se arregla distinto. Un GET al objeto las
+   * separa — si no se puede leer es permisos (o el token), y si se lee pero el
+   * envío igual falla, ese conjunto no admite la operación y hace falta otro.
+   *
+   * Vive acá y no solo en el script de diagnóstico porque el script corre en
+   * una terminal, donde las variables que el hosting inyecta en el proceso de
+   * la app NO están: el panel es el único sitio que siempre tiene el token a
+   * mano.
+   */
+  async diagnoseDatasets() {
+    const config = this.config();
+    if (!config.accessToken) {
+      return { ok: false, error: 'Falta el token de acceso.', datasets: [] };
+    }
+
+    const objetivos = [
+      { id: config.datasetId, role: 'crm', label: 'Leads de formulario (CRM)' },
+      { id: config.messagingDatasetId, role: 'messaging', label: 'Leads de Click-to-WhatsApp' }
+    ].filter((objetivo) => objetivo.id);
+
+    const datasets = [];
+    for (const objetivo of objetivos) {
+      const url = new URL(`https://graph.facebook.com/${config.version}/${objetivo.id}`);
+      url.searchParams.set('fields', 'id,name,owner_business{id,name}');
+      url.searchParams.set('access_token', config.accessToken);
+
+      try {
+        const response = await this.fetchImpl(url.toString(), { method: 'GET' });
+        const body = safeParse(await response.text()) || {};
+        if (response.ok) {
+          datasets.push({
+            ...objetivo,
+            visible: true,
+            name: body.name || null,
+            ownerBusiness: body.owner_business?.name || null,
+            verdict: 'El token ve este conjunto. Si aun así rechaza los eventos, no es permiso: ese conjunto no admite la Conversions API y hace falta uno creado como origen de mensajes.'
+          });
+        } else {
+          const error = body.error || {};
+          datasets.push({
+            ...objetivo,
+            visible: false,
+            code: error.code || null,
+            message: error.message || `HTTP ${response.status}`,
+            verdict: Number(error.code) === 190
+              ? 'El token es inválido o caducó: genera uno nuevo (usuario del sistema con ads_management).'
+              : 'El token no tiene acceso a este conjunto: asígnaselo al usuario del sistema en Configuración del negocio > Orígenes de datos > Conjuntos de datos.'
+          });
+        }
+      } catch (error) {
+        datasets.push({ ...objetivo, visible: false, message: `No se pudo consultar a Meta: ${error.message}` });
+      }
+    }
+
+    return { ok: datasets.every((d) => d.visible), datasets };
+  }
+
   /** Los últimos envíos, para la pantalla. */
   async recentEvents({ limit = 30 } = {}) {
     const rows = await db('meta_capi_events as e')
