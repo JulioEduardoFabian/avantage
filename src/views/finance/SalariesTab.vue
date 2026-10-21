@@ -208,9 +208,9 @@
 
       <!-- Un pago de ese salario. El porcentaje se calcula mientras se
            escribe el monto, no se pide. -->
-      <section v-if="paymentParent" class="glass-panel ledger-form-panel">
+      <section v-if="paymentParent" ref="paymentPanel" class="glass-panel ledger-form-panel">
         <h3 class="ledger-form-title">
-          Pago del salario de <strong>{{ paymentParent.persona }}</strong>
+          {{ paymentEditing ? 'Editando un pago' : 'Pago' }} del salario de <strong>{{ paymentParent.persona }}</strong>
           <span class="ledger-muted"> · acordado S/ {{ formatAmount(paymentParent.monto) }}, falta S/ {{ formatAmount(paymentParent.pending_amount) }}</span>
         </h3>
         <form class="ledger-form" @submit.prevent="submitPayment">
@@ -231,6 +231,25 @@
                 <option value="pendiente">Pendiente</option>
               </select>
             </div>
+            <div class="form-group">
+              <label class="form-label">Método de pago</label>
+              <input v-model="paymentForm.metodoPago" type="text" class="form-input" list="salary-payment-metodos" placeholder="Ej: Transferencia" />
+              <datalist id="salary-payment-metodos">
+                <option value="Efectivo" />
+                <option value="Transferencia" />
+                <option value="Yape" />
+                <option value="Plin" />
+              </datalist>
+            </div>
+            <!-- La cuenta de la que sale ESTE pago: un mismo salario se puede
+                 cubrir en partes desde cuentas distintas. -->
+            <div class="form-group">
+              <label class="form-label">Banco del que sale</label>
+              <select v-model="paymentForm.banco" class="form-select">
+                <option value="">— Sin especificar —</option>
+                <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </div>
             <div class="form-group ledger-form-wide">
               <label class="form-label">Detalle</label>
               <input v-model="paymentForm.detalle" type="text" class="form-input" placeholder="Opcional" />
@@ -238,9 +257,9 @@
           </div>
           <div class="salary-form-actions">
             <button type="submit" class="btn-primary ledger-submit-btn" :disabled="isSaving">
-              {{ isSaving ? 'Guardando...' : 'Registrar pago' }}
+              {{ isSaving ? 'Guardando...' : (paymentEditing ? 'Guardar cambios' : 'Registrar pago') }}
             </button>
-            <button type="button" class="btn-action-ghost" @click="paymentParent = null">Cancelar</button>
+            <button type="button" class="btn-action-ghost" @click="closePaymentForm">Cancelar</button>
           </div>
         </form>
       </section>
@@ -446,6 +465,12 @@
                   <td></td>
                   <td class="ledger-col-actions">
                     <div class="ledger-row-actions">
+                      <button type="button" class="ledger-icon-btn" title="Editar pago" aria-label="Editar pago" @click="openPaymentForm(row, child)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
                       <button type="button" class="ledger-icon-btn is-danger" title="Eliminar pago" aria-label="Eliminar pago" @click="removeRow(child)">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                           <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
@@ -483,7 +508,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { currencySymbol, dayOnly, formatAmount, formatDate } from './format.js';
 import { isPdfReceipt, loadReceiptUrl } from './receiptImage.js';
@@ -514,7 +539,12 @@ const agreementOpen = ref(false);
 const projects = ref([]);
 const agreementForm = reactive({ projectId: '', monto: '', detalle: '' });
 const paymentParent = ref(null);
-const paymentForm = reactive({ fecha: new Date().toISOString().slice(0, 10), monto: '', estado: 'pagado', detalle: '' });
+/** El pago que se está editando; null = se está registrando uno nuevo. */
+const paymentEditing = ref(null);
+const paymentPanel = ref(null);
+const paymentForm = reactive({
+  fecha: new Date().toISOString().slice(0, 10), monto: '', estado: 'pagado', metodoPago: '', banco: '', detalle: ''
+});
 const fileInput = ref(null);
 const editingRow = ref(null);
 const statusSavingId = ref(null);
@@ -800,17 +830,47 @@ async function submitAgreement() {
   }
 }
 
-function openPaymentForm(row) {
+/**
+ * Abre el formulario de pago de un acuerdo: vacío para registrar uno nuevo, o
+ * con los datos de `child` para editarlo. Es el mismo formulario a propósito:
+ * dos formularios para el mismo pago terminan pidiendo campos distintos.
+ */
+async function openPaymentForm(row, child = null) {
   paymentParent.value = row;
-  Object.assign(paymentForm, {
-    fecha: new Date().toISOString().slice(0, 10),
-    // Se propone lo que falta: el caso corriente es cubrir el saldo, y si es
-    // un pago parcial se corrige escribiendo el monto.
-    monto: row.pending_amount > 0 ? String(row.pending_amount) : '',
-    estado: 'pagado',
-    detalle: ''
-  });
+  paymentEditing.value = child;
+  if (child) {
+    Object.assign(paymentForm, {
+      fecha: dayOnly(child.fecha),
+      // Se edita en positivo; el servidor le vuelve a poner el signo de egreso.
+      monto: String(Math.abs(Number(child.monto) || 0)),
+      estado: child.estado || 'pagado',
+      metodoPago: child.metodo_pago || '',
+      banco: child.banco || '',
+      detalle: child.detalle || ''
+    });
+  } else {
+    Object.assign(paymentForm, {
+      fecha: new Date().toISOString().slice(0, 10),
+      // Se propone lo que falta: el caso corriente es cubrir el saldo, y si es
+      // un pago parcial se corrige escribiendo el monto.
+      monto: row.pending_amount > 0 ? String(row.pending_amount) : '',
+      estado: 'pagado',
+      // La cuenta y el método del acuerdo, si los tiene, como punto de partida.
+      metodoPago: row.metodo_pago || '',
+      banco: row.banco || '',
+      detalle: ''
+    });
+  }
   errorMessage.value = '';
+  // El formulario se abre arriba de la tabla: con la fila del pago más abajo,
+  // sin desplazarse parece que el lápiz no hizo nada.
+  await nextTick();
+  paymentPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function closePaymentForm() {
+  paymentParent.value = null;
+  paymentEditing.value = null;
 }
 
 /** El % que representa lo que se está escribiendo, mientras se escribe. */
@@ -826,22 +886,32 @@ async function submitPayment() {
   isSaving.value = true;
   errorMessage.value = '';
   try {
+    const editing = paymentEditing.value;
     const fd = new FormData();
     fd.append('fecha', paymentForm.fecha);
     fd.append('monto', String(Number(paymentForm.monto)));
     fd.append('estado', paymentForm.estado);
+    fd.append('metodoPago', paymentForm.metodoPago);
+    fd.append('banco', paymentForm.banco);
     fd.append('detalle', paymentForm.detalle);
-    const response = await apiFetch(`/api/finance/salaries/${paymentParent.value.id}/payments`, {
-      method: 'POST',
-      body: fd
-    });
+    if (editing) {
+      // La edición reescribe la fila entera: lo que este formulario no
+      // muestra viaja tal como está para no borrarlo.
+      fd.append('moneda', editing.moneda || paymentParent.value.moneda || 'soles');
+      fd.append('cargo', editing.cargo || '');
+      fd.append('periodo', editing.periodo || '');
+    }
+    const response = await apiFetch(
+      editing ? `/api/finance/salaries/${editing.id}` : `/api/finance/salaries/${paymentParent.value.id}/payments`,
+      { method: editing ? 'PUT' : 'POST', body: fd }
+    );
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'No se pudo registrar el pago.');
+    if (!response.ok) throw new Error(data.error || (editing ? 'No se pudo guardar el pago.' : 'No se pudo registrar el pago.'));
     // Se deja abierto el acuerdo al que se le acaba de pagar: lo primero que
     // se mira después de registrar es cómo quedó la cuenta.
     expanded[paymentParent.value.id] = true;
-    flashSuccess('Pago registrado.');
-    paymentParent.value = null;
+    flashSuccess(editing ? 'Pago actualizado.' : 'Pago registrado.');
+    closePaymentForm();
     await fetchRows();
   } catch (error) {
     errorMessage.value = error.message;
@@ -910,6 +980,7 @@ async function removeRow(row) {
     if (!response.ok) throw new Error('No se pudo eliminar el salario.');
     for (const rcpt of row.receipts || []) forgetReceiptUrl(rcpt.id);
     if (editingRow.value?.id === row.id) closeForm();
+    if (paymentEditing.value?.id === row.id || paymentParent.value?.id === row.id) closePaymentForm();
     flashSuccess('Salario eliminado.');
     await fetchRows();
   } catch (error) {

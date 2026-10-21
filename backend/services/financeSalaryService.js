@@ -319,7 +319,27 @@ export class FinanceSalaryService {
   async updateSalary(id, payload) {
     const existing = await db('finance_salaries').where({ id }).first();
     if (!existing) return null;
-    await db('finance_salaries').where({ id }).update(normalize(payload));
+
+    // Qué es la fila y de qué cuelga NO se edita desde el formulario: lo dice
+    // la fila guardada. Sin esto `normalize()` los devolvía a sus valores por
+    // defecto, y editar un pago de un acuerdo lo soltaba de su acuerdo (y
+    // editar el acuerdo lo convertía en un pago suelto que sí descuenta).
+    const padre = existing.parent_id
+      ? await db('finance_salaries').where({ id: existing.parent_id }).first()
+      : null;
+    const data = normalize({
+      ...payload,
+      // El pago de un acuerdo hereda a quién se le paga, igual que al crearlo.
+      persona: padre ? padre.persona : payload.persona,
+      kind: existing.kind,
+      parentId: existing.parent_id,
+      projectId: existing.project_id,
+      userId: existing.user_id
+    });
+    // Un acuerdo no tiene estado propio (ver `createAgreement`).
+    if (existing.kind === 'acuerdo') data.estado = existing.estado;
+
+    await db('finance_salaries').where({ id }).update(data);
     await this.#insertReceipts(id, payload.receipts);
     return this.getSalary(id);
   }
