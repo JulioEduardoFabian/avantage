@@ -342,9 +342,15 @@ async function sendTest() {
   try {
     const response = await apiFetch('/api/meta-capi/test', { method: 'POST' });
     const data = await response.json();
-    if (!data.ok) throw new Error(errorText(data, 'Meta rechazó el evento de prueba.'));
+    // Se prueba cada conjunto de datos configurado por separado: las dos
+    // mitades fallan por motivos distintos, así que el resultado se cuenta una
+    // por una y no como un sí/no.
+    const detalle = (data.results || [])
+      .map((r) => `${r.label}: ${r.ok ? `aceptado (lead #${r.leadId})` : `✗ ${r.error}`}`)
+      .join(' · ');
+    if (!data.ok) throw new Error(detalle || errorText(data, 'Meta rechazó el evento de prueba.'));
     flash(
-      `Evento de prueba aceptado por Meta (lead #${data.leadId}, ${kindLabel(data.identifierKind)})` +
+      `Meta aceptó la prueba — ${detalle}` +
       (data.testEventCode ? '. Míralo en Events Manager > Probar eventos.' : '.')
     );
     await load();

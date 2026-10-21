@@ -500,49 +500,119 @@ export class MetaConversionsService {
   }
 
   /**
-   * Un evento de prueba, para el botón de la pantalla: el mismo camino que un
-   * envío real pero con un lead real elegido por el sistema, porque un
-   * identificador inventado lo rechaza Meta y entonces la prueba no probaría
-   * nada. Con `META_CAPI_TEST_EVENT_CODE` puesto, Meta lo muestra en "Probar
-   * eventos" sin contarlo en las métricas.
+   * Un evento de prueba **por cada conjunto de datos configurado**, con un lead
+   * real de ESE origen.
+   *
+   * Dos razones para que sean dos pruebas y no una: un identificador inventado
+   * lo rechaza Meta —así que la prueba no probaría nada— y, sobre todo, las dos
+   * mitades fallan por motivos distintos. El conjunto de CRM puede andar
+   * perfecto mientras el de mensajería rechaza por permisos del token, y
+   * probar solo el primero diría que "todo está bien" justo cuando la mitad
+   * grande del volumen no está saliendo.
+   *
+   * Con `META_CAPI_TEST_EVENT_CODE` puesto, Meta los muestra en "Probar
+   * eventos" sin contarlos en las métricas.
    */
   async sendTestEvent() {
     const config = this.config();
     if (!config.accessToken) {
-      return { ok: false, error: 'Falta el token de acceso (META_CAPI_ACCESS_TOKEN o META_ADS_ACCESS_TOKEN).' };
+      return { ok: false, error: 'Falta el token de acceso (META_CAPI_ACCESS_TOKEN o META_ADS_ACCESS_TOKEN).', results: [] };
     }
 
-    // Se prueba contra el conjunto de datos que esté configurado, con un lead
-    // de ESE origen: probar el de CRM con un lead de Click-to-WhatsApp no
-    // probaría la ruta que después se va a usar.
-    const lead = config.datasetId
-      ? await db('leads').whereNotNull('meta_leadgen_id').orderBy('id', 'desc').first()
-      : null;
-    const identifier = lead ? resolveIdentifier(lead) : null;
-    if (!identifier) {
-      return {
-        ok: false,
-        error: config.datasetId
-          ? 'No hay ningún lead con `lead_id` de un formulario de Meta todavía, así que no hay con qué probar el conjunto de datos de CRM.'
-          : 'Falta META_CAPI_DATASET_ID (el conjunto de datos de CRM): es el que se usa para la prueba.'
-      };
+    const candidatos = [];
+    if (config.datasetId) {
+      candidatos.push({ origin: 'lead_id', label: 'Leads de formulario', lead: await this.#leadConFormulario() });
+    }
+    if (config.messagingDatasetId) {
+      candidatos.push({ origin: 'ctwa_clid', label: 'Leads de Click-to-WhatsApp', lead: await this.#leadConCtwa() });
     }
 
-    const event = buildEvent({
-      eventName: 'Prueba de integración',
-      eventTime: Math.floor(Date.now() / 1000),
-      identifier,
-      leadEventSource: config.leadEventSource
-    });
-    const result = await this.sendEvents([event], config, datasetFor(identifier.kind, config));
+    if (candidatos.length === 0) {
+      return { ok: false, error: 'No hay ningún conjunto de datos configurado todavía.', results: [] };
+    }
+
+    const results = [];
+    for (const candidato of candidatos) {
+      if (!candidato.lead) {
+        results.push({
+          origin: candidato.origin,
+          label: candidato.label,
+          ok: false,
+          error: candidato.origin === 'lead_id'
+            ? 'No hay ningún lead con `lead_id` de un formulario de Meta todavía.'
+            : 'No hay ningún lead cuya conversación traiga un `ctwa_clid` todavía.'
+        });
+        continue;
+      }
+
+      const identifier = resolveIdentifier(
+        candidato.origin === 'ctwa_clid' ? { ...candidato.lead, meta_leadgen_id: null } : candidato.lead,
+        candidato.clid || (await this.ctwaClidFor(candidato.lead))
+      );
+      if (!identifier) {
+        results.push({ origin: candidato.origin, label: candidato.label, ok: false, error: 'No se pudo resolver el identificador del lead.' });
+        continue;
+      }
+
+      const event = buildEvent({
+        eventName: 'Prueba de integración',
+        eventTime: Math.floor(Date.now() / 1000),
+        identifier,
+        leadEventSource: config.leadEventSource
+      });
+      const result = await this.sendEvents([event], config, datasetFor(identifier.kind, config));
+      results.push({
+        origin: candidato.origin,
+        label: candidato.label,
+        ok: result.ok,
+        error: result.error || null,
+        leadId: candidato.lead.id,
+        identifierKind: identifier.kind,
+        dataset: datasetFor(identifier.kind, config)
+      });
+    }
+
     return {
-      ok: result.ok,
-      error: result.error || null,
-      response: result.body || null,
-      leadId: lead.id,
-      identifierKind: identifier.kind,
+      ok: results.every((r) => r.ok),
+      error: results.every((r) => r.ok) ? null : results.filter((r) => !r.ok).map((r) => `${r.label}: ${r.error}`).join(' · '),
+      results,
       testEventCode: config.testEventCode
     };
+  }
+
+  /** El lead más reciente con `lead_id` de un formulario instantáneo. */
+  async #leadConFormulario() {
+    return db('leads').whereNotNull('meta_leadgen_id').orderBy('id', 'desc').first();
+  }
+
+  /**
+   * Un lead cuya conversación traiga un `ctwa_clid`. Se recorren las
+   * conversaciones de anuncio más recientes y se busca su lead con los MISMOS
+   * dos caminos de `ctwaClidFor()` (exacto y por los últimos 9 dígitos): la
+   * prueba tiene que recorrer el camino real, no uno parecido.
+   */
+  async #leadConCtwa() {
+    const filas = await db('whatsapp_messages')
+      .whereNotNull('referral')
+      .where('referral', 'like', '%ctwa_clid%')
+      .orderBy('received_at', 'desc')
+      .limit(25)
+      .select('wa_id');
+
+    for (const fila of filas) {
+      const waId = String(fila.wa_id || '');
+      const exacto = await db('leads').where('phone', waId).orderBy('id', 'desc').first();
+      if (exacto) return exacto;
+
+      const key = phoneKey(waId);
+      if (!key) continue;
+      const porSufijo = await db('leads')
+        .whereRaw(`RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(leads.phone, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 9) = ?`, [key])
+        .orderBy('id', 'desc')
+        .first();
+      if (porSufijo) return porSufijo;
+    }
+    return null;
   }
 
   /** Los últimos envíos, para la pantalla. */
