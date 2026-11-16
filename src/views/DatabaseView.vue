@@ -399,12 +399,14 @@
                 <div class="input-with-icon">
                   <span class="field-icon">💼</span>
                   <!--
-                    La lista es el área comercial real (los usuarios con
-                    acceso al funnel), no cuatro nombres escritos a mano: así
-                    asignar desde acá deja la ficha igual que asignar desde la
-                    tarjeta del tablero. Un nombre que ya estaba guardado y no
-                    corresponde a ninguna cuenta se reagrega como opción para
-                    no perderlo al guardar.
+                    La lista es la MISMA que ofrece la tarjeta del tablero
+                    (quien trabaja leads por el nombre de su rol, ver
+                    `src/data/leadRoles.js`), no cuatro nombres escritos a
+                    mano: asignar desde acá tiene que dejar la ficha igual que
+                    asignar desde el tablero. Un nombre que ya estaba guardado
+                    y no está en la lista —un asesor sin cuenta, o un lead que
+                    quedó a nombre de un administrador— se reagrega como opción
+                    para no perderlo al guardar.
                   -->
                   <select v-model="formData.assignedTo" class="field-select">
                     <option value="">Sin asignar</option>
@@ -622,7 +624,7 @@
 import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { careerNames } from '../data/careers.js';
-import { commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
+import { assignableTeam as commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 

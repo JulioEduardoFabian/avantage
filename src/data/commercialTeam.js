@@ -1,6 +1,10 @@
 /**
- * Los usuarios del área comercial (los que tienen el permiso `leads.view`), que
- * son a quienes se les puede asignar un lead.
+ * Los usuarios del área comercial (los que tienen `leads.view` o `setter.view`).
+ *
+ * Para OFRECER un lead se usa `assignableTeam`, que es esta lista menos quien
+ * está en ella por tener todos los permisos; `commercialTeam` crudo queda para
+ * lo que de verdad es el área entera, como el filtro "Responsable" del tablero
+ * —ahí tiene que aparecer también quien ya tiene leads a su nombre—.
  *
  * Se pide UNA vez por carga de la app y se deja en un `ref` compartido: la
  * lista la usa el botón de asignación de cada tarjeta, y con diez tarjetas por
@@ -14,32 +18,29 @@
  */
 import { computed, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import { worksLeads } from './leadRoles.js';
 
 export const commercialTeam = ref([]);
 
 /**
- * ¿Esta persona es setter?
+ * A quién se le puede asignar un lead: el área comercial, menos quien está ahí
+ * por tener todos los permisos.
  *
- * Por el NOMBRE de su rol, y no por el permiso `setter.view`: los
- * administradores también lo tienen —tienen todos— y lo que hay que distinguir
- * acá no es quién puede entrar al Setter Funnel sino a quién se le reparte el
- * trabajo del setter. Se busca la palabra suelta, así que "Setter Junior" o
- * "Setter de turno noche" entran solos el día que el equipo los cree, igual que
- * con el criterio por permiso del área comercial.
- *
- * Vive acá, con la lista del equipo, porque es una pregunta sobre esa lista: en
- * cada pantalla que la copie, el día que el rol se llame distinto una va a
- * decir una cosa y otra, otra.
+ * Si NINGÚN rol del panel se llama de forma comercial, se ofrece el área
+ * completa en vez de un desplegable vacío: con la lista vacía no habría forma
+ * de asignar un lead, que es peor que ofrecer de más. La pantalla lo dice
+ * (`assignableIsFallback`) en lugar de disimularlo — un filtro que se apaga
+ * solo y en silencio es un filtro que nadie entiende.
  */
-export function isSetter(user) {
-  const rol = String(user?.role_name || '')
-    .normalize('NFD').replace(/\p{Diacritic}/gu, '')
-    .toLowerCase();
-  return rol.split(/[^a-z]+/).includes('setter');
-}
+export const assignableTeam = computed(() => {
+  const propios = commercialTeam.value.filter(worksLeads);
+  return propios.length > 0 ? propios : commercialTeam.value;
+});
 
-/** Solo los setters, en el mismo orden que el equipo completo. */
-export const setterTeam = computed(() => commercialTeam.value.filter(isSetter));
+/** ¿Se está ofreciendo el área completa porque ningún rol coincidió? */
+export const assignableIsFallback = computed(
+  () => commercialTeam.value.length > 0 && !commercialTeam.value.some(worksLeads)
+);
 
 let pendingLoad = null;
 

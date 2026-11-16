@@ -1565,13 +1565,26 @@ antes de tocar el arranque de producción.
   es el cliente de esas columnas: con la lista copiada en la otra pantalla, una etapa renombrada se
   llamaría distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
   de desaparecer: un lead que no se lista no se puede repartir.
-  En «Responsable» y «Setter» el desplegable lista **solo a los setters** (`isSetter()` en
-  `src/data/commercialTeam.js`, por el nombre del rol): el área comercial se define por permiso, y
-  por eso ahí aparecían también los administradores —que lo tienen por tenerlos todos, no porque
-  trabajen leads— y elegir uno por error deja el lote a nombre de alguien que no lo va a trabajar.
-  La palabra se busca suelta, así que «Setter Junior» entra solo. «Closer» sigue con el área
-  completa: ese es el otro oficio. El servidor no cambia —`bulkSetLeadTeam()` sigue aceptando a
-  cualquiera del área comercial—: esto acota lo que se OFRECE, no lo que es válido.
+  **A quién se le OFRECE un lead es más chico que el área comercial** (`worksLeads()` en
+  `src/data/leadRoles.js`, con test; `assignableTeam` en `src/data/commercialTeam.js`). El área se
+  define por permiso, así que ahí entran también los **administradores** —que lo tienen por tenerlos
+  todos, no porque trabajen leads— y **Marketing**, que necesita ver el funnel para medir campañas:
+  el desplegable ofrecía siete personas de las que tres iban a trabajar el lead, y elegir una por
+  error deja la ficha a nombre de alguien que nunca la va a mirar. Se filtra por el **nombre del
+  rol** (`setter`, `closer`, `comercial`, `ventas`, `vendedor`), palabra por palabra y por su
+  comienzo, así que «Setter Junior», «Ejecutivo Comercial», «Jefe de Ventas» y los plurales entran
+  solos el día que el equipo los cree; «Ventanilla» no es «Ventas». Esa lista es **la misma en los
+  tres puestos** (responsable, setter y closer) **y en las tres pantallas** que asignan: el círculo
+  de la tarjeta y la ficha (`LeadAssignee.vue`), el reparto masivo (`BulkLeadTeamModal.vue`) y la
+  ficha de la Base de Datos — una lista por puesto o por pantalla es como se llega a que
+  «Responsable» ofrezca gente distinta según desde dónde se asigne. El **filtro** «Responsable» del
+  tablero sigue leyendo `commercialTeam` entero: ahí tiene que aparecer también quien ya tiene leads
+  a su nombre. Y el servidor no cambia —`assignLead()` y `bulkSetLeadTeam()` siguen aceptando a
+  cualquiera del área comercial—: esto acota lo que se OFRECE, no lo que es válido, así que los
+  leads que hoy están a nombre de un administrador siguen como están y se pueden seguir guardando.
+  Si NINGÚN rol del panel se llama de forma comercial se ofrece el área completa y la pantalla lo
+  dice, en vez de dejar un desplegable vacío: sin lista no habría forma de asignar un lead, y un
+  filtro que se apaga solo y en silencio es un filtro que nadie entiende.
   Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para
