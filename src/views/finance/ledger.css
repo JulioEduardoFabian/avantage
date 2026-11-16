@@ -185,6 +185,57 @@
 }
 .ledger-summary-item dd.is-pending { color: #F59E0B; }
 
+/* El renglón pequeño del recuadro: cuántos cierres hay detrás de la cifra y si
+   están fuera de la tabla. Va apagado y pequeño porque es la explicación de la
+   cifra, no otra cifra. */
+.ledger-summary-item .ledger-summary-note {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--text-muted);
+}
+
+/* Interruptor de "ver no concretados". Se viste como un filtro más —es lo que
+   es— y se enciende en el rojo apagado de la insignia del cierre caído, para
+   que se reconozca sin leerlo. */
+.ledger-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.8rem;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-sub);
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.18s ease;
+}
+
+.ledger-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text-main);
+}
+
+.ledger-toggle.is-on {
+  color: var(--accent-rose, #C85532);
+  border-color: var(--accent-rose, #C85532);
+  background: rgba(200, 85, 50, 0.08);
+}
+
+.ledger-toggle input { margin: 0; cursor: pointer; accent-color: var(--accent-rose, #C85532); }
+
+.empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
 /* ------------------------------------------------------------ Formulario */
 
 .ledger-tab .ledger-form-panel { padding: 1.5rem; }

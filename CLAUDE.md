@@ -228,6 +228,31 @@ antes de tocar el arranque de producción.
   resta vive en `src/views/finance/dealCancellation.js` y no copiada en la tira de totales y en la
   banda de la fila, que son los dos sitios que la dicen. El `getOverview()` de Finanzas no cambia:
   ya contaba solo lo `verificado`.
+  Desde el 16/11/2026 esos cierres **no se listan** en INGRESOS salvo que se pidan con el
+  interruptor «🚫 Ver no concretados (N)» de la barra (`showCancelled` + `groupFilter` de
+  `useLedgerTable`, que va aparte de los filtros de fila porque la marca es del CIERRE entero y
+  porque no cuenta como «la tabla está filtrada», de lo que depende que los cierres se abran
+  solos). Arranca apagado y **no se recuerda entre visitas**, al revés que la vista elegida de
+  Entregables o del Setter Funnel: aquellas son dos maneras de mirar lo mismo, esto esconde filas,
+  y un recorte que sobrevive a la recarga esconde sin que nadie lo haya pedido ese día.
+  Y con eso **las cifras de arriba cuentan dos universos y no uno** (`summariseDeals()`, en el
+  mismo archivo y con test): las del trato —precio total, registrado, verificado, por verificar,
+  ITF, y el conteo de «Cierres»— cuentan solo lo que se está listando, porque sumaban también los
+  caídos y entonces «Precio total» decía una cifra que no se podía comprobar sumando lo que había
+  en pantalla (S/ 88.500 con S/ 26.900 de tratos que ya nadie espera); «No concretado» cuenta
+  **siempre** los caídos, se vean o no, porque esconderlos es sacarlos de la lista de a quién
+  cobrar y no olvidarse de que existieron — un recuadro que desaparece al esconder las filas
+  convierte el dato en algo que solo se encuentra sabiendo que hay que buscarlo, de ahí que lleve
+  el conteo de cierres y diga «fuera de la tabla». `porCobrar` se calcula **cierre por cierre** y
+  por eso vale lo mismo con los caídos a la vista o escondidos (uno caído aporta cero): es lo que
+  permite esconderlos sin mover la única cifra que de verdad se mira.
+  **Marcar un cierre como no concretado no es un movimiento del funnel**: no toca `leads.status`
+  ni deja rastro en `lead_stage_changes`, así que Ventas no lo ve pasar — es una decisión sobre el
+  cobro, se toma desde Finanzas con `finance.view` y casi siempre la toma otra persona. Eso es lo
+  que hay detrás de «nosotros no los movimos» (reporte del 16/11/2026); quién marcó cada uno lo
+  contesta `backend/scripts/diagnosticarCierresNoConcretados.js` (solo lee), que además separa el
+  caso que SÍ sería un fallo: un `deal_cancelled_by` en NULL, porque la ruta siempre escribe el id
+  de quien aprieta el botón.
   Como el dinero puede nacer por cualquiera de esos tres caminos, **el cierre de venta no da por
   hecho que la plata empieza en él**: el modal lee primero lo ya asentado
   (`getLeadSettlement()`, `GET /api/leads/:id/win-preview`), lo muestra cuota por cuota y propone

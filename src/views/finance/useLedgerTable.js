@@ -25,12 +25,21 @@ function compare(a, b) {
  *                   que se ordena y se pagina son los grupos (INGRESOS muestra
  *                   un registro por cierre, con sus cuotas dentro), mientras que
  *                   la búsqueda y los filtros se siguen aplicando fila a fila.
+ * @param groupFilter opcional: (grupo) => si se lista. Va aparte de los filtros
+ *                   de fila porque hay marcas que son del GRUPO y no de ninguna
+ *                   de sus filas (un cierre dado por caído lo está entero), y
+ *                   porque no cuenta como "la tabla está filtrada": de eso
+ *                   depende que los cierres se abran solos, y esconder los
+ *                   caídos no es buscar una cuota. `grouped` sigue devolviendo
+ *                   todos los grupos, que es lo que permite seguir contando en
+ *                   la tira de totales lo que no se está listando.
  * @param dateOf     (fila) => la fecha sobre la que corre el filtro "desde /
  *                   hasta". Por defecto `row.fecha`, que es la columna que las
  *                   tres tablas del libro muestran y ordenan.
  */
 export function useLedgerTable(rows, {
-  searchText, sorters, defaultSort, groupBy = null, dateOf = (row) => row.fecha
+  searchText, sorters, defaultSort, groupBy = null, groupFilter = null,
+  dateOf = (row) => row.fecha
 }) {
   const search = ref('');
   const estado = ref('');
@@ -56,11 +65,14 @@ export function useLedgerTable(rows, {
 
   const grouped = computed(() => (groupBy ? groupBy(filtered.value) : filtered.value));
 
+  /** Lo que de verdad se lista: `grouped` menos lo que el grupo mismo esconde. */
+  const visible = computed(() => (groupFilter ? grouped.value.filter(groupFilter) : grouped.value));
+
   const sorted = computed(() => {
     const get = sorters[sort.key];
-    if (!get) return grouped.value;
+    if (!get) return visible.value;
     const factor = sort.dir === 'asc' ? 1 : -1;
-    return [...grouped.value].sort((a, b) => compare(get(a), get(b)) * factor);
+    return [...visible.value].sort((a, b) => compare(get(a), get(b)) * factor);
   });
 
   const totalPages = computed(() => Math.max(1, Math.ceil(sorted.value.length / pageSize.value)));
@@ -118,7 +130,7 @@ export function useLedgerTable(rows, {
 
   return {
     search, estado, banco, desde, hasta, sort, page, pageSize,
-    filtered, grouped, paged, totalPages, range, isFiltered, hasDateRange,
+    filtered, grouped, visible, paged, totalPages, range, isFiltered, hasDateRange,
     toggleSort, sortCaret, clearFilters, clearDateRange
   };
 }

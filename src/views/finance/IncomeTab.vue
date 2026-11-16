@@ -34,6 +34,21 @@
         <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
       </select>
       <!--
+        Los cierres dados por caído no se listan salvo que se pidan acá. El
+        interruptor dice cuántos hay aunque estén escondidos: esconder filas sin
+        decirlo deja a quien mira sin forma de saber que falta algo, y es lo que
+        hacía que las cifras de arriba no cuadraran con lo que había en pantalla.
+      -->
+      <label
+        v-if="totals.cierresDescartados > 0"
+        class="ledger-toggle"
+        :class="{ 'is-on': showCancelled }"
+        title="Los cierres que no llegaron a concretarse no se listan: su cobro ya no se espera"
+      >
+        <input v-model="showCancelled" type="checkbox" />
+        <span>🚫 Ver no concretados ({{ totals.cierresDescartados }})</span>
+      </label>
+      <!--
         El rango corre sobre la fecha en que entró el dinero (`fecha`) y no
         sobre la pactada (`due_date`): es la que la tabla muestra, la que ordena
         y la que suman los totales de abajo. Se aplica cuota por cuota, así que
@@ -291,7 +306,9 @@
           <dd class="is-out">S/ {{ formatAmount(totals.porCobrar) }}</dd>
         </div>
         <!-- Solo aparece si hay algo descartado: un recuadro en cero todos los
-             días enseña a no mirarlo. -->
+             días enseña a no mirarlo. Cuenta SIEMPRE los cierres caídos, se
+             estén listando o no: esconderlos es sacarlos de la lista de a quién
+             cobrar, no olvidarse de que existieron. -->
         <div
           v-if="!bancoFilter && totals.descartado > 0"
           class="ledger-summary-item"
@@ -299,6 +316,11 @@
         >
           <dt>No concretado</dt>
           <dd class="is-muted">S/ {{ formatAmount(totals.descartado) }}</dd>
+          <small class="ledger-summary-note">
+            {{ totals.cierresDescartados }}
+            {{ totals.cierresDescartados === 1 ? "cierre" : "cierres" }}
+            <template v-if="hiddenCancelled > 0">· fuera de la tabla</template>
+          </small>
         </div>
         <div
           class="ledger-summary-item"
@@ -317,15 +339,33 @@
 
       <div v-if="paged.length === 0" class="empty-state">
         <p class="empty-state-title">Ningún cierre coincide</p>
+        <!-- Lo que queda escondido se dice antes que "ajusta los filtros": sin
+             esto, buscar un cliente cuyo cierre se cayó contesta "no hay nada"
+             y manda a revisar si se perdió la ficha. -->
+        <p v-if="hiddenCancelled > 0" class="empty-state-text">
+          Hay {{ hiddenCancelled }}
+          {{ hiddenCancelled === 1 ? "cierre no concretado" : "cierres no concretados" }}
+          que la tabla no está listando.
+        </p>
         <p class="empty-state-text">
           <template v-if="hasDateRange">
             No hay cuotas cobradas {{ rangeLabel(desde, hasta) }}.
           </template>
           Ajusta la búsqueda o los filtros para volver a ver el registro.
         </p>
-        <button type="button" class="btn-secondary ledger-submit-btn" @click="clearFilters()">
-          Quitar filtros
-        </button>
+        <div class="empty-state-actions">
+          <button
+            v-if="hiddenCancelled > 0"
+            type="button"
+            class="btn-secondary ledger-submit-btn"
+            @click="showCancelled = true"
+          >
+            Ver los no concretados
+          </button>
+          <button type="button" class="btn-secondary ledger-submit-btn" @click="clearFilters()">
+            Quitar filtros
+          </button>
+        </div>
       </div>
 
       <template v-else>
@@ -582,7 +622,7 @@ import { hasPermission } from "../../auth.js";
 import { loadReceiptUrl } from "./receiptImage.js";
 import { openIncomeReceipt } from "./receiptDocument.js";
 import { dayOnly, formatAmount, formatDate } from "./format.js";
-import { agreedAmount, unexpectedAmount } from "./dealCancellation.js";
+import { summariseDeals } from "./dealCancellation.js";
 import { bancos, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
 import { useLedgerTable } from "./useLedgerTable.js";
 import LedgerDateRange from "./LedgerDateRange.vue";
@@ -794,11 +834,27 @@ function groupByLead(payments) {
   return [...byKey.values()];
 }
 
+/**
+ * Los cierres dados por caído NO se listan salvo que se pidan.
+ *
+ * Son el final de un trato, no parte del trabajo del día: quien abre INGRESOS
+ * viene a ver qué se cobró y qué falta cobrar, y mezclarlos obliga a saltearlos
+ * con la vista en cada página. Se esconden con el interruptor de la barra, que
+ * dice cuántos hay — esconderlos sin decirlo sería perderlos.
+ *
+ * Arranca siempre apagado y no se recuerda entre visitas a propósito: un
+ * recorte que sobrevive a la recarga esconde filas sin que nadie lo haya
+ * pedido ese día.
+ */
+const showCancelled = ref(false);
+const isDealVisible = (group) => showCancelled.value || !group.cancelled;
+
 const {
   search, estado: estadoFilter, banco: bancoFilter, desde, hasta, sort, page, pageSize,
   grouped, paged, totalPages, range, isFiltered, hasDateRange,
   toggleSort, sortCaret, clearFilters, clearDateRange
 } = useLedgerTable(rows, {
+  groupFilter: isDealVisible,
   searchText: (row) => [row.code, row.lead_name, row.lead_dni, row.cuota, row.emitir, row.tributario, row.banco]
     .filter(Boolean).join(" "),
   // Se ordenan y se paginan los cierres, así que los sorters reciben el grupo.
@@ -809,6 +865,10 @@ const {
   defaultSort: { key: "fecha", dir: "desc" },
   groupBy: groupByLead,
 });
+
+// Mostrar u ocultar cambia cuántos cierres hay que paginar: la página 3 de
+// antes puede no existir después.
+watch(showCancelled, () => { page.value = 1; });
 
 /**
  * Cierres abiertos. Por defecto están todos plegados —la lista se lee como un
@@ -851,39 +911,17 @@ async function onPlanSaved(event) {
  * filtro: la tira resume tratos, no asientos sueltos. Solo lo verificado es
  * dinero confirmado, y "por cobrar" incluye lo que ni siquiera se ha
  * registrado en una cuota todavía.
+ *
+ * Se le pasan TODOS los cierres y, aparte, cuáles se están listando: la
+ * aritmética de los dos universos —lo que se ve y lo que ya no se espera—
+ * vive en `summariseDeals()` y no acá, porque es la misma resta que explica la
+ * banda de cada fila caída.
  */
-const totals = computed(() => {
-  let precioTotal = 0;
-  let registrado = 0;
-  let verificado = 0;
-  let porVerificar = 0;
-  let descartado = 0;
-  let itf = 0;
-  for (const group of grouped.value) {
-    // Un cierre sin precio total definido cuenta por lo que ya tiene registrado.
-    precioTotal += agreedAmount(group);
-    registrado += group.registered;
-    verificado += group.verificado;
-    porVerificar += group.porVerificar;
-    itf += group.itf;
-    /*
-     * Lo que un cierre caído ya no va a traer. Se cuenta aparte en vez de
-     * descontarse del precio total: el trato se pactó y esa cifra es historia,
-     * pero sumarla en "por cobrar" hace esperar una plata que nadie espera. El
-     * dinero que sí entró antes de que el cliente se cayera no se descarta.
-     */
-    if (group.cancelled) descartado += unexpectedAmount(group);
-  }
-  return {
-    precioTotal,
-    registrado,
-    verificado,
-    porVerificar,
-    descartado: Math.round(descartado * 100) / 100,
-    porCobrar: Math.round((precioTotal - verificado - porVerificar - descartado) * 100) / 100,
-    itf,
-  };
-});
+const totals = computed(() => summariseDeals(grouped.value, isDealVisible));
+
+/** Cierres caídos que la tabla está escondiendo ahora mismo. */
+const hiddenCancelled = computed(() =>
+  (showCancelled.value ? 0 : totals.value.cierresDescartados));
 
 function emptyForm() {
   return {
