@@ -28,6 +28,18 @@
           <span v-if="blockingPayment && !group.cancelled" class="deal-gate-badge" title="La 1ra cuota no está verificada">
             🔒 Proyecto bloqueado
           </span>
+          <!-- Los cierres están plegados de fábrica, así que el aviso de la
+               cuota tiene que verse desde afuera: puesto solo en la fila, solo
+               lo encontraría quien ya abrió el cierre, o sea quien ya fue a
+               buscarlo. Dice el plazo escrito y no solo el color. -->
+          <span
+            v-if="group.dueAlert?.urgent"
+            class="deal-due-badge"
+            :class="{ 'is-overdue': group.dueAlert.overdue }"
+            :title="`Cuota pendiente que ${group.dueAlert.label} (${formatDate(group.dueAlert.due)})`"
+          >
+            {{ group.dueAlert.overdue ? "⚠️" : "⏰" }} {{ group.dueAlert.label }}
+          </span>
         </div>
         <div class="deal-name-line">
           <span class="deal-client-name">{{ group.leadName }}</span>
@@ -254,7 +266,7 @@
 <script setup>
 import { computed, reactive, ref } from "vue";
 import { apiFetch } from "../../apiClient.js";
-import { formatAmount } from "./format.js";
+import { formatAmount, formatDate } from "./format.js";
 import { unexpectedAmount } from "./dealCancellation.js";
 import { BANCOS, bancos, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
 import LeadContactModal from "./LeadContactModal.vue";
@@ -625,6 +637,31 @@ async function addPayment() {
   background: var(--surface-2, #f8fafc);
   padding: 0.1rem 0.4rem;
   border-radius: 6px;
+}
+
+/* Aviso de cuota por vencer en la cabecera del cierre. Es el MISMO rojo que la
+   pastilla de la fila: la misma cuota no puede verse de un color plegada y de
+   otro desplegada. La vencida se separa por el relleno y por su frase, no por
+   el tono — en deuteranopía un rojo y un ámbar son el mismo color, y la
+   diferencia entre "falta" y "ya pasó" no puede depender de distinguirlos. */
+.deal-due-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #e11d48;
+  background: rgba(225, 29, 72, 0.08);
+  border: 1px solid rgba(225, 29, 72, 0.25);
+  padding: 0.1rem 0.5rem;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  white-space: nowrap;
+}
+
+.deal-due-badge.is-overdue {
+  background: rgba(225, 29, 72, 0.2);
+  border-color: rgba(225, 29, 72, 0.5);
+  font-weight: 700;
 }
 
 .deal-gate-badge {

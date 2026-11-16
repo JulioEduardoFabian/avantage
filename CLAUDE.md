@@ -265,6 +265,26 @@ antes de tocar el arranque de producción.
   `backend/services/winDeal.js` (`planWinDeal()`) y corren **antes** de mover nada: puestas después,
   como estaban, un monto que no cuadraba dejaba el lead ya ganado y su proyecto abierto pero sin
   ingreso, y el vendedor solo veía el error.
+- **Una cuota pendiente avisa tres días antes de su fecha pactada**
+  (`src/views/finance/dueSoon.js`: `DUE_SOON_DAYS`, `dueState()`, `nextDueState()`, con prueba
+  propia). El cronograma guardaba `due_date` y la pantalla solo la escribía, así que una cuota que
+  vencía pasado mañana se veía igual que una de marzo y había que abrir los cierres uno por uno
+  para saber a quién llamar esta semana. Tres decisiones: **solo las `pendiente`** —una `pagado` es
+  plata que el cliente ya mandó y está esperando el visto bueno, y pintarla de rojo manda a llamar
+  a alguien que ya pagó—; la **vencida sigue roja y con el mismo rojo**, porque pasarse de la fecha
+  no es salir del aviso sino la forma más grave de estar dentro, y lo que cambia es la frase
+  («vence mañana», «venció hace 6 días»), que es de lo que depende cómo se encara la llamada; y la
+  cuenta va en **días de calendario de Lima** (`limaToday()`) y no en horas, porque la fecha
+  pactada es un día y no un instante — con el reloj del navegador en otra zona la cuota se pondría
+  roja un día antes. El **color nunca va solo**: cada aviso lleva su plazo escrito al lado, porque
+  el rojo y el ámbar son el mismo color con deuteranopía y de esta marca depende a quién se llama
+  hoy. Se ve en los tres sitios que hablan de la misma cuota —la pastilla de estado, la fecha
+  pactada del renglón y una insignia en la **cabecera del cierre**—, y lo tercero no es un adorno:
+  los cierres están plegados de fábrica, así que un aviso que solo existe dentro de la fila solo lo
+  encuentra quien ya fue a buscarlo. El de la cabecera sale del plan **completo** del lead
+  (`plansByLead`) y no de las cuotas que pasaron los filtros, para que un recorte de fechas no
+  esconda justo la que está por vencer, y un **cierre dado por caído no avisa**: perseguir ese
+  cobro es lo que se dio por terminado.
 - Un hito de la línea de tiempo puede atarse a una cuota (`project_updates.income_id`): el cliente
   lo ve en su portal con el adjunto **bloqueado** hasta que Finanzas verifique ese pago. Como
   `projects.is_locked`, el `is_locked` del hito se deriva del estado del ingreso en cada lectura —

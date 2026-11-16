@@ -429,8 +429,16 @@
                   <div class="cuota-cell">
                     <span v-if="row.emitir" class="cuota-tag">{{ row.emitir }}</span>
                     <span class="cuota-title">{{ row.cuota }}</span>
-                    <span v-if="row.due_date" class="cuota-due" :class="{ 'is-overdue': isOverdue(row) }">
+                    <!-- La fecha pactada sola no dice nada: "05/12/2026" obliga a
+                         contar días. Al lado va el plazo en voz alta, que es lo
+                         que de verdad se lee, y el color nunca va solo. -->
+                    <span
+                      v-if="row.due_date"
+                      class="cuota-due"
+                      :class="{ 'is-overdue': isOverdue(row), 'is-due-soon': dueOf(row)?.urgent }"
+                    >
                       vence {{ formatDate(row.due_date) }}
+                      <template v-if="dueOf(row)?.urgent"> · {{ dueOf(row).label }}</template>
                     </span>
                   </div>
                 </td>
@@ -483,18 +491,28 @@
                       <span>{{ verifySaving === row.id ? '…' : 'Por verificar' }}</span>
                     </button>
 
-                    <!-- Status pill: Pendiente -->
+                    <!-- Status pill: Pendiente.
+                         Se pone roja a tres días de la fecha pactada y sigue
+                         roja una vez vencida: pasarse de la fecha no es salir
+                         del aviso. Lo que cambia es la frase que lleva al lado,
+                         porque de eso depende cómo se encara la llamada. -->
                     <button
                       v-else
                       type="button"
                       class="clean-status-pill is-pendiente"
+                      :class="{ 'is-urgent': dueOf(row)?.urgent }"
                       :disabled="estadoSaving === row.id"
-                      title="Pendiente de pago. Clic para marcar como cobrado"
+                      :title="dueOf(row)?.urgent
+                        ? `Pendiente de pago y ${dueOf(row).label} (${formatDate(row.due_date)}). Clic para marcar como cobrado`
+                        : 'Pendiente de pago. Clic para marcar como cobrado'"
                       @click="toggleEstado(row)"
                     >
                       <span class="pill-dot"></span>
                       <span>{{ estadoSaving === row.id ? '…' : 'Pendiente' }}</span>
                     </button>
+                    <span v-if="dueOf(row)?.urgent" class="due-soon-chip">
+                      {{ dueOf(row).overdue ? "⚠️" : "⏰" }} {{ dueOf(row).label }}
+                    </span>
 
                     <!-- Warning chip only if 1st payment is NOT verified -->
                     <span
@@ -623,6 +641,7 @@ import { loadReceiptUrl } from "./receiptImage.js";
 import { openIncomeReceipt } from "./receiptDocument.js";
 import { dayOnly, formatAmount, formatDate } from "./format.js";
 import { summariseDeals } from "./dealCancellation.js";
+import { dueState, nextDueState } from "./dueSoon.js";
 import { bancos, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
 import { useLedgerTable } from "./useLedgerTable.js";
 import LedgerDateRange from "./LedgerDateRange.vue";
@@ -734,8 +753,12 @@ const plansByLead = computed(() => {
     const plan = byKey[groupKeyOf(row)] || (byKey[groupKeyOf(row)] = {
       leadId: row.lead_id ?? null,
       registered: 0, verificado: 0, porVerificar: 0, pendiente: 0, itf: 0,
-      code: null, firstId: null,
+      code: null, firstId: null, cuotas: [],
     });
+    // Para el aviso de vencimiento del cierre: se junta el plan COMPLETO, así
+    // que un recorte de fechas o un filtro de banco no puede esconder la cuota
+    // que está por vencer — que es justo la que hay que ver.
+    plan.cuotas.push(row);
     const monto = Number(row.monto) || 0;
     plan.registered += monto;
     plan.itf += Number(row.itf) || 0;
@@ -749,6 +772,7 @@ const plansByLead = computed(() => {
     }
   }
   for (const plan of Object.values(byKey)) {
+    plan.dueAlert = nextDueState(plan.cuotas);
     plan.registered = Math.round(plan.registered * 100) / 100;
     const total = plan.leadId != null ? totalByLead.get(plan.leadId) : null;
     plan.total = total != null ? Number(total) : null;
@@ -830,6 +854,10 @@ function groupByLead(payments) {
     // El cierre se ordena por su cuota más reciente, no por la primera.
     group.lastFecha = group.payments.reduce((max, p) => (dayOnly(p.fecha) > max ? dayOnly(p.fecha) : max), "");
     Object.assign(group, figuresFor(group));
+    // Sale del plan completo del lead y no de `group.payments`, que son solo
+    // las cuotas que pasaron los filtros. Un cierre caído no avisa: su cobro
+    // ya no se espera, y perseguirlo es justo lo que se dio por terminado.
+    group.dueAlert = group.cancelled ? null : (plansByLead.value[group.key]?.dueAlert || null);
   }
   return [...byKey.values()];
 }
@@ -985,6 +1013,15 @@ function usarItfSugerido() {
 }
 
 /** Cuota pactada cuya fecha ya pasó y que todavía nadie cobró. */
+/**
+ * El aviso de vencimiento de una cuota, o `null` si no hay nada que avisar.
+ * La regla vive en `dueSoon.js`; acá solo se consulta, para que la pastilla, el
+ * renglón de la cuota y la insignia del cierre no puedan decir cosas distintas.
+ */
+function dueOf(row) {
+  return dueState(row);
+}
+
 function isOverdue(row) {
   if (row.estado === "verificado") return false;
   const due = dayOnly(row.due_date || "");
@@ -1439,7 +1476,9 @@ onBeforeUnmount(releaseUrls);
   color: var(--text-muted, #94a3b8);
 }
 
-.cuota-due.is-overdue {
+.cuota-due.is-overdue,
+/* Mismo rojo que la vencida: a tres días ya es el mismo trabajo, llamar. */
+.cuota-due.is-due-soon {
   color: #e11d48;
   font-weight: 600;
 }
@@ -1549,6 +1588,41 @@ onBeforeUnmount(releaseUrls);
 .clean-status-pill.is-pendiente:hover:not(:disabled) {
   background: rgba(245, 158, 11, 0.15);
   border-color: rgba(245, 158, 11, 0.4);
+}
+
+/* Pendiente con la fecha encima: el ámbar de "todavía no toca" pasa al rojo de
+   "esto es de esta semana". Es un modificador y cambia SOLO el color, para que
+   siga siendo la misma pastilla pulsable con el mismo comportamiento. */
+.clean-status-pill.is-pendiente.is-urgent {
+  background: rgba(225, 29, 72, 0.08);
+  border-color: rgba(225, 29, 72, 0.3);
+  color: #e11d48;
+}
+
+.clean-status-pill.is-pendiente.is-urgent .pill-dot {
+  background: #e11d48;
+}
+
+.clean-status-pill.is-pendiente.is-urgent:hover:not(:disabled) {
+  background: rgba(225, 29, 72, 0.16);
+  border-color: rgba(225, 29, 72, 0.45);
+}
+
+/* El plazo escrito al lado de la pastilla. El color no puede ir solo: en
+   deuteranopía el rojo y el ámbar son el mismo color, y de esta marca depende a
+   quién se llama hoy. */
+.due-soon-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 4px;
+  background: rgba(225, 29, 72, 0.08);
+  border: 1px solid rgba(225, 29, 72, 0.2);
+  color: #e11d48;
+  font-size: 0.65rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .initial-blocking-chip {
