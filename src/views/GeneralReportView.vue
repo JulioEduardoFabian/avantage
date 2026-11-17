@@ -46,7 +46,7 @@
 
       <!-- KPIs -->
       <section class="gr-kpis">
-        <article v-for="tile in kpiTiles" :key="tile.key" class="gr-kpi">
+        <article v-for="tile in kpiTiles" :key="tile.key" class="gr-kpi" :class="`is-kpi-${tile.key}`">
           <span class="gr-kpi-label">{{ tile.label }}</span>
           <span class="gr-kpi-value" :class="tile.valueClass">{{ tile.value }}</span>
           <span v-if="tile.delta" class="gr-kpi-delta" :class="`is-${tile.delta.tone}`">
@@ -274,13 +274,20 @@
       </section>
     </template>
 
-    <div v-else-if="isLoading" class="gr-loading">Armando el reporte…</div>
+    <AppLoader
+      v-else-if="isLoading"
+      variant="dashboard"
+      icon="📊"
+      title="Armando el reporte general…"
+      subtitle="Cruzando ventas, caja, cartera de cobranza y embudo comercial."
+    />
   </main>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import AppLoader from '../components/AppLoader.vue';
 import ReportBarChart from '../components/report/ReportBarChart.vue';
 import ReportBarList from '../components/report/ReportBarList.vue';
 import {
@@ -583,12 +590,34 @@ const obligationsTotal = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
-  padding: 0.75rem 0.85rem;
+  padding: 0.85rem 0.95rem;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
+.gr-kpi:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.gr-kpi::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--viz-1);
+}
+.gr-kpi.is-kpi-cashIn::before,
+.gr-kpi.is-kpi-net::before { background: var(--accent-emerald); }
+.gr-kpi.is-kpi-cashOut::before { background: var(--accent-amber); }
+.gr-kpi.is-kpi-overdue::before { background: var(--status-critical); }
+.gr-kpi.is-kpi-leads::before,
+.gr-kpi.is-kpi-conversion::before { background: var(--viz-2); }
 .gr-kpi-label { font-size: 0.74rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .gr-kpi-value {
   font-size: 1.35rem;

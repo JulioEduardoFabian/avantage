@@ -38,6 +38,7 @@ import PortalProfileView from '../views/portal/PortalProfileView.vue';
 import { isAuthenticated, hasPermission } from '../auth.js';
 import { isClientAuthenticated } from '../clientAuth.js';
 import { refreshSessionOnce } from '../apiClient.js';
+import { startRouteLoading, finishRouteLoading, finishAppBoot } from '../loadingState.js';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -95,6 +96,8 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
+  startRouteLoading();
+
   if (to.meta.requiresClientAuth && !isClientAuthenticated()) {
     return { name: 'portal-login', query: { redirect: to.fullPath } };
   }
@@ -115,6 +118,18 @@ router.beforeEach(async (to) => {
   }
 
   return true;
+});
+
+router.afterEach(() => {
+  finishRouteLoading();
+  setTimeout(() => {
+    finishAppBoot();
+  }, 240);
+});
+
+router.onError(() => {
+  finishRouteLoading();
+  finishAppBoot();
 });
 
 export default router;

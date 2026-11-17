@@ -235,7 +235,13 @@
         </tbody>
       </table>
 
-      <p v-else-if="isLoading" class="pv-loading">Cargando proyectos…</p>
+      <AppLoader
+        v-else-if="isLoading"
+        variant="table"
+        icon="🚀"
+        title="Cargando proyectos…"
+        subtitle="Consultando avances, tareas, plazos y equipos asignados."
+      />
 
       <!-- Dos vacíos distintos: "no hay nada" y "no hay nada que coincida".
            Mostrar el mismo mensaje en los dos casos hace creer que se borraron
@@ -383,6 +389,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { avatarColor, initials } from '../avatars.js';
+import AppLoader from '../components/AppLoader.vue';
 
 const STATUSES = ['Creado', 'Activo', 'Iniciado', 'En Desarrollo', 'Entregado', 'Cancelado'];
 

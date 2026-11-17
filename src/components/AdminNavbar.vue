@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <header class="admin-navbar">
     <div class="navbar-inner">
       <!-- Left side: Collapse / Sidebar Toggle -->
@@ -39,14 +39,13 @@
           </svg>
         </button>
 
-        <!-- Messages Icon with Red Badge -->
+        <!-- Acceso rápido a Conversaciones / WhatsApp -->
         <div class="badge-icon-wrapper">
-          <button class="icon-btn" title="Comunicaciones y Mensajes">
+          <button class="icon-btn" title="Ir a Conversaciones de WhatsApp" @click="router.push('/admin/whatsapp')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-          <span class="notification-badge red-badge">0</span>
         </div>
 
         <!-- Notification Bell with Red Badge -->
@@ -234,17 +233,31 @@ async function markAllNotificationsRead() {
 const currentPageTitle = computed(() => {
   if (route.path === '/dashboard') return 'Inicio';
   if (route.path === '/admin/database') return 'Base de Datos de Leads';
-  if (route.path === '/admin/leads') return 'Funnel de Leads';
+  if (route.path === '/admin/leads') return 'Funnel de Ventas';
   if (route.path === '/admin/setter-funnel') return 'Setter Funnel';
-  if (route.path === '/admin/campaigns') return 'Campañas';
-  if (route.path === '/admin/finance') return 'Finanzas';
+  if (route.path === '/admin/reporte-leads') return 'Reporte de Leads';
+  if (route.path === '/admin/reporte-setters') return 'Reporte de Setters';
+  if (route.path === '/admin/reporte-general') return 'Reporte General';
+  if (route.path === '/admin/avisos') return 'Avisos al Equipo';
+  if (route.path === '/admin/campaigns') return 'Campañas Publicitarias';
+  if (route.path === '/admin/finance') return 'Finanzas y Tesorería';
+  if (route.path === '/admin/cobranzas') return 'Cartera de Cobranzas';
+  if (route.path === '/admin/calendario') return 'Calendario Comercial';
+  if (route.path === '/admin/entregables') return 'Entregables';
   if (route.path === '/admin/contracts') return 'Contratos';
+  if (route.path === '/admin/documents') return 'Documentos Emitidos';
+  if (route.path === '/admin/whatsapp') return 'WhatsApp Business';
   if (route.path === '/admin/instagram') return 'Interacciones de Instagram';
   if (route.path === '/admin/social') return 'Interacciones de Facebook';
+  if (route.path === '/admin/availability') return 'Mi Disponibilidad';
+  if (route.path === '/admin/bot-script') return 'Personalidad de Avan';
+  if (route.path === '/admin/reparto') return 'Reparto de Leads';
+  if (route.path === '/admin/carreras') return 'Catálogo de Carreras';
+  if (route.path === '/admin/webhooks') return 'Monitor de Webhooks';
   if (route.path.startsWith('/admin/projects')) return 'Gestión de Proyectos';
-  if (route.path === '/admin/roles') return 'Roles y Permisos';
-  if (route.path === '/admin/perfil') return 'Mi perfil';
-  return 'Dashboard';
+  if (route.path === '/admin/roles') return 'Perfiles y Permisos';
+  if (route.path === '/admin/perfil') return 'Mi Perfil';
+  return 'Panel Administrativo';
 });
 
 const userInitials = computed(() => {

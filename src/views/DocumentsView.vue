@@ -60,7 +60,13 @@
       </div>
     </div>
 
-    <p v-if="loading && !documents.length" class="state-banner">Cargando documentos…</p>
+    <AppLoader
+      v-if="loading && !documents.length"
+      variant="table"
+      icon="📑"
+      title="Cargando documentos emitidos…"
+      subtitle="Sincronizando historial de cotizaciones y contratos."
+    />
 
     <div v-else-if="!filtered.length" class="empty-state">
       <span class="empty-icon">{{ search ? '🔍' : '📭' }}</span>
@@ -148,6 +154,7 @@
  */
 import { ref, computed, watch, onMounted } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import AppLoader from '../components/AppLoader.vue';
 
 const PAGE_SIZE = 20;
 

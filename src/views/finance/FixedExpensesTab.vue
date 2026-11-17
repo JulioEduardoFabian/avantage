@@ -51,7 +51,13 @@
       </form>
     </section>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando gastos fijos...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="🏢"
+      title="Cargando gastos fijos…"
+      subtitle="Sincronizando el control mensual de servicios recurrentes."
+    />
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Sin gastos fijos registrados</p>
       <p class="empty-state-text">Usa "+ Registrar gasto fijo" para anotar el primero.</p>
@@ -214,6 +220,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { bancos } from './incomeOptions.js';
 import LedgerDateRange from './LedgerDateRange.vue';
+import AppLoader from '../../components/AppLoader.vue';
 import './ledger.css';
 
 const RANGE_OPTIONS = [6, 12];

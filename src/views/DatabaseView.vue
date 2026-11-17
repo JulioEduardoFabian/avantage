@@ -85,8 +85,17 @@
       <p>{{ loadError }}</p>
     </div>
 
+    <!-- Pantalla de carga -->
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      variant="table"
+      icon="🗄️"
+      title="Cargando base de datos de prospectos…"
+      subtitle="Consultando fichas comerciales, teléfonos y formación académica."
+    />
+
     <!-- Tabla Principal de Prospectos (Referencia 1) -->
-    <div class="database-table-card custom-scrollbar">
+    <div v-else class="database-table-card custom-scrollbar">
       <table class="leads-ref-table">
         <thead>
           <tr>
@@ -626,6 +635,7 @@ import { apiFetch } from '../apiClient.js';
 import { careerNames } from '../data/careers.js';
 import { assignableTeam as commercialTeam, loadCommercialTeam } from '../data/commercialTeam.js';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import AppLoader from '../components/AppLoader.vue';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
 
 // Universidades representativas de Perú

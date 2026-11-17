@@ -167,7 +167,15 @@
       </form>
     </section>
 
-    <div v-if="!isLoading && visible.length === 0" class="empty-state">
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="💰"
+      title="Cargando comisiones…"
+      subtitle="Consultando comisiones devengadas de setters y cobranzas."
+    />
+
+    <div v-else-if="visible.length === 0" class="empty-state">
       <p class="empty-state-title">
         {{ rows.length === 0 ? 'Todavía no hay comisiones' : 'Ninguna comisión coincide' }}
       </p>
@@ -267,6 +275,7 @@ import { bancos } from './incomeOptions.js';
 import { loadReceiptUrl } from './receiptImage.js';
 import LedgerDateRange from './LedgerDateRange.vue';
 import ReceiptCell from './ReceiptCell.vue';
+import AppLoader from '../../components/AppLoader.vue';
 import './ledger.css';
 
 /* De dónde sale cada comisión: la de la setter es por venta, la de cobranza

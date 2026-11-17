@@ -138,7 +138,13 @@
       </form>
     </section>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando salarios...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="🧾"
+      title="Cargando planilla y salarios…"
+      subtitle="Consultando acuerdos por proyecto y pagos registrados."
+    />
 
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Sin salarios registrados</p>
@@ -541,6 +547,7 @@ import LedgerDateRange from './LedgerDateRange.vue';
 import { rangeLabel } from './dateRange.js';
 import LedgerPagination from './LedgerPagination.vue';
 import ReceiptCell from './ReceiptCell.vue';
+import AppLoader from '../../components/AppLoader.vue';
 import './ledger.css';
 
 const props = defineProps({

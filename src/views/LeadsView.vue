@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <main class="container-fluid kanban-page-wrapper">
     <!-- Header y Acciones Principales -->
     <header class="kanban-header">
@@ -175,8 +175,17 @@
       </div>
     </transition>
 
+    <!-- Pantalla de carga del tablero Kanban -->
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      variant="kanban"
+      icon="📇"
+      title="Cargando Funnel de Ventas…"
+      subtitle="Sincronizando etapas del tablero, leads y métricas de viabilidad."
+    />
+
     <!-- Tablero Kanban Dinámico con Scroll Suave -->
-    <div class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
+    <div v-else class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
       <div class="kanban-columns-container">
         <!-- Columna de Kanban -->
         <div
@@ -697,6 +706,45 @@
             </p>
           </div>
 
+          <!-- Barra de pestañas de la ficha del lead para evitar scroll excesivo -->
+          <div class="lead-modal-tabs" role="tablist" aria-label="Secciones de la ficha del lead">
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'ficha' }"
+              @click="leadModalTab = 'ficha'"
+            >
+              📋 Ficha y Etapa
+            </button>
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'seguimiento' }"
+              @click="leadModalTab = 'seguimiento'"
+            >
+              📝 Notas e Historial
+            </button>
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'documentos' }"
+              @click="leadModalTab = 'documentos'"
+            >
+              💰 Cotizaciones y Contratos
+              <span v-if="quoteHistory.length + signedContracts.length > 0" class="lead-tab-badge">
+                {{ quoteHistory.length + signedContracts.length }}
+              </span>
+            </button>
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'todo' }"
+              @click="leadModalTab = 'todo'"
+            >
+              📐 Ver todo
+            </button>
+          </div>
+
           <!-- Edición de los datos del lead -->
           <form v-if="leadEdit" class="lead-edit-form" @submit.prevent="saveLeadEdit">
             <div class="lead-edit-grid">
@@ -755,7 +803,7 @@
             </div>
           </form>
 
-          <div v-else class="lead-info-grid">
+          <div v-else-if="leadModalTab === 'ficha' || leadModalTab === 'todo'" class="lead-info-grid">
             <div class="info-card-panel">
               <h5 class="panel-subtitle">👤 Contacto</h5>
               <div v-if="selectedLead.full_name" class="info-item">
@@ -778,9 +826,6 @@
                 <span class="info-label">Asignado a:</span>
                 <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
               </div>
-              <!-- Setter y closer del lead: se pueden dejar puestos desde antes
-                   del pase y del cierre (los sellos automáticos no pisan lo
-                   elegido). -->
               <div class="info-item">
                 <span class="info-label">Setter:</span>
                 <LeadAssignee :lead="selectedLead" role="setter" show-name @assigned="onLeadAssigned" />
@@ -789,8 +834,6 @@
                 <span class="info-label">Closer:</span>
                 <LeadAssignee :lead="selectedLead" role="closer" show-name @assigned="onLeadAssigned" />
               </div>
-              <!-- La calificación la pone una persona y empieza vacía: de ella
-                   cuelga la medición de la calidad de cada anuncio. -->
               <div class="info-item">
                 <span class="info-label">Calificado:</span>
                 <LeadQualification :lead="selectedLead" @qualified="onLeadAssigned" />
@@ -814,12 +857,12 @@
             </div>
           </div>
 
-          <div v-if="selectedLead.additional_notes" class="lead-notes-box">
+          <div v-if="(leadModalTab === 'seguimiento' || leadModalTab === 'todo') && selectedLead.additional_notes" class="lead-notes-box">
             <h5 class="panel-subtitle">📝 Notas Adicionales</h5>
             <p>{{ selectedLead.additional_notes }}</p>
           </div>
 
-          <div v-if="selectedLead.project_id" class="lead-project-badge-box">
+          <div v-if="(leadModalTab === 'ficha' || leadModalTab === 'todo') && selectedLead.project_id" class="lead-project-badge-box">
             <span style="font-size: 1.2rem;">🚀</span>
             <div>
               <strong>Proyecto Activo #{{ selectedLead.project_id }}</strong>
@@ -833,7 +876,7 @@
           </div>
 
           <!-- Selector de Estado del Funnel -->
-          <div class="form-group" style="margin-top: 1.25rem;">
+          <div v-if="leadModalTab === 'ficha' || leadModalTab === 'todo'" class="form-group" style="margin-top: 1.1rem;">
             <label class="form-label">Mover etapa en el Funnel</label>
             <select
               :value="selectedLead.status"
@@ -846,10 +889,8 @@
             </select>
           </div>
 
-          <!-- Historial de etapas: de dónde salió y quién lo movió. Está
-               junto al selector porque es la pregunta que se hace justo ahí
-               ("yo lo dejé en otra columna"). -->
-          <div class="stage-history-section">
+          <!-- Historial de etapas -->
+          <div v-if="leadModalTab === 'seguimiento' || leadModalTab === 'todo'" class="stage-history-section">
             <button
               type="button"
               class="stage-history-toggle"
@@ -887,10 +928,8 @@
             </div>
           </div>
 
-          <!-- Primer pago: el vendedor ve en qué va y sube el voucher sin
-               entrar a Finanzas. Vivía en la tarjeta del tablero, que ahora
-               solo lleva nombre y celular. -->
-          <div v-if="selectedLead.initial_payment_id" class="detail-payment-row">
+          <!-- Primer pago -->
+          <div v-if="(leadModalTab === 'ficha' || leadModalTab === 'todo') && selectedLead.initial_payment_id" class="detail-payment-row">
             <span :class="['payment-chip', paymentChipClass(selectedLead.initial_payment_estado)]">
               1er pago · {{ paymentChipLabel(selectedLead.initial_payment_estado) }}
             </span>
@@ -912,7 +951,7 @@
           </div>
 
           <!-- Bitácora del seguimiento: en qué se quedó este lead -->
-          <LeadNotes :lead-id="selectedLead.id" class="lead-notes-panel" />
+          <LeadNotes v-if="leadModalTab === 'seguimiento' || leadModalTab === 'todo'" :lead-id="selectedLead.id" class="lead-notes-panel" />
 
           <!-- Conversación con el bot de WhatsApp (Avan) -->
           <div v-if="selectedLead.phone" class="bot-chat-section">
@@ -927,7 +966,7 @@
             </button>
           </div>
 
-          <!-- Botones de Contacto y Cotización -->
+          <!-- Botones de Contacto y Cotización (siempre a mano) -->
           <div class="lead-action-buttons">
             <a
               :href="'mailto:' + selectedLead.email"
@@ -949,7 +988,7 @@
               v-if="!showQuoteForm"
               type="button"
               class="btn-action-primary"
-              @click="showQuoteForm = true"
+              @click="leadModalTab = 'documentos'; showQuoteForm = true"
             >
               💰 Generar Cotización
             </button>
@@ -986,7 +1025,7 @@
 
           <!-- Formulario de Cotización Integrado -->
           <transition name="fade">
-            <form v-if="showQuoteForm" class="quote-form-section" @submit.prevent="submitQuote">
+            <form v-if="showQuoteForm && (leadModalTab === 'documentos' || leadModalTab === 'todo')" class="quote-form-section" @submit.prevent="submitQuote">
               <h4 class="quote-heading">💰 Nueva Cotización Comercial</h4>
 
               <!-- Tipo de trabajo: elige qué se cotiza y con eso cambian los
@@ -1157,7 +1196,7 @@
 
           <!-- Historial: hasta ahora una cotización generada solo existía en la
                pestaña que se abría con el documento. -->
-          <div v-if="quoteHistory.length" class="quote-history">
+          <div v-if="(leadModalTab === 'documentos' || leadModalTab === 'todo') && quoteHistory.length" class="quote-history">
             <h4 class="quote-history-title">Cotizaciones emitidas ({{ quoteHistory.length }})</h4>
             <ul class="quote-history-list">
               <li v-for="q in quoteHistory" :key="q.id" class="quote-history-item">
@@ -1180,10 +1219,13 @@
               </li>
             </ul>
           </div>
-          <p v-else-if="quoteHistoryLoading" class="quote-history-empty">Cargando cotizaciones…</p>
+          <p v-else-if="(leadModalTab === 'documentos' || leadModalTab === 'todo') && quoteHistoryLoading" class="quote-history-empty">Cargando cotizaciones…</p>
+          <p v-else-if="leadModalTab === 'documentos' && !showQuoteForm && !quoteHistory.length && !signedContracts.length" class="quote-history-empty">
+            Este lead aún no tiene cotizaciones ni contratos firmados registrados. Usa «💰 Generar Cotización» o «📝 Contrato firmado».
+          </p>
 
           <!-- Contratos firmados: el respaldo de la venta, en la misma ficha -->
-          <div v-if="signedContracts.length" class="quote-history signed-history">
+          <div v-if="(leadModalTab === 'documentos' || leadModalTab === 'todo') && signedContracts.length" class="quote-history signed-history">
             <h4 class="quote-history-title">Contratos firmados ({{ signedContracts.length }})</h4>
             <ul class="quote-history-list">
               <li v-for="doc in signedContracts" :key="doc.id" class="quote-history-item signed-item">
@@ -1278,6 +1320,7 @@ import LeadQualification from '../components/LeadQualification.vue';
 import { needsFirstResponse, waitingLabel } from '../leadFirstResponse.js';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import DuplicateLeadsModal from '../components/DuplicateLeadsModal.vue';
+import AppLoader from '../components/AppLoader.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { formatCardDate, formatLeadDate } from '../leadCardDate.js';
@@ -1524,8 +1567,10 @@ const stageHistoryError = ref('');
 // Conversación de WhatsApp del lead dentro de su ficha. El panel entero vive
 // en `LeadConversation.vue`; acá solo queda si está desplegado o no.
 const showBotChat = ref(false);
+const leadModalTab = ref('ficha'); // 'ficha' | 'seguimiento' | 'documentos' | 'todo'
 
 watch(selectedLead, () => {
+  leadModalTab.value = 'ficha';
   leadEdit.value = null;
   leadEditError.value = '';
   showQuoteForm.value = false;
@@ -4607,6 +4652,53 @@ onMounted(() => {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.85rem;
+}
+
+/* Pestañas dentro del modal de detalle del lead */
+.lead-modal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  background: var(--surface-2);
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  margin-bottom: 1rem;
+}
+
+.lead-modal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.42rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lead-modal-tab:hover {
+  color: var(--text-main);
+}
+
+.lead-modal-tab.is-active {
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+  box-shadow: var(--shadow-sm);
+}
+
+.lead-tab-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(111, 129, 37, 0.14);
+  color: var(--primary);
 }
 
 /* Transiciones */

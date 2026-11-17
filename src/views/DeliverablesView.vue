@@ -175,7 +175,13 @@
 
     <!-- La lista por cliente: el tablero de siempre. -->
     <template v-if="isList">
-      <p v-if="isLoading && overview.projects.length === 0" class="dv-empty">Cargando entregables…</p>
+      <AppLoader
+        v-if="isLoading && overview.projects.length === 0"
+        variant="cards"
+        icon="📦"
+        title="Cargando tablero de entregables…"
+        subtitle="Sincronizando entregas pactadas, fechas y estado de cobro."
+      />
 
       <div v-else-if="visibleProjects.length === 0" class="dv-empty">
         <template v-if="overview.projects.length === 0">
@@ -771,6 +777,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import AppLoader from '../components/AppLoader.vue';
 
 /**
  * Módulo Entregables: CRUD sobre la tabla `deliverables` más el cruce con el

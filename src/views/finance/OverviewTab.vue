@@ -179,9 +179,13 @@
     </section>
 
     <!-- Loading / Empty states -->
-    <div v-if="isLoading && !data.months.length" class="empty-state">
-      <p>Cargando información financiera...</p>
-    </div>
+    <AppLoader
+      v-if="isLoading && !data.months.length"
+      variant="dashboard"
+      icon="📊"
+      title="Cargando visión general de tesorería…"
+      subtitle="Consolidando saldos bancarios, flujo de fondos y movimientos."
+    />
     <!--
       El estado vacío tapa el panel SOLO cuando no hay nada registrado. Con un
       rango puesto y un tramo flojo, taparlo escondía también los saldos por
@@ -734,6 +738,7 @@ import { BANCOS, bankSlug } from "./incomeOptions.js";
 import { monotonePath, niceAxisMax } from "./chartGeometry.js";
 import { rangeLabel } from "./dateRange.js";
 import LedgerDateRange from "./LedgerDateRange.vue";
+import AppLoader from "../../components/AppLoader.vue";
 import "./ledger.css";
 
 const emit = defineEmits(["navigate-tab"]);

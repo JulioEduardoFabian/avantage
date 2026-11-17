@@ -101,7 +101,15 @@
     <p v-if="scopeNote" class="info-box report-scope">ℹ️ {{ scopeNote }}</p>
     <p v-if="errorMessage" class="info-box report-alert">⚠️ {{ errorMessage }}</p>
 
-    <div v-if="!isLoading && leads.length === 0" class="empty-state">
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      variant="table"
+      icon="🧾"
+      title="Cargando bitácora y reporte de leads…"
+      subtitle="Consultando trazabilidad de etapas, responsables y movimientos."
+    />
+
+    <div v-else-if="leads.length === 0" class="empty-state">
       <p class="empty-state-title">No hay leads que mostrar</p>
       <p class="empty-state-text">
         {{ hasFilters
@@ -293,6 +301,7 @@ import { hasPermission } from '../auth.js';
 import { formatLeadDate } from '../leadCardDate.js';
 import { BOARD_LABEL, leadBoard, leadBoardPermission, leadFunnelLink } from '../leadDeepLink.js';
 import LeadConversation from '../components/LeadConversation.vue';
+import AppLoader from '../components/AppLoader.vue';
 
 /*
  * Reporte de Leads: la bitácora de etapas (`lead_stage_changes`) de todos los

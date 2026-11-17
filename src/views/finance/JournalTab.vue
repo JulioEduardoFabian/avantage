@@ -36,7 +36,13 @@
     <p v-if="errorMessage" class="info-box ledger-alert">⚠️ {{ errorMessage }}</p>
     <p v-if="successMessage" class="info-box ledger-success">✅ {{ successMessage }}</p>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando libro diario...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="📖"
+      title="Cargando libro diario…"
+      subtitle="Sincronizando asientos contables, cuentas e ITF."
+    />
 
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Libro diario vacío</p>
@@ -486,6 +492,7 @@ import LedgerDateRange from './LedgerDateRange.vue';
 import { rangeLabel } from './dateRange.js';
 import LedgerPagination from './LedgerPagination.vue';
 import ReceiptCell from './ReceiptCell.vue';
+import AppLoader from '../../components/AppLoader.vue';
 import './ledger.css';
 
 const props = defineProps({

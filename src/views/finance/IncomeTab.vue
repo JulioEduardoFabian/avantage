@@ -63,180 +63,198 @@
       <button
         type="button"
         class="btn-primary ledger-add-btn"
-        @click="isFormOpen ? closeForm() : openCreate()"
+        @click="openCreate()"
       >
-        {{ isFormOpen ? (editingRow ? "✕ Cancelar edición" : "✕ Cerrar") : "+ Registrar ingreso" }}
+        + Registrar ingreso
       </button>
     </div>
 
     <p v-if="errorMessage" class="info-box ledger-alert">⚠️ {{ errorMessage }}</p>
     <p v-if="successMessage" class="info-box ledger-success">✅ {{ successMessage }}</p>
 
-    <section v-if="isFormOpen" class="glass-panel ledger-form-panel">
-      <h3 v-if="editingRow" class="ledger-form-title">
-        Editando el ingreso <strong>{{ editingRow.code }}</strong> — los comprobantes y el
-        archivo tributario se gestionan desde su fila en la tabla.
-      </h3>
-      <form class="ledger-form" @submit.prevent="submit">
-        <div class="ledger-form-grid">
-          <div class="form-group">
-            <label class="form-label">Fecha</label>
-            <input v-model="form.fecha" type="date" class="form-input" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Vence</label>
-            <input v-model="form.dueDate" type="date" class="form-input" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Mes</label>
-            <input :value="mesPreview" type="text" class="form-input" readonly />
-          </div>
-          <div class="form-group ledger-form-wide">
-            <label class="form-label">Lead</label>
-            <select v-model="form.leadId" class="form-select">
-              <option :value="null">— Sin asociar —</option>
-              <option v-for="lead in leads" :key="lead.id" :value="lead.id">
-                {{ lead.name }}{{ lead.dni ? ` · DNI ${lead.dni}` : "" }}
-              </option>
-            </select>
-            <div v-if="selectedLead" class="lead-total-box">
-              <template v-if="editingTotal">
-                <input
-                  v-model="totalAmountDraft"
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  class="form-input lead-total-input"
-                  placeholder="Precio total (S/)"
-                />
-                <button type="button" class="btn-secondary lead-total-btn" @click="saveTotalAmount">Guardar</button>
-                <button type="button" class="btn-secondary lead-total-btn" @click="editingTotal = false">Cancelar</button>
+    <div v-if="isFormOpen" class="modal-overlay" @click.self="closeForm()">
+      <div class="modal-content journal-modal" role="dialog" aria-modal="true" aria-labelledby="income-modal-title">
+        <header class="modal-header">
+          <div>
+            <h3 id="income-modal-title" class="modal-title">
+              <span class="heading-icon" aria-hidden="true">📥</span>
+              {{ editingRow ? `Editar ingreso ${editingRow.code}` : 'Registrar nuevo ingreso' }}
+            </h3>
+            <p class="journal-modal-sub">
+              <template v-if="editingRow">
+                Los comprobantes y el archivo tributario se gestionan desde su fila en la tabla.
               </template>
               <template v-else>
-                <span v-if="selectedLead.total_amount != null">
-                  Precio total: <strong>S/ {{ formatAmount(selectedLead.total_amount) }}</strong>
-                  · Registrado: S/ {{ formatAmount(selectedLead.registered_amount) }}
-                  · Saldo: <strong :class="{ 'is-out': selectedLead.balance_amount > 0 }">
-                    S/ {{ formatAmount(selectedLead.balance_amount) }}
-                  </strong>
-                </span>
-                <span v-else class="ledger-muted">Este lead no tiene un precio total registrado.</span>
-                <button type="button" class="lead-total-edit-btn" @click="startEditTotal">✎ editar precio total</button>
+                El código se autogenera al guardar y las cuotas del mismo cliente comparten su código.
               </template>
+            </p>
+          </div>
+          <button type="button" class="modal-close-btn" title="Cerrar" aria-label="Cerrar" @click="closeForm()">✕</button>
+        </header>
+
+        <form id="income-form" class="modal-body journal-modal-body" @submit.prevent="submit">
+          <div class="ledger-form-grid">
+            <div class="form-group">
+              <label class="form-label">Fecha</label>
+              <input v-model="form.fecha" type="date" class="form-input" required />
             </div>
-            <!-- Avisar ANTES de que teclee el monto: una cuota nueva sobre un
-                 cierre caído se registra igual (a veces el cliente vuelve y se
-                 cobra algo), pero no lo reactiva, y descubrirlo después de
-                 guardar es peor. -->
-            <p v-if="selectedLead?.deal_cancelled" class="lead-cancelled-warning">
-              🚫 El cierre de este cliente está dado por caído. La cuota se registra igual,
-              pero el cierre no vuelve a contar hasta que lo reactives desde su fila.
-            </p>
+            <div class="form-group">
+              <label class="form-label">Vence</label>
+              <input v-model="form.dueDate" type="date" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mes</label>
+              <input :value="mesPreview" type="text" class="form-input" readonly />
+            </div>
+            <div class="form-group ledger-form-wide">
+              <label class="form-label">Lead / Cliente</label>
+              <select v-model="form.leadId" class="form-select">
+                <option :value="null">— Sin asociar —</option>
+                <option v-for="lead in leads" :key="lead.id" :value="lead.id">
+                  {{ lead.name }}{{ lead.dni ? ` · DNI ${lead.dni}` : "" }}
+                </option>
+              </select>
+              <div v-if="selectedLead" class="lead-total-box">
+                <template v-if="editingTotal">
+                  <input
+                    v-model="totalAmountDraft"
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    class="form-input lead-total-input"
+                    placeholder="Precio total (S/)"
+                  />
+                  <button type="button" class="btn-secondary lead-total-btn" @click="saveTotalAmount">Guardar</button>
+                  <button type="button" class="btn-secondary lead-total-btn" @click="editingTotal = false">Cancelar</button>
+                </template>
+                <template v-else>
+                  <span v-if="selectedLead.total_amount != null">
+                    Precio total: <strong>S/ {{ formatAmount(selectedLead.total_amount) }}</strong>
+                    · Registrado: S/ {{ formatAmount(selectedLead.registered_amount) }}
+                    · Saldo: <strong :class="{ 'is-out': selectedLead.balance_amount > 0 }">
+                      S/ {{ formatAmount(selectedLead.balance_amount) }}
+                    </strong>
+                  </span>
+                  <span v-else class="ledger-muted">Este lead no tiene un precio total registrado.</span>
+                  <button type="button" class="lead-total-edit-btn" @click="startEditTotal">✎ editar precio total</button>
+                </template>
+              </div>
+              <p v-if="selectedLead?.deal_cancelled" class="lead-cancelled-warning">
+                🚫 El cierre de este cliente está dado por caído. La cuota se registra igual,
+                pero el cierre no vuelve a contar hasta que lo reactives desde su fila.
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Cuota</label>
+              <select v-model="form.cuota" class="form-select" required>
+                <option v-for="c in CUOTAS" :key="c" :value="c">{{ c }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Emitir</label>
+              <select v-model="form.emitir" class="form-select" required>
+                <option v-for="e in EMITIR_OPCIONES" :key="e" :value="e">{{ e }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Monto (S/)</label>
+              <input
+                v-model="form.monto"
+                type="number"
+                step="0.01"
+                min="0.01"
+                class="form-input"
+                placeholder="0.00"
+                required
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">ITF (S/)</label>
+              <input
+                v-model="form.itf"
+                type="number"
+                step="0.01"
+                min="0"
+                class="form-input"
+                :placeholder="formatAmount(itfSugerido)"
+                @input="onItfInput"
+              />
+              <p v-if="itfEditado" class="ledger-receipt-hint">
+                La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
+                <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Banco</label>
+              <select v-model="form.banco" class="form-select" required>
+                <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Estado</label>
+              <select v-model="form.estado" class="form-select" :disabled="editingRow?.estado === 'verificado'">
+                <option value="pendiente">Pendiente</option>
+                <option value="pagado">Pagado</option>
+              </select>
+              <p v-if="editingRow?.estado === 'verificado'" class="ledger-receipt-hint">
+                Ingreso verificado: usa el botón ✓ de su fila para quitar la verificación.
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tributario</label>
+              <input
+                v-model="form.tributario"
+                type="text"
+                class="form-input"
+                list="income-tributario"
+                placeholder="Ej: Renta 4ta, IGV..."
+              />
+              <datalist id="income-tributario">
+                <option value="Renta 3ra" />
+                <option value="Renta 4ta" />
+                <option value="IGV" />
+                <option value="No aplica" />
+              </datalist>
+            </div>
+            <div v-if="!editingRow" class="form-group">
+              <label class="form-label">Tributario — archivo o imagen (opcional)</label>
+              <input ref="tributarioInput" type="file" class="form-input" @change="onTributarioChange" />
+            </div>
+            <div v-if="!editingRow" class="form-group ledger-form-wide">
+              <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
+              <input
+                ref="fileInput"
+                type="file"
+                accept="image/*,application/pdf"
+                multiple
+                class="form-input"
+                @change="onFileChange"
+              />
+              <p class="ledger-receipt-hint">
+                Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
+              </p>
+            </div>
           </div>
-          <div class="form-group">
-            <label class="form-label">Cuota</label>
-            <select v-model="form.cuota" class="form-select" required>
-              <option v-for="c in CUOTAS" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Emitir</label>
-            <select v-model="form.emitir" class="form-select" required>
-              <option v-for="e in EMITIR_OPCIONES" :key="e" :value="e">{{ e }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Monto (S/)</label>
-            <input
-              v-model="form.monto"
-              type="number"
-              step="0.01"
-              min="0.01"
-              class="form-input"
-              placeholder="0.00"
-              required
-            />
-          </div>
-          <div class="form-group">
-            <label class="form-label">ITF (S/)</label>
-            <input
-              v-model="form.itf"
-              type="number"
-              step="0.01"
-              min="0"
-              class="form-input"
-              :placeholder="formatAmount(itfSugerido)"
-              @input="onItfInput"
-            />
-            <!--
-              La fórmula pasó de imponer el valor a proponerlo, así que cuando
-              lo escrito se aparta de ella hay que poder ver de cuánto es la
-              diferencia y volver atrás de un clic.
-            -->
-            <p v-if="itfEditado" class="ledger-receipt-hint">
-              La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
-              <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
-            </p>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Banco</label>
-            <select v-model="form.banco" class="form-select" required>
-              <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Estado</label>
-            <select v-model="form.estado" class="form-select" :disabled="editingRow?.estado === 'verificado'">
-              <option value="pendiente">Pendiente</option>
-              <option value="pagado">Pagado</option>
-            </select>
-            <p v-if="editingRow?.estado === 'verificado'" class="ledger-receipt-hint">
-              Ingreso verificado: usa el botón ✓ de su fila para quitar la verificación.
-            </p>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Tributario</label>
-            <input
-              v-model="form.tributario"
-              type="text"
-              class="form-input"
-              list="income-tributario"
-              placeholder="Ej: Renta 4ta, IGV..."
-            />
-            <datalist id="income-tributario">
-              <option value="Renta 3ra" />
-              <option value="Renta 4ta" />
-              <option value="IGV" />
-              <option value="No aplica" />
-            </datalist>
-          </div>
-          <div v-if="!editingRow" class="form-group">
-            <label class="form-label">Tributario — archivo o imagen (opcional)</label>
-            <input ref="tributarioInput" type="file" class="form-input" @change="onTributarioChange" />
-          </div>
-          <div v-if="!editingRow" class="form-group ledger-form-wide">
-            <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
-            <input
-              ref="fileInput"
-              type="file"
-              accept="image/*,application/pdf"
-              multiple
-              class="form-input"
-              @change="onFileChange"
-            />
-            <p class="ledger-receipt-hint">
-              Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
-            </p>
-          </div>
-        </div>
+        </form>
 
-        <button type="submit" class="btn-primary ledger-submit-btn" :disabled="isSaving">
-          {{ isSaving ? "Guardando..." : editingRow ? "Guardar cambios" : "Guardar ingreso" }}
-        </button>
-      </form>
-    </section>
+        <footer class="journal-modal-footer">
+          <div class="journal-modal-actions">
+            <button type="button" class="btn-action-secondary" @click="closeForm()">Cancelar</button>
+            <button type="submit" form="income-form" class="btn-action-primary" :disabled="isSaving">
+              {{ isSaving ? "Guardando..." : editingRow ? "Guardar cambios" : "Guardar ingreso" }}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando ingresos...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="📥"
+      title="Cargando ingresos y cierres…"
+      subtitle="Sincronizando planes de cobro, cuotas y estado de verificación."
+    />
 
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Sin ingresos registrados</p>
@@ -651,6 +669,7 @@ import LedgerPagination from "./LedgerPagination.vue";
 import ReceiptCell from "./ReceiptCell.vue";
 import SendTributarioModal from "./SendTributarioModal.vue";
 import SendReceiptModal from "./SendReceiptModal.vue";
+import AppLoader from "../../components/AppLoader.vue";
 import "./ledger.css";
 
 const props = defineProps({

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <main class="container-fluid kanban-page-wrapper">
     <!-- Header y Acciones Principales -->
     <header class="kanban-header">
@@ -320,8 +320,17 @@
       </div>
     </transition>
 
+    <!-- Pantalla de carga del Setter Funnel -->
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      :variant="viewMode === 'funnel' ? 'kanban' : 'table'"
+      icon="🎯"
+      title="Cargando Setter Funnel…"
+      subtitle="Sincronizando conversaciones de WhatsApp, Meta, TikTok y citas agendadas."
+    />
+
     <!-- Tablero Kanban Dinámico con Scroll Suave -->
-    <div v-if="viewMode === 'funnel'" class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
+    <div v-else-if="viewMode === 'funnel'" class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
       <div class="kanban-columns-container">
         <template v-for="(col, colIndex) in columns" :key="col.key">
         <!-- Insertador rápido de etapa (antes de esta columna) -->
@@ -1239,6 +1248,7 @@ import { needsFirstResponse, waitingLabel } from '../leadFirstResponse.js';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import AppLoader from '../components/AppLoader.vue';
 import { formatCardDate, formatLeadDate as formatDate, limaDay } from '../leadCardDate.js';
 import { matchesLeadSearch } from '../leadSearch.js';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';

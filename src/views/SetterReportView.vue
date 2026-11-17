@@ -46,8 +46,33 @@
         </div>
       </section>
 
+      <!-- Bloque 1: Indicadores principales de conversión (8 KPIs) -->
+      <div class="sr-kpi-section-head">
+        <span class="sr-kpi-section-title">🎯 Resultados de Conversión y Cierre</span>
+        <button
+          type="button"
+          class="sr-diag-toggle"
+          @click="showAttentionKpis = !showAttentionKpis"
+        >
+          {{ showAttentionKpis ? '▴ Ocultar diagnóstico de atención' : '▾ Ver diagnóstico de velocidad y atención (6 métricas)' }}
+        </button>
+      </div>
       <section class="sr-kpis">
-        <article v-for="tile in kpiTiles" :key="tile.key" class="sr-kpi">
+        <article v-for="tile in conversionKpiTiles" :key="tile.key" class="sr-kpi sr-kpi-primary">
+          <span class="sr-kpi-label">{{ tile.label }}</span>
+          <span class="sr-kpi-value" :class="tile.valueClass">{{ tile.value }}</span>
+          <span v-if="tile.delta" class="sr-kpi-delta" :class="`is-${tile.delta.tone}`">
+            <span aria-hidden="true">{{ tile.delta.arrow }}</span>
+            {{ tile.delta.text }}
+            <span class="sr-kpi-prev">vs. {{ tile.previous }}</span>
+          </span>
+          <span v-if="tile.note" class="sr-kpi-note">{{ tile.note }}</span>
+        </article>
+      </section>
+
+      <!-- Bloque 2: Diagnóstico de velocidad y atención (6 KPIs) -->
+      <section v-if="showAttentionKpis" class="sr-kpis sr-kpis-attention">
+        <article v-for="tile in attentionKpiTiles" :key="tile.key" class="sr-kpi sr-kpi-diag">
           <span class="sr-kpi-label">{{ tile.label }}</span>
           <span class="sr-kpi-value" :class="tile.valueClass">{{ tile.value }}</span>
           <span v-if="tile.delta" class="sr-kpi-delta" :class="`is-${tile.delta.tone}`">
@@ -69,13 +94,35 @@
 
       <section v-else class="sr-grid">
         <article class="sr-card sr-card-wide">
-          <header class="sr-card-head">
-            <h4>Tabla comparativa</h4>
-            <p>
-              Los leads que entraron en el período atribuidos a cada setter, y hasta dónde llegaron.
-              Las tasas se calculan sobre SUS leads, así que se pueden comparar entre personas
-              aunque hayan recibido cantidades distintas.
-            </p>
+          <header class="sr-card-head sr-card-head-flex">
+            <div>
+              <h4>Tabla comparativa</h4>
+              <p>
+                Los leads que entraron en el período atribuidos a cada setter, y hasta dónde llegaron.
+                Las tasas se calculan sobre SUS leads, así que se pueden comparar entre personas
+                aunque hayan recibido cantidades distintas.
+              </p>
+            </div>
+            <div class="sr-table-mode-pills" role="group" aria-label="Columnas visibles en la tabla">
+              <button
+                type="button"
+                class="sr-mode-pill"
+                :class="{ 'is-active': tableViewMode === 'all' }"
+                @click="tableViewMode = 'all'"
+              >📐 Completa (12)</button>
+              <button
+                type="button"
+                class="sr-mode-pill"
+                :class="{ 'is-active': tableViewMode === 'conversion' }"
+                @click="tableViewMode = 'conversion'"
+              >🎯 Solo Conversión</button>
+              <button
+                type="button"
+                class="sr-mode-pill"
+                :class="{ 'is-active': tableViewMode === 'attention' }"
+                @click="tableViewMode = 'attention'"
+              >⏱️ Solo Atención</button>
+            </div>
           </header>
 
           <div class="sr-table-wrap">
@@ -84,21 +131,20 @@
                 <tr>
                   <th scope="col">Setter</th>
                   <th scope="col" class="num">Leads</th>
-                  <th scope="col" class="num">Pasaron a Ventas</th>
-                  <th scope="col" class="num">Con reunión</th>
-                  <th scope="col" class="num">Cerrados</th>
-                  <th scope="col" class="num">Cierre / reunión</th>
-                  <th scope="col" class="num">Días a la reunión</th>
-                  <!--
-                    Las tres de atención y seguimiento. Van en la tabla y no solo
-                    en los gráficos porque son las que se comparan persona a
-                    persona cuando hay que decidir a quién pedirle qué.
-                  -->
-                  <th scope="col" class="num">Sin respuesta</th>
-                  <th scope="col" class="num">Calificados</th>
-                  <th scope="col" class="num">Dormidos</th>
-                  <th scope="col" class="num">Sin mover</th>
-                  <th scope="col" class="num">Movimientos</th>
+                  <template v-if="tableViewMode !== 'attention'">
+                    <th scope="col" class="num">Pasaron a Ventas</th>
+                    <th scope="col" class="num">Con reunión</th>
+                    <th scope="col" class="num">Cerrados</th>
+                    <th scope="col" class="num">Cierre / reunión</th>
+                    <th scope="col" class="num">Días a la reunión</th>
+                  </template>
+                  <template v-if="tableViewMode !== 'conversion'">
+                    <th scope="col" class="num sr-col-divider">Sin respuesta</th>
+                    <th scope="col" class="num">Calificados</th>
+                    <th scope="col" class="num">Dormidos</th>
+                    <th scope="col" class="num">Sin mover</th>
+                    <th scope="col" class="num">Movimientos</th>
+                  </template>
                 </tr>
               </thead>
               <tbody>
@@ -120,82 +166,90 @@
                       <span class="sr-mini-bar" :style="{ width: relWidth(s.leads), background: 'var(--viz-lead)' }"></span>
                     </span>
                   </td>
-                  <td data-label="Pasaron a Ventas" class="num">
-                    {{ integer(s.graduated) }}
-                    <span class="sr-rate">{{ pct(s.graduationRate) }}</span>
-                  </td>
-                  <td data-label="Con reunión" class="num">
-                    <strong>{{ integer(s.withMeeting) }}</strong>
-                    <span class="sr-rate">{{ pct(s.meetingRate) }}</span>
-                    <span v-if="s.meetingsCancelled" class="sr-sub">
-                      {{ s.meetingsCancelled }} cancelada{{ s.meetingsCancelled === 1 ? '' : 's' }}
-                    </span>
-                  </td>
-                  <td data-label="Cerrados" class="num">
-                    <strong>{{ integer(s.won) }}</strong>
-                    <span class="sr-rate">{{ pct(s.winRate) }}</span>
-                  </td>
-                  <td data-label="Cierre / reunión" class="num">{{ pct(s.meetingToWinRate) }}</td>
-                  <td data-label="Días a la reunión" class="num">{{ days(s.daysToMeeting) }}</td>
-                  <td data-label="Sin respuesta" class="num">
-                    <strong :class="{ 'text-warn': s.noFirstResponse > 0 }">{{ integer(s.noFirstResponse) }}</strong>
-                    <span v-if="s.responseMedianMin !== null" class="sr-sub">
-                      med. {{ minutes(s.responseMedianMin) }} · P90 {{ minutes(s.responseP90Min) }}
-                    </span>
-                  </td>
-                  <td data-label="Calificados" class="num">
-                    {{ integer(s.qualifiedYes + s.qualifiedNo) }}
-                    <span class="sr-rate">{{ pct(s.qualificationCoverage) }}</span>
-                    <span v-if="s.qualifiedPending" class="sr-sub">
-                      {{ s.qualifiedPending }} sin calificar
-                    </span>
-                  </td>
-                  <td data-label="Dormidos" class="num">
-                    <span :class="{ 'text-warn': s.stale > 0 }">{{ integer(s.stale) }}</span>
-                    <span v-if="s.staleDaysMedian !== null" class="sr-sub">med. {{ days(s.staleDaysMedian) }}</span>
-                  </td>
-                  <td data-label="Sin mover" class="num">
-                    <span :class="{ 'text-warn': s.unmoved > 0 }">{{ integer(s.unmoved) }}</span>
-                  </td>
-                  <td data-label="Movimientos" class="num">
-                    {{ integer(s.activity.moves) }}
-                    <span v-if="s.activity.blocked" class="sr-sub">
-                      {{ s.activity.blocked }} bloqueado{{ s.activity.blocked === 1 ? '' : 's' }}
-                    </span>
-                  </td>
+                  <template v-if="tableViewMode !== 'attention'">
+                    <td data-label="Pasaron a Ventas" class="num">
+                      {{ integer(s.graduated) }}
+                      <span class="sr-rate">{{ pct(s.graduationRate) }}</span>
+                    </td>
+                    <td data-label="Con reunión" class="num">
+                      <strong>{{ integer(s.withMeeting) }}</strong>
+                      <span class="sr-rate">{{ pct(s.meetingRate) }}</span>
+                      <span v-if="s.meetingsCancelled" class="sr-sub">
+                        {{ s.meetingsCancelled }} cancelada{{ s.meetingsCancelled === 1 ? '' : 's' }}
+                      </span>
+                    </td>
+                    <td data-label="Cerrados" class="num">
+                      <strong>{{ integer(s.won) }}</strong>
+                      <span class="sr-rate">{{ pct(s.winRate) }}</span>
+                    </td>
+                    <td data-label="Cierre / reunión" class="num">{{ pct(s.meetingToWinRate) }}</td>
+                    <td data-label="Días a la reunión" class="num">{{ days(s.daysToMeeting) }}</td>
+                  </template>
+                  <template v-if="tableViewMode !== 'conversion'">
+                    <td data-label="Sin respuesta" class="num sr-col-divider">
+                      <strong :class="{ 'text-warn': s.noFirstResponse > 0 }">{{ integer(s.noFirstResponse) }}</strong>
+                      <span v-if="s.responseMedianMin !== null" class="sr-sub">
+                        med. {{ minutes(s.responseMedianMin) }} · P90 {{ minutes(s.responseP90Min) }}
+                      </span>
+                    </td>
+                    <td data-label="Calificados" class="num">
+                      {{ integer(s.qualifiedYes + s.qualifiedNo) }}
+                      <span class="sr-rate">{{ pct(s.qualificationCoverage) }}</span>
+                      <span v-if="s.qualifiedPending" class="sr-sub">
+                        {{ s.qualifiedPending }} sin calificar
+                      </span>
+                    </td>
+                    <td data-label="Dormidos" class="num">
+                      <span :class="{ 'text-warn': s.stale > 0 }">{{ integer(s.stale) }}</span>
+                      <span v-if="s.staleDaysMedian !== null" class="sr-sub">med. {{ days(s.staleDaysMedian) }}</span>
+                    </td>
+                    <td data-label="Sin mover" class="num">
+                      <span :class="{ 'text-warn': s.unmoved > 0 }">{{ integer(s.unmoved) }}</span>
+                    </td>
+                    <td data-label="Movimientos" class="num">
+                      {{ integer(s.activity.moves) }}
+                      <span v-if="s.activity.blocked" class="sr-sub">
+                        {{ s.activity.blocked }} bloqueado{{ s.activity.blocked === 1 ? '' : 's' }}
+                      </span>
+                    </td>
+                  </template>
                 </tr>
               </tbody>
               <tfoot>
                 <tr>
                   <th scope="row">Equipo</th>
                   <td data-label="Leads" class="num"><strong>{{ integer(report.team.leads) }}</strong></td>
-                  <td data-label="Pasaron a Ventas" class="num">
-                    {{ integer(report.team.graduated) }}
-                    <span class="sr-rate">{{ pct(report.team.graduationRate) }}</span>
-                  </td>
-                  <td data-label="Con reunión" class="num">
-                    <strong>{{ integer(report.team.withMeeting) }}</strong>
-                    <span class="sr-rate">{{ pct(report.team.meetingRate) }}</span>
-                  </td>
-                  <td data-label="Cerrados" class="num">
-                    <strong>{{ integer(report.team.won) }}</strong>
-                    <span class="sr-rate">{{ pct(report.team.winRate) }}</span>
-                  </td>
-                  <td data-label="Cierre / reunión" class="num">{{ pct(report.team.meetingToWinRate) }}</td>
-                  <td data-label="Días a la reunión" class="num">{{ days(report.team.daysToMeeting) }}</td>
-                  <td data-label="Sin respuesta" class="num">
-                    <strong>{{ integer(report.team.noFirstResponse) }}</strong>
-                    <span v-if="report.team.responseMedianMin !== null" class="sr-sub">
-                      med. {{ minutes(report.team.responseMedianMin) }} · P90 {{ minutes(report.team.responseP90Min) }}
-                    </span>
-                  </td>
-                  <td data-label="Calificados" class="num">
-                    {{ integer(report.team.qualifiedYes + report.team.qualifiedNo) }}
-                    <span class="sr-rate">{{ pct(report.team.qualificationCoverage) }}</span>
-                  </td>
-                  <td data-label="Dormidos" class="num">{{ integer(report.team.stale) }}</td>
-                  <td data-label="Sin mover" class="num">{{ integer(report.team.unmoved) }}</td>
-                  <td data-label="Movimientos" class="num">{{ integer(totalMoves) }}</td>
+                  <template v-if="tableViewMode !== 'attention'">
+                    <td data-label="Pasaron a Ventas" class="num">
+                      {{ integer(report.team.graduated) }}
+                      <span class="sr-rate">{{ pct(report.team.graduationRate) }}</span>
+                    </td>
+                    <td data-label="Con reunión" class="num">
+                      <strong>{{ integer(report.team.withMeeting) }}</strong>
+                      <span class="sr-rate">{{ pct(report.team.meetingRate) }}</span>
+                    </td>
+                    <td data-label="Cerrados" class="num">
+                      <strong>{{ integer(report.team.won) }}</strong>
+                      <span class="sr-rate">{{ pct(report.team.winRate) }}</span>
+                    </td>
+                    <td data-label="Cierre / reunión" class="num">{{ pct(report.team.meetingToWinRate) }}</td>
+                    <td data-label="Días a la reunión" class="num">{{ days(report.team.daysToMeeting) }}</td>
+                  </template>
+                  <template v-if="tableViewMode !== 'conversion'">
+                    <td data-label="Sin respuesta" class="num sr-col-divider">
+                      <strong>{{ integer(report.team.noFirstResponse) }}</strong>
+                      <span v-if="report.team.responseMedianMin !== null" class="sr-sub">
+                        med. {{ minutes(report.team.responseMedianMin) }} · P90 {{ minutes(report.team.responseP90Min) }}
+                      </span>
+                    </td>
+                    <td data-label="Calificados" class="num">
+                      {{ integer(report.team.qualifiedYes + report.team.qualifiedNo) }}
+                      <span class="sr-rate">{{ pct(report.team.qualificationCoverage) }}</span>
+                    </td>
+                    <td data-label="Dormidos" class="num">{{ integer(report.team.stale) }}</td>
+                    <td data-label="Sin mover" class="num">{{ integer(report.team.unmoved) }}</td>
+                    <td data-label="Movimientos" class="num">{{ integer(totalMoves) }}</td>
+                  </template>
                 </tr>
               </tfoot>
             </table>
@@ -401,13 +455,20 @@
       </section>
     </template>
 
-    <div v-else-if="isLoading" class="sr-loading">Armando el reporte…</div>
+    <AppLoader
+      v-else-if="isLoading"
+      variant="dashboard"
+      icon="🎧"
+      title="Armando el reporte de setters…"
+      subtitle="Analizando leads atribuidos, reuniones agendadas y tiempos de primera respuesta."
+    />
   </main>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import AppLoader from '../components/AppLoader.vue';
 import ReportBarChart from '../components/report/ReportBarChart.vue';
 import ReportBarList from '../components/report/ReportBarList.vue';
 import ReportStackedBars from '../components/report/ReportStackedBars.vue';
@@ -462,6 +523,8 @@ const isLoading = ref(false);
 const error = ref('');
 /** `null` = todo el equipo. Es solo de la pantalla: no se vuelve a pedir nada. */
 const focusId = ref(null);
+const showAttentionKpis = ref(true);
+const tableViewMode = ref('all'); // 'all' | 'conversion' | 'attention'
 
 async function load() {
   isLoading.value = true;
@@ -629,6 +692,9 @@ const kpiTiles = computed(() => {
     }
   ];
 });
+
+const conversionKpiTiles = computed(() => kpiTiles.value.slice(0, 8));
+const attentionKpiTiles = computed(() => kpiTiles.value.slice(8));
 
 /** Las series de la barra de atención: los tramos del servidor + la ausencia. */
 const responseSeries = computed(() => [
@@ -959,11 +1025,49 @@ const monthlyExtras = computed(() => monthlySource.value.months.map((_, i) => {
 .sr-highlight.is-warn { border-left-color: var(--accent-amber); }
 .sr-highlight.is-neutral { border-left-color: var(--viz-lead); }
 
+.sr-kpi-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.sr-kpi-section-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sr-diag-toggle {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card-solid);
+  color: var(--text-sub);
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.sr-diag-toggle:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
 .sr-kpis {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 0.6rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.85rem;
+}
+.sr-kpis-attention {
+  padding: 0.75rem;
+  background: var(--surface-1);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+  margin-bottom: 1.15rem;
 }
 .sr-kpi {
   display: flex;
@@ -974,6 +1078,53 @@ const monthlyExtras = computed(() => monthlySource.value.months.map((_, i) => {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
+}
+.sr-kpi-primary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--viz-lead);
+}
+.sr-card-head-flex {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.sr-card-head-flex p { margin-bottom: 0; max-width: 68ch; }
+.sr-table-mode-pills {
+  display: inline-flex;
+  background: var(--surface-2);
+  padding: 0.2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  gap: 0.2rem;
+}
+.sr-mode-pill {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.32rem 0.65rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.sr-mode-pill.is-active {
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+  box-shadow: var(--shadow-sm);
+}
+.sr-col-divider {
+  border-left: 1px dashed var(--border-strong);
 }
 .sr-kpi-label { font-size: 0.74rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .sr-kpi-value {
