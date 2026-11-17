@@ -6201,7 +6201,10 @@ ${numberedList(fullSlotLabels(offer))}
           status: 'active',
           bot_enabled: true,
           answers: JSON.stringify({}),
-          missed_reply_at: db.fn.now()
+          // Reserva ESTE mensaje (ver `_recoverMissedReply`): con la fecha
+          // escrita por el mismo driver que escribe `received_at`, para que
+          // las dos se puedan comparar sin depender del huso de MySQL.
+          missed_reply_at: new Date()
         })
         .onConflict('wa_id')
         .ignore();
@@ -6235,13 +6238,21 @@ ${numberedList(fullSlotLabels(offer))}
    * Reintenta un turno que el bot perdió: el contacto escribió, no recibió
    * nada, y ya pasó el margen de `MISSED_REPLY_RECOVERY_MS`.
    *
-   * Solo se reintenta UNA vez por conversación. La reserva es la misma que la
-   * del recordatorio (el UPDATE lleva la condición `missed_reply_at IS NULL`,
-   * así que dos barridos solapados no pueden reintentar el mismo turno dos
-   * veces). Si la fila ya estaba reservada, quiere decir que el reintento
-   * anterior tampoco dejó respuesta: ahí se corta y pasa a un asesor, porque
-   * lo que ya falló dos veces solo no se arregla — y el lead lleva rato
-   * esperando algo que nunca llegó.
+   * Solo se reintenta UNA vez por MENSAJE sin responder. La reserva es un
+   * UPDATE condicionado, así que dos barridos solapados no pueden reintentar
+   * el mismo turno dos veces. Si ese mensaje ya estaba reservado, quiere decir
+   * que el reintento anterior tampoco dejó respuesta: ahí se corta y pasa a un
+   * asesor, porque lo que ya falló dos veces solo no se arregla — y el lead
+   * lleva rato esperando algo que nunca llegó.
+   *
+   * Hasta el 17/11/2026 era una vez por CONVERSACIÓN: `missed_reply_at` no se
+   * borraba nunca, y `_recoverOrphanInbounds` lo marca al rescatar el primer
+   * mensaje. Así, el primer tropiezo posterior —aunque fuera de otro mensaje,
+   * horas después— transfería al lead sin intentar nada. Caso real: un lead
+   * rescatado a las 08:25 eligió "Hoy 9:30" a las 08:29, ese mensaje no llegó
+   * al bot, y a las 08:35 recibió "Te paso con un asesor" en vez de su
+   * reunión. Ahora la reserva solo cuenta si es POSTERIOR al último mensaje
+   * del contacto, o sea si es de ese mismo mensaje.
    *
    * La disculpa sale como mensaje aparte y ANTES de reintentar el turno: la
    * demora es nuestra y se dice así, en vez de preguntarle al contacto si
@@ -6277,7 +6288,7 @@ ${numberedList(fullSlotLabels(offer))}
       .where({ wa_id: waId })
       .orderBy('id', 'desc')
       .limit(1)
-      .select('direction');
+      .select('direction', 'received_at');
     if (!ultimo || ultimo.direction !== 'inbound') {
       this.logActivity({
         type: 'missed_reply_skipped_answered',
@@ -6287,10 +6298,16 @@ ${numberedList(fullSlotLabels(offer))}
       return;
     }
 
+    // Libre si nunca se reservó o si la reserva es de un mensaje anterior a
+    // este (ver el comentario del método). `new Date()` y no `db.fn.now()`:
+    // se compara contra `received_at`, que escribe el driver.
     const claimed = await db('whatsapp_bot_sessions')
       .where({ id: session.id })
-      .whereNull('missed_reply_at')
-      .update({ missed_reply_at: db.fn.now() });
+      .where((q) => {
+        q.whereNull('missed_reply_at');
+        if (ultimo.received_at) q.orWhere('missed_reply_at', '<', ultimo.received_at);
+      })
+      .update({ missed_reply_at: new Date() });
 
     if (!claimed) {
       this.logActivity({ type: 'missed_reply_handoff', waId, text: lastText });
