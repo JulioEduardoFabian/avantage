@@ -288,15 +288,6 @@ export class WhatsappMessageService {
       .ignore();
 
     if (!id) return { record: await this.getByMessageId(messageId), isNew: false };
-
-    /*
-     * El eco es un asesor contestando desde la app de WhatsApp Business o
-     * desde el inbox del proveedor: cuenta como primera respuesta tanto como
-     * un envío desde el panel. Sin esto, el lead atendido por fuera figuraría
-     * como sin atender.
-     */
-    void stampFirstResponseByPhone(waId, { at: sentAt || new Date() });
-
     return { record: await this.getById(id), isNew: true };
   }
 
@@ -325,6 +316,23 @@ export class WhatsappMessageService {
       .ignore();
 
     if (!id) return { record: await this.getByMessageId(messageId), isNew: false };
+
+    /*
+     * El eco es un asesor contestando desde la app de WhatsApp Business o
+     * desde el inbox del proveedor: cuenta como primera respuesta tanto como
+     * un envío desde el panel. Sin esto, el lead atendido por fuera figuraría
+     * como sin atender.
+     *
+     * Vive ACÁ y no en `recordInboundMessage()`, donde estuvo pegado del
+     * 01/11 al 17/11/2026: ahí `sentAt` no existe, así que cada mensaje
+     * entrante nuevo lanzaba un ReferenceError justo después de guardarse. El
+     * webhook de YCloud lo atrapaba en silencio y nunca llegaba a abrir la
+     * ficha ni a llamar al bot: los leads solo recibían respuesta cuando el
+     * barrido de rescate los encontraba, minutos después ("Perdona la
+     * demora"). Además, un mensaje ENTRANTE no es una respuesta nuestra.
+     */
+    void stampFirstResponseByPhone(waId, { at: sentAt || new Date() });
+
     return { record: await this.getById(id), isNew: true };
   }
 
