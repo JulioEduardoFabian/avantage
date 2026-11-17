@@ -115,123 +115,153 @@
       </div>
     </section>
 
-    <!-- Barra de Filtros, Canales, Búsqueda y Paginación -->
+    <!--
+      Barra de filtros. Va en DOS filas y con cada grupo rotulado porque antes
+      era una sola tira: la búsqueda quedaba cortada a media frase y el "Todos"
+      de Viabilidad caía pegado a "Instagram", así que los dos grupos de
+      píldoras se leían como uno solo y no se sabía qué apagaba cada botón.
+      Cada grupo es un control segmentado (una sola opción a la vez) y lleva su
+      conteo al lado, que es lo que permite ver que un canal está vacío sin
+      tener que elegirlo.
+    -->
     <div class="kanban-toolbar">
-      <div class="search-filter-box">
-        <span class="search-icon">🔍</span>
-        <input
-          v-model="searchQuery"
-          type="text"
-          class="search-input"
-          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
-        />
-        <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
-      </div>
+      <div class="toolbar-row">
+        <div class="search-filter-box">
+          <span class="search-icon">🔍</span>
+          <input
+            v-model="searchQuery"
+            type="text"
+            class="search-input"
+            placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
+          />
+          <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
+        </div>
 
-      <!-- Filtro por Canal de Origen (WhatsApp, Facebook, Instagram) -->
-      <div class="channel-filter-group">
-        <button
-          class="channel-pill"
-          :class="{ active: selectedChannelFilter === 'all' }"
-          @click="selectedChannelFilter = 'all'"
+        <!--
+          Cuántos leads quedan a la vista. Sin esto, un filtro que esconde medio
+          tablero se ve igual que un tablero vacío.
+        -->
+        <span
+          class="toolbar-count"
+          :class="{ filtered: activeFilterCount > 0 }"
+          title="Leads de este tablero. Los que ya pasaron al Funnel de Ventas no se cuentan acá."
         >
-          🌐 Todos ({{ totalLeadsCount }})
-        </button>
+          <strong>{{ visibleLeadsCount }}</strong>
+          <template v-if="activeFilterCount > 0"> de {{ boardLeadsCount }}</template>
+          {{ visibleLeadsCount === 1 ? 'lead' : 'leads' }}
+        </span>
+
         <button
-          class="channel-pill whatsapp-pill"
-          :class="{ active: selectedChannelFilter === 'whatsapp' }"
-          @click="selectedChannelFilter = 'whatsapp'"
+          v-if="activeFilterCount > 0"
+          class="clear-filters-btn"
+          title="Quitar todos los filtros de la barra"
+          @click="clearAllFilters"
         >
-          💚 WhatsApp ({{ whatsappCount }})
-        </button>
-        <button
-          class="channel-pill fb-pill"
-          :class="{ active: selectedChannelFilter === 'facebook' }"
-          @click="selectedChannelFilter = 'facebook'"
-        >
-          📘 Facebook ({{ fbCount }})
-        </button>
-        <button
-          class="channel-pill ig-pill"
-          :class="{ active: selectedChannelFilter === 'instagram' }"
-          @click="selectedChannelFilter = 'instagram'"
-        >
-          📸 Instagram ({{ igCount }})
+          ✕ Limpiar filtros ({{ activeFilterCount }})
         </button>
       </div>
 
-      <!-- Filtros por Viabilidad -->
-      <div class="filter-pills">
-        <button
-          v-for="pill in VIABILITY_FILTERS"
-          :key="pill.id"
-          class="filter-pill"
-          :class="{ active: selectedViabilityFilter === pill.id }"
-          @click="selectedViabilityFilter = pill.id"
-        >
-          {{ pill.label }}
-        </button>
-      </div>
+      <div class="toolbar-row toolbar-row-filters">
+        <!-- Filtro por Canal de Origen (WhatsApp, Facebook, Instagram, TikTok) -->
+        <div class="filter-group">
+          <span class="filter-group-label">Canal:</span>
+          <div class="segmented" role="group" aria-label="Filtrar por canal de origen">
+            <button
+              v-for="ch in channelFilters"
+              :key="ch.id"
+              class="segmented-btn"
+              :class="[ch.cls, { active: selectedChannelFilter === ch.id }]"
+              :aria-pressed="selectedChannelFilter === ch.id"
+              :title="ch.title"
+              @click="selectedChannelFilter = ch.id"
+            >
+              <span class="segmented-icon" aria-hidden="true">{{ ch.icon }}</span>
+              <span class="segmented-text">{{ ch.label }}</span>
+              <span class="segmented-count">{{ ch.count }}</span>
+            </button>
+          </div>
+        </div>
 
-      <!--
-        Filtro por responsable: el tablero tal como lo tiene cada persona (sus
-        leads asignados). Solo para quien ve quien tiene el permiso
-        `setter.filter_assignee`; trabaja sobre los leads que el servidor ya le
-        manda a esa persona, no abre ninguno.
-      -->
-      <div v-if="canFilterByAssignee" class="items-per-page-box">
-        <span class="toolbar-label">Responsable:</span>
-        <select v-model="selectedAssigneeFilter" class="items-select" title="Ver los leads asignados a una persona">
-          <option value="all">Todos</option>
-          <option v-for="option in assigneeOptions" :key="option.id" :value="option.id">
-            {{ option.name }} ({{ option.count }})
-          </option>
-          <option value="none">Sin asignar ({{ unassignedCount }})</option>
-        </select>
-      </div>
+        <!-- Filtros por Viabilidad -->
+        <div class="filter-group">
+          <span class="filter-group-label">Viabilidad:</span>
+          <div class="segmented" role="group" aria-label="Filtrar por nivel de viabilidad">
+            <button
+              v-for="pill in viabilityFilters"
+              :key="pill.id"
+              class="segmented-btn"
+              :class="[pill.cls, { active: selectedViabilityFilter === pill.id }]"
+              :aria-pressed="selectedViabilityFilter === pill.id"
+              :title="pill.title"
+              @click="selectedViabilityFilter = pill.id"
+            >
+              <span v-if="pill.icon" class="segmented-icon" aria-hidden="true">{{ pill.icon }}</span>
+              <span class="segmented-text">{{ pill.label }}</span>
+              <span class="segmented-count">{{ pill.count }}</span>
+            </button>
+          </div>
+        </div>
 
-      <!-- Filtro por fecha de registro del lead (día de Lima, ambos extremos incluidos) -->
-      <div class="items-per-page-box date-filter-box">
-        <span class="toolbar-label">Registrado:</span>
-        <input v-model="dateFrom" type="date" class="items-select date-input" :max="dateTo || undefined" title="Desde" />
-        <span class="toolbar-label">a</span>
-        <input v-model="dateTo" type="date" class="items-select date-input" :min="dateFrom || undefined" title="Hasta" />
-        <button
-          v-if="dateFrom || dateTo"
-          class="clear-search-btn"
-          title="Quitar el filtro de fecha"
-          @click="dateFrom = ''; dateTo = ''"
-        >✕</button>
-      </div>
+        <!--
+          Filtro por responsable: el tablero tal como lo tiene cada persona (sus
+          leads asignados). Solo para quien ve quien tiene el permiso
+          `setter.filter_assignee`; trabaja sobre los leads que el servidor ya le
+          manda a esa persona, no abre ninguno.
+        -->
+        <div v-if="canFilterByAssignee" class="filter-group">
+          <span class="filter-group-label">Responsable:</span>
+          <select v-model="selectedAssigneeFilter" class="items-select" title="Ver los leads asignados a una persona">
+            <option value="all">Todos</option>
+            <option v-for="option in assigneeOptions" :key="option.id" :value="option.id">
+              {{ option.name }} ({{ option.count }})
+            </option>
+            <option value="none">Sin asignar ({{ unassignedCount }})</option>
+          </select>
+        </div>
 
-      <!-- Control de Tarjetas por Columna -->
-      <div class="items-per-page-box">
-        <span class="toolbar-label">Por pág:</span>
-        <select v-model="itemsPerPage" class="items-select" title="Límite de tarjetas por columna">
-          <option :value="10">10 leads</option>
-          <option :value="20">20 leads</option>
-          <option :value="30">30 leads</option>
-          <option value="all">Ver todos</option>
-        </select>
-      </div>
+        <!-- Filtro por fecha de registro del lead (día de Lima, ambos extremos incluidos) -->
+        <div class="filter-group date-filter-box">
+          <span class="filter-group-label">Registrado:</span>
+          <input v-model="dateFrom" type="date" class="items-select date-input" :max="dateTo || undefined" title="Desde" />
+          <span class="filter-group-label">a</span>
+          <input v-model="dateTo" type="date" class="items-select date-input" :min="dateFrom || undefined" title="Hasta" />
+          <button
+            v-if="dateFrom || dateTo"
+            class="clear-search-btn"
+            title="Quitar el filtro de fecha"
+            @click="dateFrom = ''; dateTo = ''"
+          >✕</button>
+        </div>
 
-      <!-- Flechas de desplazamiento horizontal del tablero (solo en el funnel) -->
-      <div v-if="viewMode === 'funnel'" class="board-nav-arrows">
-        <button
-          class="board-nav-btn"
-          @click="scrollBoard('left')"
-          title="Desplazar tablero a la izquierda"
-        >
-          ◀
-        </button>
-        <span class="board-nav-hint">{{ columns.length }} etapas</span>
-        <button
-          class="board-nav-btn"
-          @click="scrollBoard('right')"
-          title="Desplazar tablero a la derecha"
-        >
-          ▶
-        </button>
+        <!-- Control de Tarjetas por Columna -->
+        <div class="filter-group">
+          <span class="filter-group-label">Por pág:</span>
+          <select v-model="itemsPerPage" class="items-select" title="Límite de tarjetas por columna">
+            <option :value="10">10 leads</option>
+            <option :value="20">20 leads</option>
+            <option :value="30">30 leads</option>
+            <option value="all">Ver todos</option>
+          </select>
+        </div>
+
+        <!-- Flechas de desplazamiento horizontal del tablero (solo en el funnel) -->
+        <div v-if="viewMode === 'funnel'" class="board-nav-arrows">
+          <button
+            class="board-nav-btn"
+            @click="scrollBoard('left')"
+            title="Desplazar tablero a la izquierda"
+          >
+            ◀
+          </button>
+          <span class="board-nav-hint">{{ columns.length }} etapas</span>
+          <button
+            class="board-nav-btn"
+            @click="scrollBoard('right')"
+            title="Desplazar tablero a la derecha"
+          >
+            ▶
+          </button>
+        </div>
       </div>
     </div>
 
@@ -799,6 +829,10 @@
                 <option value="WhatsApp Directo" />
                 <option value="Instagram Ads" />
                 <option value="Facebook Ads" />
+                <!-- El mismo texto que escribe `persistTikTokLead()`, para que
+                     un alta a mano caiga en el filtro de TikTok como las que
+                     trae la importación. -->
+                <option value="TikTok Ads" />
                 <option value="Referido" />
                 <option value="Manual" />
               </datalist>
@@ -1236,13 +1270,6 @@ const PRESET_COLORS = [
   { name: 'Naranja', hex: '#BF5A2A' }
 ];
 
-const VIABILITY_FILTERS = [
-  { id: 'all', label: 'Todos' },
-  { id: 'alta', label: '🌟 Alta' },
-  { id: 'media', label: '⚖️ Media' },
-  { id: 'baja', label: '🔻 Baja' }
-];
-
 // Estado de Columnas
 const columns = ref([]);
 const kanbanBoardRef = ref(null);
@@ -1490,6 +1517,28 @@ function getLeadChannelInfo(lead) {
   const notes = (lead.additional_notes || '').toLowerCase();
   const topic = (lead.topic || '').toLowerCase();
 
+  // TikTok va PRIMERO porque es el único canal que se reconoce por evidencia
+  // dura y no por texto: las columnas de atribución que escribe
+  // `persistTikTokLead()` (ver `tiktokLeadsService.js`) y el sello de origen.
+  // Los demás se deducen de lo que diga `source`/`notes`, que es más flojo, y
+  // un lead de TikTok que además escribió por WhatsApp tiene las dos cosas en
+  // la ficha; de qué plataforma salió lo decide el id que ELLA emitió.
+  if (
+    lead.tiktok_lead_id ||
+    lead.tiktok_ad_id ||
+    lead.tiktok_campaign_id ||
+    (lead.origin_platform || '').toLowerCase() === 'tiktok' ||
+    source.includes('tiktok') ||
+    topic.includes('tiktok') ||
+    notes.includes('tiktok')
+  ) {
+    return {
+      type: 'tiktok',
+      label: lead.source || 'TikTok Ads',
+      icon: '🎵',
+      cssClass: 'channel-tiktok'
+    };
+  }
   if (source.includes('whatsapp') || topic.includes('whatsapp') || notes.includes('whatsapp')) {
     return {
       type: 'whatsapp',
@@ -1556,6 +1605,65 @@ const igCount = computed(() => {
 });
 
 const igFbCount = computed(() => fbCount.value + igCount.value);
+
+/**
+ * Los conteos de los FILTROS salen de `setterFunnelLeads` —los leads que este
+ * tablero puede mostrar— y no de `leads.value`, que es el total de la
+ * consulta. Un número al lado de un botón promete cuántas tarjetas van a
+ * quedar: contando también a los que ya graduaron a Ventas, "WhatsApp (670)"
+ * dejaba a la vista bastantes menos y parecía que el filtro se había comido
+ * media pantalla. Las tarjetas de arriba siguen contando sobre el total, que
+ * es otra pregunta ("¿cuánto entró?") y por eso dan otro número.
+ */
+const boardLeadsCount = computed(() => setterFunnelLeads.value.length);
+
+const boardChannelCounts = computed(() => {
+  const tally = { all: 0, whatsapp: 0, facebook: 0, instagram: 0, tiktok: 0 };
+  for (const lead of setterFunnelLeads.value) {
+    tally.all += 1;
+    const type = getLeadChannelInfo(lead).type;
+    // El canal `chat` (sin plataforma reconocida) suma en "Todos" y en ninguna
+    // de las cuatro: es a propósito, no todo lead entró por un anuncio.
+    if (type !== 'all' && type in tally) tally[type] += 1;
+  }
+  return tally;
+});
+
+/**
+ * Los botones del filtro de canal, con su conteo. Se arman acá y no sueltos en
+ * el template para que agregar una plataforma sea una fila más y no otro
+ * bloque de markup copiado (que es como el de TikTok terminó faltando).
+ */
+const channelFilters = computed(() => [
+  { id: 'all', label: 'Todos', icon: '🌐', cls: 'ch-all', count: boardChannelCounts.value.all, title: 'Todos los canales' },
+  { id: 'whatsapp', label: 'WhatsApp', icon: '💚', cls: 'ch-whatsapp', count: boardChannelCounts.value.whatsapp, title: 'Solo leads que llegaron por WhatsApp' },
+  { id: 'facebook', label: 'Facebook', icon: '📘', cls: 'ch-facebook', count: boardChannelCounts.value.facebook, title: 'Solo leads que llegaron por Facebook / Meta' },
+  { id: 'instagram', label: 'Instagram', icon: '📸', cls: 'ch-instagram', count: boardChannelCounts.value.instagram, title: 'Solo leads que llegaron por Instagram' },
+  { id: 'tiktok', label: 'TikTok', icon: '🎵', cls: 'ch-tiktok', count: boardChannelCounts.value.tiktok, title: 'Solo leads que llegaron por TikTok (formulario instantáneo)' }
+]);
+
+/**
+ * Cuántos leads hay de cada nivel de viabilidad, con el MISMO criterio con el
+ * que después se filtra (`lvl.includes(...)`): un conteo que no se pueda
+ * comprobar eligiendo el botón es peor que no tenerlo.
+ */
+const viabilityCounts = computed(() => {
+  const tally = { alta: 0, media: 0, baja: 0 };
+  for (const lead of setterFunnelLeads.value) {
+    const lvl = (lead.viability_level || '').toLowerCase();
+    if (lvl.includes('alta')) tally.alta += 1;
+    else if (lvl.includes('media')) tally.media += 1;
+    else if (lvl.includes('baja')) tally.baja += 1;
+  }
+  return tally;
+});
+
+const viabilityFilters = computed(() => [
+  { id: 'all', label: 'Todos', icon: '', cls: 'vi-all', count: boardLeadsCount.value, title: 'Cualquier nivel de viabilidad' },
+  { id: 'alta', label: 'Alta', icon: '🌟', cls: 'vi-alta', count: viabilityCounts.value.alta, title: 'Solo viabilidad alta' },
+  { id: 'media', label: 'Media', icon: '⚖️', cls: 'vi-media', count: viabilityCounts.value.media, title: 'Solo viabilidad media' },
+  { id: 'baja', label: 'Baja', icon: '🔻', cls: 'vi-baja', count: viabilityCounts.value.baja, title: 'Solo viabilidad baja' }
+]);
 
 const scheduledAppointmentsCount = computed(() => {
   return leads.value.filter(l => l.status === 'cita_agendada').length;
@@ -1707,6 +1815,43 @@ const filteredLeadsByColumn = computed(() => {
 
   return grouped;
 });
+
+/**
+ * Cuántos leads quedaron a la vista con los filtros puestos. Se cuenta sobre
+ * `filteredLeadsByColumn` —lo que el tablero y la tabla ya muestran— y no con
+ * una segunda pasada propia: dos recuentos con criterios propios es como se
+ * llega a que la barra diga un número y el tablero otro.
+ */
+const visibleLeadsCount = computed(() => {
+  let total = 0;
+  for (const list of Object.values(filteredLeadsByColumn.value)) total += list.length;
+  return total;
+});
+
+/**
+ * Cuántos filtros hay puestos. De esto cuelga el botón de "Limpiar filtros":
+ * con cinco controles repartidos en la barra, un tablero casi vacío por un
+ * filtro de fecha que alguien dejó puesto ayer se ve igual que un tablero sin
+ * leads, y hay que ir apagándolos de a uno para descubrirlo.
+ */
+const activeFilterCount = computed(() => {
+  let n = 0;
+  if (searchQuery.value.trim()) n += 1;
+  if (selectedChannelFilter.value !== 'all') n += 1;
+  if (selectedViabilityFilter.value !== 'all') n += 1;
+  if (canFilterByAssignee.value && selectedAssigneeFilter.value !== 'all') n += 1;
+  if (dateFrom.value || dateTo.value) n += 1;
+  return n;
+});
+
+function clearAllFilters() {
+  searchQuery.value = '';
+  selectedChannelFilter.value = 'all';
+  selectedViabilityFilter.value = 'all';
+  selectedAssigneeFilter.value = 'all';
+  dateFrom.value = '';
+  dateTo.value = '';
+}
 
 // Leads paginados por columna
 const paginatedLeadsByColumn = computed(() => {
@@ -2773,7 +2918,14 @@ onMounted(() => {
   line-height: 1.2;
 }
 
-/* Toolbar */
+/* Toolbar
+ *
+ * Dos filas: la búsqueda arriba (necesita el ancho entero: su placeholder
+ * nombra los cinco campos por los que se puede buscar y antes quedaba cortado
+ * en "tema") y los filtros abajo, cada uno rotulado y dentro de su propio
+ * control segmentado. Lo que se arregló es que las píldoras de Canal y las de
+ * Viabilidad estaban pegadas, con dos "Todos" idénticos a dos dedos de
+ * distancia, y nada decía qué apagaba cada botón. */
 .kanban-toolbar {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -2781,10 +2933,22 @@ onMounted(() => {
   padding: 0.7rem 0.9rem;
   margin-bottom: 0.9rem;
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.6rem;
   backdrop-filter: blur(12px);
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.toolbar-row-filters {
+  gap: 0.5rem 1.1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border-color);
 }
 
 .search-filter-box {
@@ -2795,8 +2959,14 @@ onMounted(() => {
   border-radius: 10px;
   padding: 0.45rem 0.85rem;
   flex: 1;
-  min-width: 240px;
+  min-width: 260px;
   gap: 0.5rem;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.search-filter-box:focus-within {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(86, 98, 74, 0.15);
 }
 
 .search-input {
@@ -2806,6 +2976,7 @@ onMounted(() => {
   font-size: 0.88rem;
   width: 100%;
   outline: none;
+  text-overflow: ellipsis;
 }
 
 .clear-search-btn {
@@ -2814,89 +2985,151 @@ onMounted(() => {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.15rem 0.25rem;
+  border-radius: 6px;
 }
 
-/* Filtros por Canales */
-.channel-filter-group {
+.clear-search-btn:hover {
+  color: var(--text-main);
+  background: var(--surface-3);
+}
+
+/* Cuántos leads quedan a la vista, y el escape para soltar todo de una vez. */
+.toolbar-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbar-count strong {
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+.toolbar-count.filtered strong {
+  color: var(--accent-amber);
+}
+
+.clear-filters-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border-color);
+  color: var(--text-sub, var(--text-main));
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.clear-filters-btn:hover {
+  background: var(--surface-4);
+  color: var(--text-main);
+  border-color: var(--surface-5);
+}
+
+/* Grupos de filtros: rótulo + control */
+.filter-group {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
   flex-wrap: wrap;
 }
 
-.channel-pill {
-  background: var(--surface-2);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  padding: 0.45rem 0.85rem;
-  border-radius: 20px;
-  font-size: 0.82rem;
+.filter-group-label {
+  font-size: 0.78rem;
   font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
-.channel-pill:hover {
+/*
+ * Control segmentado: una sola opción a la vez. El riel compartido es lo que
+ * dice de un vistazo que esos botones son UN filtro, que es justo lo que no se
+ * entendía cuando eran píldoras sueltas.
+ */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  flex-wrap: wrap;
+}
+
+.segmented-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.segmented-btn:hover {
   background: var(--surface-3);
   color: var(--text-main);
 }
 
-.channel-pill.active {
-  background: rgba(158, 186, 75, 0.2);
-  border-color: #2C8C99;
-  color: #5AAEB8;
+.segmented-btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 1px;
 }
 
-.channel-pill.whatsapp-pill.active {
-  background: rgba(46, 125, 70, 0.22);
-  border-color: #2F7D5A;
-  color: var(--accent-emerald);
-}
-
-.channel-pill.fb-pill.active {
-  background: rgba(111, 129, 37, 0.22);
-  border-color: #56624A;
-  color: var(--accent-cyan);
-}
-
-.channel-pill.ig-pill.active {
-  background: rgba(138, 63, 40, 0.22);
-  border-color: #8A3F28;
-  color: var(--accent-pink);
-}
-
-/* Filtros por Viabilidad */
-.filter-pills {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.filter-pill {
-  background: var(--surface-2);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  padding: 0.4rem 0.75rem;
-  border-radius: 20px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.filter-pill.active {
-  background: var(--surface-4);
+/*
+ * Lo elegido no se distingue SOLO por el color: cambia el fondo, se le dibuja
+ * el borde y se levanta del riel. El tinte de cada canal es la guinda, no la
+ * marca — verde y ámbar son el mismo color con deuteranopía.
+ */
+.segmented-btn.active {
+  background: var(--bg-card-solid);
   border-color: var(--surface-5);
+  color: var(--text-main);
+  box-shadow: 0 1px 2px rgba(16, 20, 20, 0.12);
+}
+
+.segmented-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.segmented-count {
+  background: var(--surface-3);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.segmented-btn.active .segmented-count {
+  background: var(--surface-4);
   color: var(--text-main);
 }
 
-.items-per-page-box {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  color: var(--text-muted);
-}
+.segmented-btn.ch-whatsapp.active { color: var(--accent-emerald); }
+.segmented-btn.ch-facebook.active { color: var(--accent-cyan); }
+.segmented-btn.ch-instagram.active { color: var(--accent-pink); }
+.segmented-btn.ch-tiktok.active { color: var(--accent-silver); }
+.segmented-btn.vi-alta.active { color: var(--accent-emerald); }
+.segmented-btn.vi-media.active { color: var(--accent-amber); }
+.segmented-btn.vi-baja.active { color: var(--accent-rose); }
 
 .items-select {
   background: var(--surface-2);
@@ -2906,6 +3139,10 @@ onMounted(() => {
   padding: 0.35rem 0.6rem;
   font-size: 0.82rem;
   outline: none;
+}
+
+.items-select:focus-visible {
+  border-color: var(--accent-cyan);
 }
 
 .board-nav-arrows {
@@ -4178,7 +4415,18 @@ button.setter-btn {
 @media (max-width: 760px) {
   .kanban-header { flex-direction: column; gap: 0.75rem; }
   .kanban-header .header-actions { width: 100%; flex-wrap: wrap; }
-  .kanban-toolbar { flex-direction: column; align-items: stretch; gap: 0.6rem; }
+  /*
+   * En el celular los grupos se apilan y cada riel ocupa el ancho: las
+   * píldoras envuelven en vez de salirse de pantalla, así ningún canal queda
+   * escondido detrás de un desplazamiento lateral que nadie descubre.
+   */
+  .toolbar-row { align-items: stretch; }
+  .toolbar-row-filters { flex-direction: column; align-items: stretch; gap: 0.7rem; }
+  .filter-group { align-items: flex-start; }
+  .filter-group .segmented { width: 100%; }
+  .filter-group .segmented-btn { flex: 1 1 auto; justify-content: center; }
+  .filter-group .items-select { flex: 1; min-width: 0; }
+  .board-nav-arrows { margin-left: 0; justify-content: space-between; }
   .funnel-stats-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; }
 
   .kanban-viewport {
