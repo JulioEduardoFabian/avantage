@@ -1,6 +1,8 @@
 import { db } from '../db/connection.js';
 import { CommissionService } from './commissionService.js';
 import { FinanceLedgerService } from './financeLedgerService.js';
+import { isClosedDeal } from './dealClosure.js';
+import { loadWinningStatuses } from './salesFunnelStage.js';
 
 /**
  * Cobranzas: las cuotas que todavía no entraron, y las que entraron y Finanzas
@@ -101,6 +103,33 @@ export function deliveryState(income, deliverables = []) {
   };
 }
 
+/**
+ * Saca las cuotas de los leads que todavía no se ganaron.
+ *
+ * El contrato escribe su cronograma en `finance_income` en cuanto se guarda, y
+ * se guarda ANTES de cerrar: sin este filtro, a un lead en cotización se lo
+ * perseguía por una cuota "vencida" de un contrato que ni firmó. La regla es la
+ * misma de INGRESOS (`isClosedDeal()`), y la plata que se movió se mira sobre
+ * TODAS las cuotas del lead —no solo las de esta lista, que excluye las
+ * verificadas—. Una cuota sin lead se queda: no hay lead que ganar.
+ */
+async function soloVentasCerradas(filas) {
+  const leadIds = [...new Set(filas.map((fila) => fila.lead_id).filter(Boolean))];
+  if (!leadIds.length) return filas;
+  const [winning, conProyecto, conPlata] = await Promise.all([
+    loadWinningStatuses(),
+    db('projects').whereIn('lead_id', leadIds).distinct().pluck('lead_id'),
+    db('finance_income').whereIn('lead_id', leadIds).whereNot('estado', 'pendiente').distinct().pluck('lead_id')
+  ]);
+  const proyectos = new Set(conProyecto);
+  const plata = new Set(conPlata);
+  return filas.filter((fila) => !fila.lead_id || isClosedDeal({
+    status: fila.lead_status,
+    hasProject: proyectos.has(fila.lead_id),
+    hasMoney: plata.has(fila.lead_id)
+  }, winning));
+}
+
 export class CollectionService {
   constructor({ ledgerService, commissionService } = {}) {
     this.ledger = ledgerService || new FinanceLedgerService();
@@ -141,7 +170,7 @@ export class CollectionService {
       .orderBy('i.due_date', 'asc')
       .orderBy('i.id', 'asc');
 
-    const filas = await query;
+    const filas = await soloVentasCerradas(await query);
     const dia = hoy();
     const ids = filas.map((fila) => fila.id).concat([0]);
 

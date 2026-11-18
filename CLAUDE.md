@@ -252,7 +252,9 @@ antes de tocar el arranque de producción.
   cierre más con su «venció hace 6 días» (Alvaro P. y Rodrigo Medina). No se dejó de escribir las
   cuotas —el cierre de venta las adopta—: `listIncome()` deriva `lead_deal_closed` en cada lectura
   con `isClosedDeal()` (`backend/services/dealClosure.js`: etapa ganadora, proyecto abierto o una
-  cuota que ya no está `pendiente`), y un trato sin ganar no avisa vencimientos.
+  cuota que ya no está `pendiente`), y un trato sin ganar no avisa vencimientos. Cobranzas aplica la
+  misma regla (`soloVentasCerradas()` en `collectionService.js`, sin interruptor: ahí no hay a quién
+  cobrarle una venta que no se cerró).
   **Marcar un cierre como no concretado no es un movimiento del funnel**: no toca `leads.status`
   ni deja rastro en `lead_stage_changes`, así que Ventas no lo ve pasar — es una decisión sobre el
   cobro, se toma desde Finanzas con `finance.view` y casi siempre la toma otra persona. Eso es lo
