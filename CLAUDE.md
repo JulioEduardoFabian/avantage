@@ -2364,6 +2364,23 @@ antes de tocar el arranque de producción.
   cortesía como "gracias" no). "No hay problema", "sin problema" y los dedazos de "sí" ("Dii") son un
   sí, y una respuesta ambigua al "¿Confirmo…?" repregunta una vez por el mismo horario
   (`confirmReasked`) en vez de soltarlo y preguntar "¿qué día te viene mejor?".
+- **Elegir un horario de la lista reserva directo, y pedir otro no es "no te entendí"**
+  (`slotReply.js`, enganchado en `handleSchedulingTimeReply()` antes del LLM; análisis de las
+  conversaciones del 14/09 al 01/11/2026). Dos fugas con la lista ya en pantalla: (1) quien
+  contestaba "2", "la opción 3" o "10.30" recibía "¿Confirmo…? Responde *Sí*", y de los 177 que
+  recibieron esa pregunta 81 no volvieron a escribir — ahora `directSlotPick()` reconoce la
+  elección **inequívoca** (número, ordinal, o la hora de UN solo horario de la lista) y va directo
+  a `confirmSlot()`; la confirmación queda para lo que salió de **interpretar** una frase, que es
+  para lo que existe. (2) "otro día", "otra hora", "no me calza ninguno", "en las tardes", "noche
+  por favor" caían en "No te entendí bien 🤔" con la misma lista y a la segunda en un asesor —
+  ahora `readSlotReply()` los reconoce y `_answerSlotReplyByRules()` ofrece horarios que **no**
+  se le mostraron (de otros días si pidió otro día) y del momento que nombró; si ahí no hay nada
+  lo dice («En la noche no tengo horarios libres») y ofrece lo más cercano, y sin ningún horario
+  libre transfiere. Ofrecer otra lista vuelve el contador de intentos a cero. Un "Listo" o "Si
+  porfavor" sin número pide el número UNA vez sin gastar intento. Son reglas y no el LLM por lo
+  mismo que la corrección de carrera: frases cortas y fijas en el paso más caro de perder, que
+  tiene que funcionar aunque el modelo tarde o falle. Un día concreto ("el sábado", "mañana")
+  **no** lo tocan: sigue yendo al camino de fechas, que busca ese día.
 - **Al contacto que nos corrige la carrera o la universidad se le hace caso en cualquier paso del
   agendamiento** (`profileCorrection.js` → `detectProfileCorrection()`, enganchado en
   `handleSchedulingTurn()` antes del clasificador de dudas). El bot le devuelve los dos datos

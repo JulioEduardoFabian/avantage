@@ -8,6 +8,7 @@ import { normalizeUniversity } from './universityNormalizer.js';
 import { normalizeCareer } from './careerNormalizer.js';
 import { detectProfileCorrection } from './profileCorrection.js';
 import { officeQuestion } from './officeLocation.js';
+import { directSlotPick, partOfDay, PART_ANCHORS, PART_LABELS, readSlotReply } from './slotReply.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
 import { criticalSignal, describesThesisProgress, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
 import { coalesceTimeFragments } from './messageFragments.js';
@@ -5209,6 +5210,24 @@ ${numberedList(fullSlotLabels(offer))}
 
     if (await this._switchToPhoneIfAsked(waId, answers, scheduling, trimmed)) return;
 
+    // Eligió sin dejar lugar a dudas ("2", "la opción 3", "10.30"): se reserva
+    // directo, sin el "¿Confirmo…? Responde Sí". Esa pregunta existe para
+    // cuando el horario salió de interpretar una frase; repetirle lo que acaba
+    // de escribir es una vuelta más, y en esa vuelta se perdía casi la mitad
+    // (81 de 177, análisis del 18/11/2026). Ver `slotReply.js`.
+    const picked = directSlotPick(trimmed, scheduling.slots, (slot) => limaTimeOf(slot.startTime));
+    if (picked !== null) {
+      const slot = scheduling.slots[picked];
+      if (slotHasPassed(slot)) return this._reofferBecauseSlotPassed(waId, slot, trimmed);
+      this.logActivity({ type: 'slot_picked_directly', waId, text: trimmed, slot: slot.label });
+      return this.confirmSlot(waId, slot);
+    }
+
+    // "Otro día", "otra hora", "ninguno me calza", "en las noches": no eligió,
+    // pero pidió algo concreto. Se contesta con otros horarios en vez del
+    // "No te entendí bien 🤔" con la misma lista que acaba de rechazar.
+    if (await this._answerSlotReplyByRules(waId, answers, scheduling, trimmed)) return;
+
     // Al LLM se le pasan las etiquetas completas (con fecha) para que pueda
     // interpretar "el de mañana"; al contacto se le muestran ya recortadas.
     const labels = scheduling.slots.map((s) => s.label);
@@ -5256,6 +5275,97 @@ ${numberedList(fullSlotLabels(offer))}
     }
 
     return this.bookSlot(waId, slot);
+  }
+
+  /**
+   * El contacto contestó a la lista sin elegir, pero diciendo qué quiere:
+   * otro día, otra hora, ninguno, un momento del día, o un "sí" a la reunión
+   * sin número (ver `readSlotReply()` en `slotReply.js`). Hasta el 18/11/2026
+   * todo eso caía en "No te entendí bien 🤔" con la misma lista, y a la
+   * segunda vez en un asesor: "No habría otro día en las tardes", "otra hora",
+   * "No me calza ninguno de estos horarios" terminaron así.
+   *
+   * La respuesta es SIEMPRE otra lista: los horarios que no se le mostraron
+   * (de otros días si pidió otro día), y del momento del día que nombró. Si
+   * en ese momento no hay nada se le dice con todas las letras —"en la noche
+   * no tengo horarios libres"— y se le ofrece lo más cercano: callarlo y
+   * mandarle horarios de mañana es lo que se lee como que nadie lo leyó.
+   *
+   * Ofrecer una lista nueva es avanzar, así que el contador de respuestas sin
+   * coincidencia vuelve a cero. Sin ningún horario libre que ofrecer, lo
+   * coordina una persona: ahí ya no hay nada que el bot pueda proponer.
+   * Devuelve true si ya respondió.
+   */
+  async _answerSlotReplyByRules(waId, answers, scheduling, text) {
+    const read = readSlotReply(text);
+    if (!read.kind) return false;
+    const shown = scheduling.slots || [];
+
+    // Aceptó la reunión sin decir cuál. Se le pide el número UNA vez y sin
+    // gastarle un intento: no es una respuesta fallida, es un sí a medias.
+    if (read.kind === 'yes_without_pick') {
+      if (scheduling.askedToPick || !shown.length) return false;
+      scheduling.askedToPick = true;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'slot_pick_requested', waId, text });
+      await this.send(waId, `¡Genial! 🙌 ¿Cuál de estos te acomoda? Respóndeme solo con el número:
+
+${numberedList(fullSlotLabels(shown))}`);
+      return true;
+    }
+
+    let fresh;
+    try {
+      fresh = await this.googleCalendarService.getUpcomingFreeSlots(BOOKING_ADVISOR_USER_ID, { limit: UPCOMING_SLOTS_LIMIT, days: BOOKING_WINDOW_DAYS });
+    } catch (error) {
+      this.logActivity({ type: 'slot_reply_lookup_failed', waId, text, error: error.message });
+      return false;
+    }
+
+    // Lo que ya rechazó no se le vuelve a ofrecer. Si solo nombró un momento
+    // del día ("noche por favor"), lo que tiene en pantalla sigue valiendo: el
+    // de las 6:30 p.m. de la lista es justo lo que pidió.
+    const shownTimes = new Set(shown.map((slot) => slot.startTime));
+    const shownDays = new Set(shown.map((slot) => slot.date));
+    let pool = (fresh || []).filter((slot) => !slotHasPassed(slot));
+    if (read.kind !== 'part_of_day') pool = pool.filter((slot) => !shownTimes.has(slot.startTime));
+    if (read.kind === 'other_day') pool = pool.filter((slot) => !shownDays.has(slot.date));
+
+    const inPart = read.part ? pool.filter((slot) => partOfDay(limaTimeOf(slot.startTime)) === read.part) : pool;
+    const partLabel = read.part ? PART_LABELS[read.part] : null;
+
+    let offered;
+    let intro;
+    if (inPart.length > 0) {
+      offered = orderSlotsForDisplay(inPart.slice(0, SLOTS_TO_OFFER));
+      const where = partLabel ? ` en ${partLabel}` : '';
+      intro = read.kind === 'other_day' ? `Claro 🙌 Estos son los horarios de otros días${where}:`
+        : read.kind === 'part_of_day' ? `Claro 🙌 Estos son los horarios que tengo${where}:`
+          : `Sin problema 🙌 Estos son otros horarios que tengo${where}:`;
+    } else if (pool.length > 0 && read.part) {
+      const ranked = this.googleCalendarService.rankFreeSlots(pool, PART_ANCHORS[read.part]);
+      offered = orderSlotsForDisplay(ranked.slice(0, SLOTS_TO_OFFER));
+      intro = `En ${partLabel} no tengo horarios libres estos días 🙏 Lo más cercano que tengo es:`;
+    } else {
+      delete answers.__scheduling;
+      await this.updateSession(waId, { answers: JSON.stringify(answers) });
+      this.logActivity({ type: 'slot_reply_no_alternatives', waId, text, kind: read.kind, part: read.part });
+      // Solo el motivo: "te paso con un asesor" lo dice `handOffToAdvisor`.
+      await this.send(waId, 'Por ahora no tengo otros horarios libres en los próximos días 🙏');
+      await this.handOffToAdvisor(waId, `El lead pidió otros horarios (${text}) y no quedan libres.`);
+      return true;
+    }
+
+    scheduling.slots = offered;
+    scheduling.attempts = 0;
+    await this.updateSession(waId, { status: 'scheduling_time', answers: JSON.stringify(answers) });
+    this.logActivity({ type: 'slot_reply_answered', waId, text, kind: read.kind, part: read.part, offered: offered.map((s) => s.label) });
+    await this.send(waId, `${intro}
+
+${numberedList(slotOptionLabels(offered))}
+
+${slotMenuFooter(offered, scheduling.availableDays)}`);
+    return true;
   }
 
   /**
