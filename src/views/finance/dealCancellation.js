@@ -59,8 +59,13 @@ export function summariseDeals(groups, isVisible = () => true) {
     porCobrar: 0, itf: 0, descartado: 0
   };
   let cierresDescartados = 0;
+  // Tratos con cronograma (casi siempre escrito por el contrato) cuyo lead
+  // todavía no se ganó. Se cuentan siempre, como los caídos, para que el
+  // interruptor que los muestra pueda decir cuántos hay aunque estén ocultos.
+  let cierresSinGanar = 0;
 
   for (const group of groups || []) {
+    if (group && group.closed === false) cierresSinGanar += 1;
     if (group?.cancelled) {
       cierresDescartados += 1;
       sums.descartado += unexpectedAmount(group);
@@ -80,7 +85,7 @@ export function summariseDeals(groups, isVisible = () => true) {
       - (group?.cancelled ? unexpectedAmount(group) : 0);
   }
 
-  const totals = { cierresDescartados };
+  const totals = { cierresDescartados, cierresSinGanar };
   for (const [key, value] of Object.entries(sums)) {
     totals[key] = Math.round(value * 100) / 100;
   }

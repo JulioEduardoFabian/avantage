@@ -246,6 +246,13 @@ antes de tocar el arranque de producción.
   el conteo de cierres y diga «fuera de la tabla». `porCobrar` se calcula **cierre por cierre** y
   por eso vale lo mismo con los caídos a la vista o escondidos (uno caído aporta cero): es lo que
   permite esconderlos sin mover la única cifra que de verdad se mira.
+  Desde el 18/11/2026 INGRESOS tampoco lista los **tratos sin ganar** salvo que se pidan
+  («📝 Ver sin ganar (N)», `showUnwon`): el contrato escribe su cronograma en `finance_income` en
+  cuanto se guarda, y se guarda ANTES de cerrar, así que un lead en cotización aparecía como un
+  cierre más con su «venció hace 6 días» (Alvaro P. y Rodrigo Medina). No se dejó de escribir las
+  cuotas —el cierre de venta las adopta—: `listIncome()` deriva `lead_deal_closed` en cada lectura
+  con `isClosedDeal()` (`backend/services/dealClosure.js`: etapa ganadora, proyecto abierto o una
+  cuota que ya no está `pendiente`), y un trato sin ganar no avisa vencimientos.
   **Marcar un cierre como no concretado no es un movimiento del funnel**: no toca `leads.status`
   ni deja rastro en `lead_stage_changes`, así que Ventas no lo ve pasar — es una decisión sobre el
   cobro, se toma desde Finanzas con `finance.view` y casi siempre la toma otra persona. Eso es lo

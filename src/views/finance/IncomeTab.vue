@@ -49,6 +49,21 @@
         <span>🚫 Ver no concretados ({{ totals.cierresDescartados }})</span>
       </label>
       <!--
+        Un trato con cronograma cuyo lead todavía no está en Ganado: el contrato
+        escribe las cuotas en Finanzas en cuanto se guarda, y se guarda ANTES de
+        cerrar. No es una venta, así que no se lista salvo que se pida — y el
+        interruptor dice cuántos hay, por la misma razón que el de arriba.
+      -->
+      <label
+        v-if="totals.cierresSinGanar > 0"
+        class="ledger-toggle"
+        :class="{ 'is-on': showUnwon }"
+        title="Leads con cronograma (por ejemplo, desde su contrato) que todavía no están en Ganado"
+      >
+        <input v-model="showUnwon" type="checkbox" />
+        <span>📝 Ver sin ganar ({{ totals.cierresSinGanar }})</span>
+      </label>
+      <!--
         El rango corre sobre la fecha en que entró el dinero (`fecha`) y no
         sobre la pactada (`due_date`): es la que la tabla muestra, la que ordena
         y la que suman los totales de abajo. Se aplica cuota por cuota, así que
@@ -862,6 +877,10 @@ function groupByLead(payments) {
         cancelledAt: row.lead_deal_cancelled_at || null,
         cancelledReason: row.lead_deal_cancelled_reason || null,
         cancelledBy: row.lead_deal_cancelled_by_name || null,
+        // `false` solo cuando el servidor dice que el lead NO es una venta
+        // cerrada (ver `backend/services/dealClosure.js`); una respuesta sin
+        // el campo no esconde nada.
+        closed: row.lead_deal_closed !== false,
         payments: [],
       };
       byKey.set(key, group);
@@ -876,7 +895,9 @@ function groupByLead(payments) {
     // Sale del plan completo del lead y no de `group.payments`, que son solo
     // las cuotas que pasaron los filtros. Un cierre caído no avisa: su cobro
     // ya no se espera, y perseguirlo es justo lo que se dio por terminado.
-    group.dueAlert = group.cancelled ? null : (plansByLead.value[group.key]?.dueAlert || null);
+    // Uno sin ganar tampoco: su cuota "vencida" es la fecha que propuso un
+    // contrato que el cliente todavía no firmó, no una deuda.
+    group.dueAlert = (group.cancelled || !group.closed) ? null : (plansByLead.value[group.key]?.dueAlert || null);
   }
   return [...byKey.values()];
 }
@@ -894,7 +915,15 @@ function groupByLead(payments) {
  * pedido ese día.
  */
 const showCancelled = ref(false);
-const isDealVisible = (group) => showCancelled.value || !group.cancelled;
+/**
+ * Lo mismo para los tratos que todavía no se ganaron: INGRESOS es el registro
+ * de las ventas cerradas, y un lead en cotización con su contrato en borrador
+ * no lo es aunque ya tenga cuotas. Mismo criterio que el de arriba: apagado al
+ * entrar y sin recordarse.
+ */
+const showUnwon = ref(false);
+const isDealVisible = (group) =>
+  (showCancelled.value || !group.cancelled) && (showUnwon.value || group.closed);
 
 const {
   search, estado: estadoFilter, banco: bancoFilter, desde, hasta, sort, page, pageSize,
@@ -915,7 +944,7 @@ const {
 
 // Mostrar u ocultar cambia cuántos cierres hay que paginar: la página 3 de
 // antes puede no existir después.
-watch(showCancelled, () => { page.value = 1; });
+watch([showCancelled, showUnwon], () => { page.value = 1; });
 
 /**
  * Cierres abiertos. Por defecto están todos plegados —la lista se lee como un

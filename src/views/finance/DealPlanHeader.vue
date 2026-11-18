@@ -25,6 +25,13 @@
           <span v-if="group.cancelled" class="deal-cancelled-badge" title="Este cierre no llegó a concretarse">
             🚫 No concretado
           </span>
+          <span
+            v-if="group.closed === false && !group.cancelled"
+            class="deal-cancelled-badge deal-unwon-badge"
+            title="El lead todavía no está en Ganado: estas cuotas salen de su contrato o de un cronograma cargado antes de cerrar"
+          >
+            📝 Sin ganar
+          </span>
           <span v-if="blockingPayment && !group.cancelled" class="deal-gate-badge" title="La 1ra cuota no está verificada">
             🔒 Proyecto bloqueado
           </span>
@@ -467,6 +474,12 @@ async function addPayment() {
 }
 
 .deal-plan-card.is-cancelled .deal-progress-bar { filter: grayscale(0.85); }
+
+.deal-unwon-badge.deal-cancelled-badge {
+  border-color: var(--border-strong);
+  background: var(--bg-card-solid);
+  color: var(--text-sub);
+}
 
 .deal-cancelled-badge {
   display: inline-flex;

@@ -3,6 +3,8 @@ import path from 'path';
 import { db } from '../db/connection.js';
 import { financeReceiptDir } from '../middleware/upload.js';
 import { MAX_WINDOW_MONTHS, resolveRange, sqlWindow } from './financeDateRange.js';
+import { isClosedDeal } from './dealClosure.js';
+import { loadWinningStatuses } from './salesFunnelStage.js';
 
 const MESES = [
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
@@ -315,12 +317,44 @@ export class FinanceLedgerService {
         'leads.deal_cancelled_at as lead_deal_cancelled_at',
         'leads.deal_cancelled_reason as lead_deal_cancelled_reason',
         'cancelador.name as lead_deal_cancelled_by_name',
+        'leads.status as lead_status',
         'users.name as created_by_name'
       )
       .orderBy('finance_income.fecha', 'desc')
       .orderBy('finance_income.id', 'desc');
 
+    await this.#markClosedDeals(rows);
     return attachReceipts(rows, 'finance_income_receipts', 'income_id');
+  }
+
+  /**
+   * Escribe en cada cuota `lead_deal_closed`: si su lead es una venta cerrada
+   * o un trato que todavía no se ganó (ver `dealClosure.js`). Se deriva en
+   * cada lectura y no se guarda, como `is_locked` de un hito: el lead pasa a
+   * Ganado desde otra pantalla. Una cuota sin lead no es "sin cerrar": nadie
+   * puede ganar un lead que no existe, así que se lista siempre.
+   */
+  async #markClosedDeals(rows) {
+    const leadIds = [...new Set(rows.map((row) => row.lead_id).filter(Boolean))];
+    if (!leadIds.length) {
+      for (const row of rows) row.lead_deal_closed = true;
+      return;
+    }
+    const [winning, projects] = await Promise.all([
+      loadWinningStatuses(),
+      db('projects').whereIn('lead_id', leadIds).distinct('lead_id')
+    ]);
+    const withProject = new Set(projects.map((p) => p.lead_id));
+    const withMoney = new Set(
+      rows.filter((row) => row.lead_id && row.estado !== 'pendiente').map((row) => row.lead_id)
+    );
+    for (const row of rows) {
+      row.lead_deal_closed = !row.lead_id || isClosedDeal({
+        status: row.lead_status,
+        hasProject: withProject.has(row.lead_id),
+        hasMoney: withMoney.has(row.lead_id)
+      }, winning);
+    }
   }
 
   /** Cuotas de UN lead/proyecto (portal de clientes: no la tabla completa de Finanzas). */
