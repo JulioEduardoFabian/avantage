@@ -53,6 +53,8 @@ import { WhatsappWebhookService } from './services/whatsappWebhookService.js';
 import { YCloudWebhookService } from './services/ycloudWebhookService.js';
 import { WhatsappMessageService } from './services/whatsappMessageService.js';
 import { WhatsappBotService } from './services/whatsappBotService.js';
+import { LeadHandoffService } from './services/leadHandoffService.js';
+import { BotQualityService } from './services/botQualityService.js';
 import { WhatsappBotSettingsService } from './services/whatsappBotSettingsService.js';
 import { MetaEmbeddedSignupService } from './services/metaEmbeddedSignupService.js';
 import { AdvisorAvailabilityService } from './services/advisorAvailabilityService.js';
@@ -321,7 +323,20 @@ const financeSalaryService = new FinanceSalaryService();
 // El cronograma de pagos del contrato son las cuotas reales de Finanzas.
 const contractService = new ContractService({ financeLedgerService });
 const documentService = new DocumentService({ quoteService, contractService });
-const whatsappBotService = new WhatsappBotService({ ollamaService, emailService, leadService, whatsappMessageService, settingsService: whatsappBotSettingsService, googleCalendarService, scheduledMeetingService, notificationService });
+/*
+ * La derivación al CRM y el monitor de calidad del bot. Los dos son registro
+ * y no parte de la conversación: el bot los recibe inyectados y funciona igual
+ * sin ellos (ver su constructor), que es lo que permite instanciarlo en un
+ * test para probar una regla de texto sin montar la base.
+ *
+ * `leadHandoffService` recibe el reparto porque de él sale el asesor cuando el
+ * lead derivado no tiene responsable — un lead sin responsable no lo ve nadie
+ * salvo quien reparte, así que derivarlo sin asignarlo es dejar la tarea en
+ * una cola que una sola persona del panel puede abrir.
+ */
+const leadHandoffService = new LeadHandoffService({ leadService, routingService: leadRoutingService });
+const botQualityService = new BotQualityService();
+const whatsappBotService = new WhatsappBotService({ ollamaService, emailService, leadService, whatsappMessageService, settingsService: whatsappBotSettingsService, googleCalendarService, scheduledMeetingService, notificationService, handoffService: leadHandoffService, qualityService: botQualityService });
 const whatsappWebhookService = new WhatsappWebhookService({ botService: whatsappBotService });
 const ycloudWebhookService = new YCloudWebhookService({ botService: whatsappBotService });
 const advisorAvailabilityService = new AdvisorAvailabilityService();
@@ -4328,6 +4343,92 @@ app.get('/api/whatsapp/bot-activity', requireAuth, requirePermission('bot.manage
 app.delete('/api/whatsapp/bot-activity', requireAuth, requirePermission('bot.manage'), (req, res) => {
   whatsappBotService.clearActivity();
   res.json({ success: true });
+});
+
+/**
+ * Monitor de calidad del bot (`bot_quality_events`): las cuatro preguntas que
+ * la bitácora en memoria no podía contestar —cuántas preguntas quedaron sin
+ * resolver, cuántos errores hubo, cuántas veces repitió lo mismo y cuántas
+ * conversaciones se abandonaron—, porque se pierde en cada despliegue y no se
+ * puede sumar.
+ *
+ * El resumen y las filas viajan en la MISMA respuesta: un total sin las filas
+ * detrás es una cifra que no deja arreglar nada, y las filas sin el total se
+ * leen como "esto es todo lo que pasó" cuando la consulta está limitada. Las
+ * dos lecturas miran el mismo período por lo mismo.
+ *
+ * Va con `bot.manage` igual que la bitácora: es la misma pregunta sobre el
+ * bot, y partirla en dos permisos dejaría a alguien viendo los síntomas sin
+ * poder tocar el guion que los causa.
+ */
+app.get('/api/whatsapp/bot/quality', requireAuth, requirePermission('bot.manage'), async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+    const kind = req.query.kind ? String(req.query.kind) : null;
+    const waId = req.query.waId ? String(req.query.waId) : null;
+    const [summary, events] = await Promise.all([
+      botQualityService.summary({ days }),
+      botQualityService.list({ days, kind, waId })
+    ]);
+    res.json({ summary, events });
+  } catch (error) {
+    console.error('Error al leer el monitor de calidad del bot:', error);
+    res.status(500).json({ error: 'No se pudo leer el monitor de calidad del bot.' });
+  }
+});
+
+/**
+ * La cola de derivaciones del bot al equipo (`lead_handoffs`): a quién le toca
+ * y si alguien lo atendió.
+ *
+ * El permiso es el de los dos tableros y no uno propio: atender una
+ * derivación ES trabajar el lead, y quien tiene el tablero tiene el trabajo.
+ * La visibilidad es la misma regla del funnel —cada quien ve lo suyo, y quien
+ * administra el área comercial ve todo—, resuelta en el SERVIDOR: filtrar la
+ * lista en la pantalla sería una cortina y no un permiso.
+ */
+app.get('/api/lead-handoffs', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+    const pending = req.query.pending === 'true' || req.query.pending === '1';
+    const verTodo = (req.user.permissions || []).includes('leads.manage_all');
+    const [handoffs, summary] = await Promise.all([
+      leadHandoffService.list({ days, pending, viewerId: verTodo ? null : req.user.id }),
+      leadHandoffService.summary({ days })
+    ]);
+    // `scope` viaja para que la pantalla pueda explicar por qué la lista es
+    // corta, en vez de parecer vacía por error (igual que en los tableros).
+    res.json({ handoffs, summary, scope: verTodo ? 'all' : 'mine' });
+  } catch (error) {
+    console.error('Error al leer las derivaciones del bot:', error);
+    res.status(500).json({ error: 'No se pudieron leer las derivaciones.' });
+  }
+});
+
+/**
+ * Confirmación de atención hecha a mano.
+ *
+ * Existe además del acuse que se deriva de que una persona le escribió
+ * (`ackHandoffFromReply`) porque hay atención que no pasa por WhatsApp: el
+ * asesor LLAMA por teléfono, y el teléfono no pasa por el sistema. Sin este
+ * botón, esa derivación quedaría escalando cada vez que corre el barrido.
+ *
+ * Quién la atendió sale de la SESIÓN y nunca de un campo del formulario:
+ * mandarlo desde la pantalla abriría la puerta a acreditarle la atención a
+ * otro, igual que el beneficiario de la comisión de cobranza.
+ */
+app.patch('/api/lead-handoffs/:id/ack', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
+  try {
+    const row = await leadHandoffService.acknowledge(Number(req.params.id), {
+      userId: req.user.id,
+      userName: req.user.name || null
+    });
+    if (!row) return res.status(404).json({ error: 'Esa derivación no existe.' });
+    res.json(row);
+  } catch (error) {
+    console.error('Error al confirmar la atención de una derivación:', error);
+    res.status(500).json({ error: 'No se pudo confirmar la atención.' });
+  }
 });
 
 /**

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
 import { stampFirstResponseByPhone } from './leadFirstResponse.js';
+import { ackHandoffFromReply } from './leadHandoffService.js';
 import { firstRealName } from './contactName.js';
 import { whatsappMediaDir } from '../middleware/upload.js';
 import { isAdFormMessage } from './whatsappBotService.js';
@@ -333,6 +334,16 @@ export class WhatsappMessageService {
      */
     void stampFirstResponseByPhone(waId, { at: sentAt || new Date() });
 
+    /*
+     * Y si este contacto tenía una derivación sin atender, el eco ES la
+     * confirmación de atención: un asesor le escribió desde su celular. Se
+     * marca con `via: 'whatsapp_app'` porque acá no hay autor —el eco no
+     * dice qué usuario del panel lo mandó— y sin ese canal explícito un
+     * saliente sin autor se trata como Avan, que es lo que impide que la
+     * propia transferencia se acuse a sí misma. Ver `ackHandoffFromReply`.
+     */
+    void ackHandoffFromReply(waId, { via: 'whatsapp_app' });
+
     return { record: await this.getById(id), isNew: true };
   }
 
@@ -434,6 +445,10 @@ export class WhatsappMessageService {
      * marca de seguimiento (ver `leadFirstResponse.js`).
      */
     void stampFirstResponseByPhone(waId, { sentBy });
+    // Un saliente CON autor es una persona del panel: si este contacto tenía
+    // una derivación sin atender, acaba de atenderla. Un `sentBy` nulo es
+    // Avan y no acusa nada (ver `ackHandoffFromReply`).
+    void ackHandoffFromReply(waId, { sentBy, via: 'respuesta' });
 
     return this.getById(id);
   }
@@ -502,6 +517,10 @@ export class WhatsappMessageService {
     });
 
     void stampFirstResponseByPhone(waId, { sentBy });
+    // Un saliente CON autor es una persona del panel: si este contacto tenía
+    // una derivación sin atender, acaba de atenderla. Un `sentBy` nulo es
+    // Avan y no acusa nada (ver `ackHandoffFromReply`).
+    void ackHandoffFromReply(waId, { sentBy, via: 'respuesta' });
 
     return this.getById(id);
   }

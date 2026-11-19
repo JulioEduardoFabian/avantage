@@ -155,6 +155,20 @@ export class YCloudWebhookService {
         // POST /whatsapp/inboundMessages/{id}/markAsRead — ver
         // whatsappMessageService.sendTypingIndicatorViaYCloud.
         await this.botService.handleIncomingMessage(senderId, triggerText, message.id);
+      } else if (isNew && isFreshMessage && this.botService) {
+        /*
+         * Lo que el bot NO puede leer (un PDF, una foto, un audio que no se
+         * pudo transcribir) caía acá y no pasaba absolutamente nada: ni
+         * respuesta ni aviso. Desde el otro lado eso se lee como un visto.
+         *
+         * El webhook nativo de Meta ya lo atendía; este, que es el que está en
+         * producción (`WHATSAPP_PROVIDER=ycloud`), no — así que la mitad
+         * multimedia del bot estaba escrita y apagada. Es el mismo fallo
+         * silencioso de siempre: no falla nada, simplemente no ocurre.
+         */
+        await this.botService.handleUnreadableMessage(senderId, message.type, {
+          mediaFilename: cachedMedia?.filename || null
+        });
       }
     } catch (error) {
       console.error(`❌ [YCloud Webhook] Error al guardar el mensaje ${message.id}:`, error);

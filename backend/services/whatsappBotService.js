@@ -11,6 +11,8 @@ import { officeQuestion } from './officeLocation.js';
 import { directSlotPick, partOfDay, PART_ANCHORS, PART_LABELS, readSlotReply } from './slotReply.js';
 import { sanitizeMeetLink } from './googleCalendarService.js';
 import { criticalSignal, describesThesisProgress, isTrustDoubt, isWaitingInMeeting, mayBeRefusal, saysNotInterested } from './leadSignals.js';
+import { PRICE_QUESTION_RE, detectIntents, detectUrgency, isReviewableMedia, urgencyAnswerValue } from './botIntent.js';
+import { leadProfilePayload, memoryCompleteness, memorySnapshot, rehydrateAnswers } from './botMemory.js';
 import { coalesceTimeFragments } from './messageFragments.js';
 import * as whatsappBotCopy from '../copy/whatsappBotCopy.js';
 import { evaluateQualification, normalizeAcademicStatus, normalizeCycle, normalizeThesisSituation } from './leadQualification.js';
@@ -1458,12 +1460,15 @@ export function cannotAttendMeeting(text) {
  */
 const SCHEDULE_CHANGE_HINT_RE = /\b(hoy|ma[ñn]ana|pasado\s+ma[ñn]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|temprano|tarde|noche|mediod[ií]a|hora|horario|d[ií]a|a\s+las?|am|pm|mejor|cambiar|cambio|mover|otro|otra)\b/i;
 
-/**
- * ¿El contacto está preguntando por el PRECIO? Se pide explícito ("precio",
- * "cuánto cuesta") y no un "cuánto" suelto, para no confundirlo con "¿cuánto
- * dura la reunión?", que no tiene nada que ver con el costo.
+/*
+ * La pregunta por el PRECIO se reconoce con `PRICE_QUESTION_RE`, que ahora
+ * vive en `botIntent.js` junto a las demás intenciones (reclamo, urgencia,
+ * documento, pedido de persona). El texto no cambió: se mudó porque de él
+ * dependen el ancla de precio, el atajo de la segunda insistencia y
+ * `looksLikeQuestion()`, y la detección de intenciones tiene que contestar lo
+ * mismo que el enrutado — con la regla en dos sitios se llega a que el bot
+ * ancle el precio y después no reconozca que se lo volvieron a preguntar.
  */
-const PRICE_QUESTION_RE = /(precio|costo|coste|tarifa|cotiza|presupuesto|inversi[oó]n)|cu[aá]nt[oa]s?\s+(?:me\s+)?(?:cuesta|sale|vale|ser[ií]a|es|est[aá])/i;
 
 // Formas en que el LLM pregunta por el tema, la carrera o la universidad. Se
 // usan para detectar que está preguntando por algo que la persona YA
@@ -1576,7 +1581,7 @@ function academicProfilePayload(answers) {
 }
 
 export class WhatsappBotService {
-  constructor({ ollamaService, emailService, leadService, whatsappMessageService, settingsService, googleCalendarService, scheduledMeetingService, notificationService }) {
+  constructor({ ollamaService, emailService, leadService, whatsappMessageService, settingsService, googleCalendarService, scheduledMeetingService, notificationService, handoffService = null, qualityService = null }) {
     this.ollamaService = ollamaService;
     this.emailService = emailService;
     this.leadService = leadService;
@@ -1585,6 +1590,13 @@ export class WhatsappBotService {
     this.notificationService = notificationService;
     this.settingsService = settingsService || new WhatsappBotSettingsService();
     this.googleCalendarService = googleCalendarService;
+    // La derivación al CRM (`lead_handoffs`) y el monitor de calidad
+    // (`bot_quality_events`). Los dos son OPCIONALES y el bot funciona igual
+    // sin ellos: son registro, no parte de la conversación, y los tests que
+    // instancian el servicio para probar una regla de texto no tienen por qué
+    // montar la base. Lo mismo que hace el push con las credenciales de FCM.
+    this.handoffService = handoffService;
+    this.qualityService = qualityService;
     // wa_id -> { messages: string[], timer: NodeJS.Timeout }, buffer temporal
     // de las burbujas de un contacto mientras se espera el silencio de
     // MESSAGE_DEBOUNCE_MS antes de procesar el turno conversacional.
@@ -1635,9 +1647,28 @@ export class WhatsappBotService {
     this.sweepInFlight = false;
   }
 
+  /**
+   * Anota lo que hace el bot en la bitácora en memoria y, si la entrada
+   * contesta una de las cuatro preguntas del monitor de calidad, también en
+   * `bot_quality_events`.
+   *
+   * El enganche va ACÁ y no en cada llamador, por la misma razón que el push
+   * se cuelga de `notificationService.create()` y que el aviso de proyecto
+   * nuevo vive en `projectService` y no en sus tres rutas de alta: este es el
+   * punto único por el que pasa todo lo que el bot anota —hoy más de cien
+   * tipos, en casi doscientas llamadas—, y puesto en cada sitio el que se
+   * agregue mañana se olvida y nadie se entera de que no se está midiendo.
+   *
+   * No se espera y no puede lanzar: `logActivity` es sincrónico y corre a
+   * mitad de un turno, así que un fallo al anotar que algo salió mal no puede
+   * ser la causa de que el contacto se quede sin respuesta. Qué entradas se
+   * persisten lo decide `botQuality.js`; el resto sigue viviendo solo en
+   * memoria, que es lo que se mira al depurar UNA conversación.
+   */
   logActivity(entry) {
     this.activity.unshift({ id: randomUUID(), at: new Date().toISOString(), ...entry });
     if (this.activity.length > MAX_ACTIVITY_LOG) this.activity.length = MAX_ACTIVITY_LOG;
+    if (this.qualityService) void this.qualityService.record(entry);
   }
 
   /**
@@ -2060,7 +2091,7 @@ export class WhatsappBotService {
    * alguien escribiéndole al negocio, es ruido del protocolo, y responderlo
    * sería el bot hablando solo.
    */
-  async handleUnreadableMessage(waId, messageType) {
+  async handleUnreadableMessage(waId, messageType, { mediaFilename = null } = {}) {
     if (IGNORED_MESSAGE_TYPES.has(messageType)) return;
 
     try {
@@ -2078,10 +2109,33 @@ export class WhatsappBotService {
         ? JSON.parse(session.answers)
         : (session?.answers || {});
 
-      // Una sola vez por conversación: quien manda tres fotos seguidas no
-      // necesita tres veces el mismo aviso.
-      if (answers.__unreadableNoticeAt) {
+      /*
+       * Un archivo que alguien tiene que MIRAR (un PDF, una foto, un video)
+       * se deriva SIEMPRE, y lo que se dice una sola vez es el mensaje al
+       * contacto.
+       *
+       * Antes el "una sola vez por conversación" gobernaba las dos cosas, y
+       * eso dejaba el segundo documento sin absolutamente nada: ni respuesta
+       * ni aviso. Y el segundo es el habitual — quien manda su plan de tesis
+       * manda el proyecto, después las observaciones del jurado y después la
+       * carta de la facultad, cada uno en su archivo. Con la regla anterior
+       * solo el primero llegaba a un ojo humano.
+       *
+       * La distinción es por TIPO y no por texto (ver `isReviewableMedia`): el
+       * sticker no es contenido, es una reacción, y el audio tiene su propio
+       * camino —se transcribe con Whisper y entra como si lo hubieran
+       * escrito—, así que mandar a revisar un audio es mandar a revisar algo
+       * que el bot sí pudo leer.
+       */
+      const paraRevisar = isReviewableMedia(messageType);
+      const yaAvisado = Boolean(answers.__unreadableNoticeAt);
+
+      if (yaAvisado) {
         this.logActivity({ type: 'unreadable_message_repeated', waId, messageType });
+        if (!paraRevisar) return;
+        // Se saltea el mensaje al contacto (ya lo recibió) y se deriva el
+        // archivo igual, que es lo que no podía perderse.
+        await this._deriveMediaForReview(waId, messageType, mediaFilename, { repetido: true });
         return;
       }
 
@@ -2093,18 +2147,46 @@ export class WhatsappBotService {
       this.logActivity({ type: 'unreadable_message', waId, messageType });
       await this.send(waId, whatsappBotCopy.unreadableMessage(messageType));
 
-      const lead = await this.leadService.findByPhone(waId).catch(() => null);
-      await this.alertInternal({
-        waId,
-        type: 'unreadable_message',
-        title: `${lead?.full_name || waId} mandó algo que el bot no puede leer`,
-        body: `Llegó un mensaje de tipo "${messageType}" y el bot no lo puede abrir, así que le pidió `
-          + 'el dato por escrito.\n\n'
-          + 'Si era un documento o una captura que importa, hay que revisarlo a mano desde el panel de WhatsApp.'
-      });
+      await this._deriveMediaForReview(waId, messageType, mediaFilename, { repetido: false });
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] Error al atender un mensaje ilegible de ${waId}:`, error.message);
     }
+  }
+
+  /**
+   * Manda a revisar a mano el archivo que llegó, nombrándolo por lo que es.
+   *
+   * El aviso anterior decía `Llegó un mensaje de tipo "document"` y cerraba
+   * con "si era algo que importa, hay que revisarlo": dos condicionales que
+   * dejan la decisión de abrir el panel a quien lee el correo. Ahora dice qué
+   * llegó en castellano y qué hacer con eso, que es la misma regla que el
+   * módulo de Entregables aplica a sus estados.
+   *
+   * Un archivo que **no** es para revisar (un sticker, una ubicación) no
+   * genera aviso ninguno: el contacto ya recibió su respuesta y mandar al
+   * equipo a mirar un sticker es enseñarle a ignorar estos avisos.
+   */
+  async _deriveMediaForReview(waId, messageType, mediaFilename, { repetido = false } = {}) {
+    if (!isReviewableMedia(messageType)) return;
+
+    const QUE_ES = { document: 'un documento', image: 'una imagen', video: 'un video' };
+    const queEs = QUE_ES[messageType] || 'un archivo';
+
+    const lead = await this.leadService.findByPhone(waId).catch(() => null);
+    const quien = lead?.full_name || waId;
+
+    this.logActivity({ type: 'media_for_review', waId, messageType, mediaFilename, repetido });
+
+    await this.alertInternal({
+      waId,
+      type: 'media_for_review',
+      title: `${quien} mandó ${queEs} para revisar`,
+      body: `${quien} (${waId}) mandó ${queEs} por WhatsApp. El bot no lo puede abrir, así que `
+        + `${repetido ? 'ya le había pedido' : 'le pidió'} el dato por escrito, pero el archivo sigue ahí `
+        + 'y hay que mirarlo.\n\n'
+        + 'Se abre desde el panel de WhatsApp, en la conversación de este contacto.'
+        + (repetido ? '\n\nOJO: no es el primero que manda en esta conversación.' : '')
+    });
   }
 
   async handleIncomingMessage(waId, text, messageId = null) {
@@ -2621,13 +2703,30 @@ export class WhatsappBotService {
     const isFirstTurn = !session || !session.started_at;
 
     if (!session) {
-      await db('whatsapp_bot_sessions').insert({ wa_id: waId, status: 'active', bot_enabled: true, answers: JSON.stringify({}), started_at: db.fn.now() });
+      // La sesión nueva no arranca en blanco: hereda de la ficha del lead lo
+      // que el contacto ya nos dijo alguna vez (ver `rehydrateAnswers`). Sin
+      // esto, un contacto cuya sesión se reinició —lo hace el panel, y también
+      // el barrido al congelar— era interrogado de cero sobre su carrera, su
+      // universidad y su tema, que estaban escritos en su ficha todo el
+      // tiempo. Es la otra mitad de la memoria estructurada: la sesión escribe
+      // a la ficha y la ficha siembra la sesión siguiente.
+      const seed = await this._rehydrateFromLead(waId);
+      await db('whatsapp_bot_sessions').insert({ wa_id: waId, status: 'active', bot_enabled: true, answers: JSON.stringify(seed), started_at: db.fn.now() });
       // El contacto pasa de "Conversación Abierta" a "En Calificación" en el
       // Setter Funnel apenas Avan arranca la conversación con él.
       await this.moveFunnelStage(waId, 'calificando');
       session = await this.getSession(waId);
     } else if (!session.started_at) {
-      await this.updateSession(waId, { started_at: db.fn.now() });
+      // La fila existía sin que el contacto hubiera escrito todavía (la crea
+      // `setBotEnabled()` al tocar "Activar bot" en el panel), así que este es
+      // igualmente el primer turno y también hereda. Se siembra solo lo que
+      // falta: si alguien ya escribió algo en esa fila, manda lo suyo.
+      const seed = await this._rehydrateFromLead(waId);
+      const actuales = typeof session.answers === 'string' ? JSON.parse(session.answers || '{}') : (session.answers || {});
+      await this.updateSession(waId, {
+        started_at: db.fn.now(),
+        answers: JSON.stringify({ ...seed, ...actuales })
+      });
       await this.moveFunnelStage(waId, 'calificando');
       session = await this.getSession(waId);
     }
@@ -2758,6 +2857,30 @@ export class WhatsappBotService {
     if (extracted.problem) answers.problem = extracted.problem;
     if (extracted.location) answers.location = extracted.location;
     if (extracted.level) answers.level = extracted.level;
+
+    // La URGENCIA escrita a mano ("sustento el viernes", "lo necesito para
+    // mañana", "es urgente"). Se detectaba solo en la ficha de un formulario
+    // de anuncio (`parseUrgency`), así que el lead que la declara conversando
+    // —que son casi todos— entraba como texto cualquiera: el bot lo trataba
+    // igual que a quien averigua para el otro semestre y el asesor no se
+    // enteraba de la fecha. Es el dato que decide a quién se llama primero y
+    // el único que tiene vencimiento.
+    //
+    // Se escribe en el MISMO campo y con el MISMO vocabulario que el
+    // formulario (`urgencyAnswerValue`): con dos escalas, quien mira la ficha
+    // no sabe si "asap" y "deadline" son lo mismo. Y solo SUBE — una prisa
+    // nueva no borra una fecha tope ya declarada, que es el dato más duro.
+    const urgencySignal = detectUrgency(incomingText);
+    if (urgencySignal) {
+      const nivel = urgencyAnswerValue(urgencySignal);
+      const ORDEN = { asap: 3, pronto: 2, meses: 1, explorando: 0 };
+      if (nivel && (ORDEN[nivel] ?? 0) > (ORDEN[answers.urgency] ?? -1)) answers.urgency = nivel;
+      // La señal cruda se guarda aparte: de ella depende la prioridad de la
+      // derivación, y "deadline" y "rush" son los dos `asap` en la ficha pero
+      // no son lo mismo en la cola de atención.
+      answers.__urgencySignal = urgencySignal;
+      this.logActivity({ type: 'urgency_detected', waId, signal: urgencySignal, urgency: answers.urgency, text: incomingText });
+    }
     // Un valor sin sentido no se guarda ni se repite: "Perfecto: Yy" le dice
     // al contacto que nadie está leyendo lo que escribe.
     if (extracted.field && looksLikeGarbageValue(extracted.field)) {
@@ -2845,7 +2968,7 @@ export class WhatsappBotService {
       if (answers.__priceAsks >= 2) {
         this.logActivity({ type: 'price_insist_shortcut', waId, priceAsks: answers.__priceAsks, hasProblem: !!answers.problem });
         await this.send(waId, whatsappBotCopy.priceInsistedHandoff());
-        await this.handOffToAdvisor(waId, 'El lead insistió con el precio antes de dar su tema: se pasa a un asesor.');
+        await this.handOffToAdvisor(waId, 'El lead insistió con el precio antes de dar su tema: se pasa a un asesor.', { text: incomingText });
         return;
       }
 
@@ -3306,16 +3429,56 @@ export class WhatsappBotService {
   }
 
   /** Guarda en el lead la ficha académica apenas se conoce (no solo al agendar). */
+  /**
+   * Escribe en la ficha del lead la memoria de la conversación: los cinco
+   * datos del caso —carrera, universidad, **nivel**, **etapa** y la **consulta
+   * principal**— más la terna académica.
+   *
+   * Los tres resaltados son los que faltaban: se averiguaban, se guardaban en
+   * el JSON de la sesión y nunca llegaban a la ficha, así que el asesor
+   * entraba a la reunión con un lead cuyo `topic` seguía diciendo "Consulta
+   * por WhatsApp de 51987…" teniendo el tema escrito tres mensajes arriba. El
+   * mapeo vive en `botMemory.js` porque de él dependen las dos direcciones de
+   * la memoria (ver `rehydrateAnswers`), y con una copia en cada punta el día
+   * que cambie un nombre de campo la ida seguiría guardando y la vuelta
+   * dejaría de leer, sin que nada falle a la vista.
+   */
   async _syncLeadProfile(waId, answers) {
     try {
       const lead = await this.leadService.findByPhone(waId);
       if (!lead) return;
-      const payload = academicProfilePayload(answers);
-      if (answers.field) payload.fieldOfStudy = answers.field;
-      if (answers.university) payload.university = answers.university;
+      // El lead viaja porque de él depende UNA decisión: la consulta principal
+      // solo pisa un `topic` que todavía es el marcador del alta automática.
+      // Un tema corregido a mano es un dato del equipo, y el bot no tiene por
+      // qué saber más que la persona que lo atendió.
+      const payload = leadProfilePayload(answers, lead);
+      if (Object.keys(payload).length === 0) return;
       await this.leadService.updateLead(lead.id, payload);
     } catch (error) {
       console.error(`❌ [WhatsApp Bot] Error al guardar la ficha académica de ${waId}:`, error);
+    }
+  }
+
+  /**
+   * La memoria con la que arranca una sesión nueva: lo que la ficha del lead
+   * ya sabe de este contacto.
+   *
+   * Nunca puede tumbar el arranque de la conversación: si la ficha no se puede
+   * leer, la sesión empieza en blanco y lo único que pasa es que el bot vuelve
+   * a preguntar — que es exactamente lo que hacía antes de esto.
+   */
+  async _rehydrateFromLead(waId) {
+    try {
+      const lead = await this.leadService.findByPhone(waId);
+      const seed = rehydrateAnswers(lead);
+      const known = memoryCompleteness(seed).known;
+      if (known > 0) {
+        this.logActivity({ type: 'memory_rehydrated', waId, known, memoria: memorySnapshot(seed) });
+      }
+      return seed;
+    } catch (error) {
+      console.error(`⚠️ [WhatsApp Bot] No se pudo heredar la memoria de ${waId}:`, error.message);
+      return {};
     }
   }
 
@@ -3511,7 +3674,7 @@ Enlace: ${meeting.meet_link}` : '';
 
     this.logActivity({ type: 'critical_signal', waId, signal, text: incomingText });
     await this.send(waId, whatsappBotCopy.criticalSignalAck(signal));
-    await this.handOffToAdvisor(waId, CRITICAL_SIGNAL_REASONS[signal]);
+    await this.handOffToAdvisor(waId, CRITICAL_SIGNAL_REASONS[signal], { text: incomingText });
     return true;
   }
 
@@ -3560,7 +3723,13 @@ Enlace: ${meeting.meet_link}` : '';
     this.logActivity({ type: 'lead_not_interested', waId, text });
   }
 
-  async handOffToAdvisor(waId, reason) {
+  /**
+   * @param {string} waId
+   * @param {string} reason    lo que ve el equipo como motivo
+   * @param {object} [context] `text` el mensaje que la disparó, para detectar
+   *                           las intenciones con las que entra a la cola
+   */
+  async handOffToAdvisor(waId, reason, { text = null } = {}) {
     this.logActivity({ type: 'scheduling_offer_skipped', waId, reason });
 
     // Se marca la sesión como transferida (no solo "completed", que también
@@ -3574,6 +3743,16 @@ Enlace: ${meeting.meet_link}` : '';
 
     await this.updateSession(waId, { status: 'completed', answers: JSON.stringify(answers) });
     await this.moveFunnelStage(waId, 'transferido_closer');
+
+    // La derivación queda registrada como una tarea con dueño y con acuse
+    // (`lead_handoffs`), y no solo como un aviso en la campana: de las 17
+    // transferencias del período medido ninguna terminó en reunión, y no había
+    // forma de distinguir "nadie la atendió" de "se atendió y no cerró".
+    //
+    // Va DESPUÉS de mover el funnel y ANTES de avisar, porque de ella sale el
+    // asesor que el aviso nombra. Y no puede tumbar nada: devuelve null si
+    // falla, y entonces el aviso sale como salía antes.
+    const handoff = await this._openHandoff(waId, reason, text, answers);
     // "El asesor se pondrá en contacto contigo pronto" sonaba a una llamada
     // agendada a futuro, no a "dejo de responderte yo, ahora te escribe una
     // persona" — un contacto que ya venía frustrado (repitiendo lo mismo sin
@@ -3581,7 +3760,38 @@ Enlace: ${meeting.meet_link}` : '';
     // con alguien" justo después de este mensaje, sin darse cuenta de que ya
     // se le había transferido.
     await this.send(waId, 'Te paso con un asesor 🙌 En breve te escribe por aquí.');
-    await this.notifySalesperson(waId, reason);
+    await this.notifySalesperson(waId, reason, handoff);
+  }
+
+  /**
+   * Abre (o escala) la derivación al CRM de este contacto.
+   *
+   * Las intenciones salen del mensaje que la disparó y de la memoria de la
+   * sesión, no de una lista propia: `detectIntents` es el único sitio donde se
+   * contesta "qué quiere este mensaje", y de ahí sale la prioridad con la que
+   * entra a la cola. La urgencia se toma de la sesión además del texto porque
+   * pudo declararse tres mensajes antes —"sustento el viernes" y recién
+   * después "quiero hablar con alguien"— y es el dato que no vence.
+   */
+  async _openHandoff(waId, reason, text, answers = {}) {
+    if (!this.handoffService) return null;
+
+    const deteccion = text ? detectIntents(text) : { intents: [], urgency: null };
+    const urgency = deteccion.urgency || answers.__urgencySignal || null;
+    const intents = [...new Set(deteccion.intents)];
+
+    const handoff = await this.handoffService.open(waId, { reason, intents, urgency });
+    if (handoff) {
+      this.logActivity({
+        type: 'handoff_registered',
+        waId,
+        handoffId: handoff.id,
+        priority: handoff.priority,
+        asesor: handoff.assigned_to || 'sin asignar',
+        intents
+      });
+    }
+    return handoff;
   }
 
   /**
@@ -3593,7 +3803,7 @@ Enlace: ${meeting.meet_link}` : '';
    * de WhatsApp para mensajes que el negocio inicia sin plantilla aprobada);
    * si falla, no bloquea nada, la notificación del panel ya quedó registrada.
    */
-  async notifySalesperson(waId, reason) {
+  async notifySalesperson(waId, reason, handoff = null) {
     let contactLabel = waId;
     try {
       const lead = await this.leadService.findByPhone(waId);
@@ -3603,7 +3813,21 @@ Enlace: ${meeting.meet_link}` : '';
       // lead encontrado se avisa igual con el número.
     }
 
-    const body = `🆘 Lead transferido a un asesor: ${contactLabel}.${reason ? ` Motivo: ${reason}` : ''}`;
+    /*
+     * El aviso nombra A QUIÉN LE TOCA y con qué prioridad. Antes decía "Lead
+     * transferido a un asesor" sin decir a cuál, así que llegaba a una bandeja
+     * compartida donde cada uno podía suponer que era de otro — que es la
+     * forma más común de que una transferencia no la atienda nadie. "Sin
+     * asignar" se escribe con todas las letras y no se omite el renglón: un
+     * aviso al que le falta el dato hace creer que el aviso no lo trae.
+     */
+    const asesor = handoff ? (handoff.assigned_to || 'SIN ASIGNAR — hay que repartirlo') : null;
+    const prioridad = handoff?.priority && handoff.priority !== 'normal'
+      ? ` Prioridad ${handoff.priority.toUpperCase()}.`
+      : '';
+
+    const body = `🆘 Lead transferido a un asesor: ${contactLabel}.${reason ? ` Motivo: ${reason}` : ''}`
+      + (asesor ? `\n👤 Le toca a: ${asesor}.${prioridad}` : '');
 
     await this.alertInternal({
       waId,
@@ -4017,7 +4241,7 @@ Enlace: ${meeting.meet_link}` : '';
         delete current.__scheduling;
         await this.updateSession(waId, { answers: JSON.stringify(current) });
         await this.send(waId, whatsappBotCopy.priceInsistedDuringScheduling());
-        await this.handOffToAdvisor(waId, 'El lead insistió con el precio durante el agendamiento.');
+        await this.handOffToAdvisor(waId, 'El lead insistió con el precio durante el agendamiento.', { text: trimmed });
         return;
       }
       await this.updateSession(waId, { answers: JSON.stringify(current) });
@@ -4530,7 +4754,7 @@ Enlace: ${meeting.meet_link}` : '';
     // `dispatchByStatus` llega acá sin pasar por él: sin este desempate, a
     // alguien que pide un humano se le cerraba la conversación.
     if (criticalSignal(text) === 'humanRequest') {
-      await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.');
+      await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.', { text });
       return true;
     }
 
@@ -4555,7 +4779,7 @@ Enlace: ${meeting.meet_link}` : '';
     // "Quiero hablar con una persona" no es un rechazo: se transfiere, que es
     // exactamente lo que pidió.
     if (kind === 'wants_human') {
-      await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.');
+      await this.handOffToAdvisor(waId, 'El lead pidió hablar con una persona.', { text });
       return true;
     }
 
@@ -6132,6 +6356,20 @@ ${slotMenuFooter(offered, scheduling.availableDays)}`);
       const handedOff = new Date(answers.__handedOffAt).getTime();
       if (!handedOff || now - handedOff < HANDOFF_FOLLOWUP_MS) continue;
 
+      /*
+       * La derivación registrada manda sobre la deducción: si ya tiene acuse
+       * de atención (`lead_handoffs.acknowledged_at`), no hay nada que
+       * escalar. Es lo que cubre el caso que la consulta de abajo no puede
+       * ver: el asesor que LLAMÓ por teléfono y lo marcó desde el panel. Antes
+       * ese seguía recibiendo el aviso de "sigue esperando" cada vez que
+       * alguien miraba, porque el teléfono no pasa por el sistema y en
+       * WhatsApp no quedaba ningún saliente.
+       */
+      const derivacion = this.handoffService
+        ? await this.handoffService.openFor(session.wa_id)
+        : null;
+      if (this.handoffService && !derivacion) continue;
+
       // Si alguien del equipo ya le escribió (desde el panel o desde WhatsApp
       // Business, que llega por `recordOutboundEcho`), no hay nada que
       // recordar. El minuto de gracia deja fuera el propio mensaje de
@@ -6156,6 +6394,17 @@ ${slotMenuFooter(offered, scheduling.availableDays)}`);
       const quien = lead?.full_name || session.wa_id;
 
       this.logActivity({ type: 'handoff_unattended', waId: session.wa_id, hours: horas });
+      // Una sola escalada por derivación: este barrido corre cada diez
+      // minutos, y sin la marca el mismo caso avisaría una vez por vuelta —
+      // que es la forma más rápida de que el equipo deje de mirar los avisos.
+      if (derivacion) await this.handoffService.markEscalated(derivacion.id);
+
+      // A quién le toca, por su nombre. "Y todavía no le escribió nadie" no
+      // dice a quién reclamarle, así que el aviso llegaba a la misma bandeja
+      // compartida donde cada uno podía suponer que era de otro.
+      const aQuienLeToca = derivacion?.assigned_to
+        ? `Le toca a ${derivacion.assigned_to}.`
+        : 'Nadie lo tiene asignado: hay que repartirlo.';
 
       await this.alertInternal({
         waId: session.wa_id,
@@ -6163,6 +6412,7 @@ ${slotMenuFooter(offered, scheduling.availableDays)}`);
         title: `${quien} sigue esperando al asesor`,
         body: `Hace ${horas} h le dijimos a ${quien} (${session.wa_id}) que un asesor le escribiría "en breve", `
           + 'y todavía no le escribió nadie.\n\n'
+          + `${aQuienLeToca}\n`
           + `Motivo de la transferencia: ${answers.__handedOffReason || 'sin motivo registrado'}.\n\n`
           + 'El bot no le va a volver a escribir: ya le prometió que seguía una persona. Hay que tomarlo desde el panel.'
       });

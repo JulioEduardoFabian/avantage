@@ -2281,6 +2281,128 @@ antes de tocar el arranque de producción.
   cursor se recalcula desde la última conversación de la lista y no desde el que devuelve esa
   respuesta. `total` viaja aparte y solo en la primera página: "100 conversaciones" era el tamaño de
   la página disfrazado de dato.
+- **La memoria del bot son dos caminos y no uno** (`botMemory.js`, con test). Los cinco datos con
+  los que se atiende un caso de tesis —carrera, universidad, **nivel**, **etapa** y la **consulta
+  principal**— vivían solo en el JSON `whatsapp_bot_sessions.answers`, y eso tenía dos agujeros.
+  (1) Los tres resaltados **no llegaban a la ficha**: `_syncLeadProfile()` escribía carrera,
+  universidad y la terna académica y dejaba fuera `answers.level`, `answers.stage` y
+  `answers.problem`, así que el asesor entraba a la reunión con un lead cuyo `topic` seguía diciendo
+  "Consulta por WhatsApp de 51987…" teniendo el tema escrito tres mensajes arriba. (2) **Se perdían
+  al reiniciar la sesión**: `resetSession()` borra la fila —lo hace el panel y también el barrido al
+  congelar—, y el contacto que volvía era interrogado de cero sobre lo que ya había contestado. Lo
+  que sí sobrevive es la ficha, de ahí `rehydrateAnswers()`: la sesión escribe a la ficha y la ficha
+  siembra la sesión siguiente. El mapeo vive en UN módulo porque de él dependen las dos
+  direcciones, y con una copia en cada punta el día que cambie un nombre de campo la ida seguiría
+  guardando y la vuelta dejaría de leer, sin que nada falle a la vista (el test comprueba justo esa
+  propiedad: ida y vuelta dicen lo mismo). Tres cuidados: la **consulta principal solo pisa un
+  `topic` que todavía es el marcador del alta automática** (`isPlaceholderTopic`) —un tema corregido
+  a mano es un dato del equipo, y el bot no tiene por qué saber más que la persona que lo atendió—;
+  los **valores por defecto del alta no se heredan** (`field_of_study` nace en "General" y el correo
+  con un marcador, así que sembrarlos haría que el bot no le pregunte la carrera a nadie ni pida el
+  correo real); y **no se siembran los marcadores internos** (`__*`: horario propuesto, intentos
+  gastados, avisos ya mandados), que son del hilo que terminó y dejarían la sesión nueva creyéndose
+  a mitad de un agendamiento que ya no existe. La etapa se traduce al catálogo cerrado de
+  `THESIS_SITUATIONS` —el mismo selector de la Base de Datos— y lo que no calza no se guarda: un
+  valor huérfano no se puede editar después desde la pantalla.
+- **Qué quiere un mensaje se contesta en un solo sitio** (`botIntent.js`, con test): precio,
+  urgencia, reclamo, documento y pedido de hablar con una persona. Estaba repartido en tres —las
+  cuatro señales críticas de `leadSignals.js`, `PRICE_QUESTION_RE` dentro del bot y `parseUrgency()`,
+  que solo lee la ficha de un formulario de anuncio—, y eso dejaba dos huecos: **la urgencia escrita
+  a mano no existía** ("sustento el viernes", "lo necesito para mañana") así que el bot trataba igual
+  a quien tiene fecha de sustentación y a quien averigua para el otro semestre, y **un documento no
+  era una intención sino un estorbo** (caía en "no puedo abrir esto", que es verdad y no es lo
+  importante: mandar un PDF es pedir que alguien lo revise). La urgencia tiene **tres familias**
+  porque se responden distinto —`deadline` (fecha tope, lo más fuerte que puede decir un lead),
+  `rush` (prisa sin fecha) y `soon` (plazo corto)— y se escribe en el MISMO campo y con el MISMO
+  vocabulario que el formulario (`urgencyAnswerValue`): con dos escalas, quien mira la ficha no sabe
+  si "asap" y "deadline" son lo mismo. Solo **sube**: una prisa nueva no borra una fecha tope ya
+  declarada. "Rápido" suelto queda fuera a propósito ("¿responden rápido?" es una pregunta sobre el
+  servicio, y tratarla como urgencia pondría media bandeja en prioridad alta), y el documento se
+  reconoce por el **tipo** de mensaje y no por su texto —el cuerpo de un documento es su nombre de
+  archivo—, con el sticker fuera (es una reacción) y el audio también (ya se transcribe con Whisper,
+  así que mandarlo a revisar es mandar a revisar lo que el bot sí pudo leer). La **señal crítica
+  sigue preguntándose a `leadSignals` y no se deriva de esta lista**: de ella depende el escalado a
+  una persona, y acá se agregaron intenciones que no escalan — derivarla del `top` mandaría a un
+  asesor cada pregunta de precio.
+- **La derivación al asesor es una fila con dueño y con acuse** (`lead_handoffs`,
+  `leadHandoffService.js`, `GET /api/lead-handoffs`, `PATCH /api/lead-handoffs/:id/ack`).
+  `handOffToAdvisor()` movía el lead, le avisaba al contacto y mandaba el aviso al equipo, y ninguna
+  de las tres deja constancia de lo único que se pregunta después: **a quién le toca y si alguien lo
+  atendió**. El aviso va a la campana y al correo, o sea a una bandeja compartida donde cada uno
+  puede suponer que es de otro; de las 17 transferencias del período medido, 0 terminaron en reunión
+  y no había forma de distinguir "nadie la atendió" de "se atendió y no cerró".
+  **La fila ES la tarea** y no va a `tasks`: esa cuelga de `projects` en CASCADE —un lead transferido
+  todavía no tiene proyecto, y el día que lo tenga, borrarlo se llevaría el rastro— y su vocabulario
+  (`pendiente`/`completado`) no tiene dónde guardar a quién le toca ni cuándo se hizo cargo. Mismas
+  razones que la tabla propia de Entregables.
+  **A quién le toca** es el responsable que el lead ya tiene; si no tiene, se le pide uno al reparto
+  (`pickAssignee({ botWillAttend: false })` — el bot acaba de dejar de atenderlo, que es el supuesto
+  exacto de `routesNow()`) y se le escribe también al lead con `assignmentPatch()`, el único sitio
+  que toca esas dos columnas. No es un efecto de paso: un lead sin responsable **no lo ve nadie**
+  salvo quien reparte, así que derivarlo sin asignarlo es dejar la tarea en una cola que una sola
+  persona del panel puede abrir. Y el aviso lo **nombra**, con "SIN ASIGNAR" escrito con todas las
+  letras cuando no hay —un aviso al que le falta el dato hace creer que el aviso no lo trae—.
+  La **confirmación de atención tiene dos caminos y el bueno no exige apretar nada**: el acuse se
+  deriva de que una persona le escribió (`ackHandoffFromReply`, llamado desde los mismos puntos de
+  `whatsappMessageService` donde se sella la primera respuesta del lead), porque la prueba de que un
+  asesor se hizo cargo es que escribió. **Avan no acusa recibo de su propia transferencia**: un
+  saliente sin autor es el bot —así se guarda `whatsapp_messages.sent_by`— y contarlo marcaría
+  atendidas todas las derivaciones en el mismo segundo en que se crean, con el mensaje "Te paso con
+  un asesor"; por eso un `sentBy` nulo solo cuenta con `via: 'whatsapp_app'`, que es el eco de la app
+  de WhatsApp Business, o sea una persona escribiendo desde el celular. El botón del panel existe
+  además porque hay atención que no pasa por WhatsApp —el asesor **llama por teléfono**, y el
+  teléfono no pasa por el sistema—: sin él esa derivación quedaba escalando para siempre, que es
+  justo lo que `_followUpStaleHandoffs()` no podía ver deduciendo del último saliente. Quién atendió
+  sale de la **sesión** y nunca de un campo del formulario, igual que el beneficiario de la comisión
+  de cobranza. `ackHandoffFromReply` es **función de módulo y no método**, con el mismo patrón y las
+  mismas razones que `stampFirstResponseByPhone`: hacerla método obligaría a `whatsappMessageService`
+  a recibir inyectado un servicio que necesita el de leads y el de reparto para un `UPDATE`.
+  **Una sola derivación abierta por contacto**: un segundo pedido de hablar con una persona mientras
+  la primera sigue sin atender no es otra tarea, es la misma más urgente, así que sube la prioridad
+  y suma el motivo en vez de abrir otra fila — dos partirían la cola y bastaría atender una para que
+  la otra quedara viva para siempre (misma idempotencia que `attribution_conflicts`). La prioridad
+  (`attentionPriority`) la deciden la urgencia y lo que ya está roto; una pregunta de precio es
+  intención de compra y no una emergencia, así que no desplaza a un reclamo. La visibilidad es la del
+  funnel —cada quien ve lo suyo, `leads.manage_all` ve todo— resuelta en el servidor, y lo que **no**
+  tiene asesor entra en la lista de todos: es justo lo que hay que repartir, y esconderlo lo deja sin
+  nadie que pueda asignarlo. Nada de esto puede tumbar la transferencia: si la fila falla, el lead ya
+  se movió y al contacto ya se le dijo que lo atiende una persona.
+- **El monitor de calidad del bot** (`bot_quality_events`, `botQuality.js` con test,
+  `botQualityService.js`, `GET /api/whatsapp/bot/quality` bajo `bot.manage`). El bot anotaba todo
+  —más de cien tipos en `logActivity()`— pero en un arreglo **en memoria** de tamaño fijo: se pierde
+  en cada despliegue, no se consulta por fecha y no se suma, así que las cuatro preguntas que de
+  verdad se hacen no tenían respuesta —cuántas preguntas quedaron sin resolver, cuántos errores
+  hubo, cuántas veces repitió lo mismo y cuántas conversaciones se abandonaron—. Las tres veces que
+  se encontró algo así (las ocho conversaciones huérfanas, los cuatro "estoy en sala de espera", los
+  35 entrantes sin responder) fue porque alguien se puso a abrir conversaciones a mano.
+  El enganche es **`logActivity()` y no cada llamador**, por la misma razón que el push se cuelga de
+  `notificationService.create()` y que el aviso de proyecto nuevo vive en `projectService` y no en
+  sus tres rutas de alta: es el punto único por el que pasa todo, y puesto en cada sitio el evento
+  número ciento once se olvida y nadie se entera de que no se está midiendo. **No se guarda todo**:
+  `send_success` y `llm_request` solos son dos filas por turno, así que persistirlos enterraría las
+  cuatro cifras que la tabla viene a hacer visibles — la bitácora en memoria sigue siendo la que se
+  mira para depurar UNA conversación, que es otra pregunta. No espera y no lanza: un fallo al anotar
+  que algo salió mal no puede ser la causa de que el contacto se quede sin respuesta, y sobrevive a
+  que la migración no haya corrido (`missingTable()`, como las rutas de `financeOptionService`).
+  `actor` separa **quién abandonó**, y es la mitad del dato: un contacto que se fue y una
+  conversación que NOSOTROS dejamos sin contestar se ven igual en una cifra y se arreglan al revés
+  —al primero se le insiste, al segundo se le reclama al equipo—. El resumen se cuenta con un
+  `GROUP BY` en el servidor y no sumando las filas de `list()`, que está limitada: un total derivado
+  de ahí diría "500" para cualquier semana con más de 500 eventos, el mismo tope disfrazado de dato
+  que tenía el "100 conversaciones" de la bandeja. Y el test recorre los tipos medidos **contra el
+  código del bot**: la clasificación los nombra por su cadena literal, así que un tipo renombrado
+  dejaría su cajón en cero sin que nada falle.
+- **Un documento se deriva SIEMPRE; lo que se dice una sola vez es el mensaje al contacto.** El
+  "una sola vez por conversación" de `handleUnreadableMessage` gobernaba las dos cosas, y así el
+  **segundo** archivo no producía absolutamente nada —ni respuesta ni aviso—. Y el segundo es el
+  habitual: quien manda su plan de tesis manda después las observaciones del jurado y la carta de la
+  facultad, cada una en su archivo, y solo el primero llegaba a un ojo humano. Ahora el aviso dice
+  **qué llegó en castellano y qué hacer con eso** (`_deriveMediaForReview`) en vez de
+  `Llegó un mensaje de tipo "document"` cerrado con dos condicionales, y un sticker o una ubicación
+  no generan aviso ninguno: mandar al equipo a mirar un sticker es enseñarle a ignorar estos avisos.
+  Aparte, el webhook de **YCloud —que es el que está en producción— nunca llamaba a
+  `handleUnreadableMessage`**: solo lo hacía el nativo de Meta, así que la mitad multimedia del bot
+  estaba escrita y apagada. Es el fallo silencioso de siempre: no falla nada, simplemente no ocurre.
 - **Bot de WhatsApp** (`whatsappBotService.js`, el servicio más grande del backend): conversa con
   leads, agenda reuniones vía `googleCalendarService`/`scheduledMeetingService`, y hace seguimiento
   de conversaciones inactivas (recordatorio a la 1h, estado "Congelado" a las 2h — barrido cada
