@@ -26,19 +26,52 @@ const MAX_RECENT = 30;
  * `20261204000000_alter_notifications_add_recipient.js`.
  */
 export class NotificationService {
-  constructor({ pushService = null } = {}) {
+  constructor({ pushService = null, routingService = null } = {}) {
     this.pushService = pushService;
+    // El reparto por perfiles (`notification_routing`). Es OPCIONAL: sin él,
+    // todo va a todos, que es el comportamiento de siempre.
+    this.routingService = routingService;
   }
 
   /**
-   * Lo que esa persona puede ver: lo suyo más lo que es para todos.
+   * Lo que esa persona puede ver: lo suyo, más lo que es para todos **y le
+   * toca por su perfil**.
    *
    * Está en un método y no copiado en las cuatro lecturas porque de él depende
    * que un aviso dirigido no se le muestre a quien no era — y una de las cuatro
    * que se olvide de filtrar es una fuga que no se ve mirando la pantalla.
+   *
+   * El reparto por perfiles solo recorta la rama de "para todos": un aviso
+   * DIRIGIDO a una persona es suyo sin importar su perfil. Si no fuera así, dos
+   * reglas pelearían por el mismo aviso y el que alguien mandó a tres personas
+   * se le escondería a una de ellas.
+   *
+   * `blockedTypes` se pregunta una vez por lectura y se pasa, en vez de que el
+   * método lo consulte: así las dos lecturas de un mismo pedido (la lista y el
+   * contador) no pueden quedar mirando repartos distintos.
    */
-  #visibleTo(query, userId) {
-    return query.where((builder) => builder.where({ user_id: userId }).orWhereNull('user_id'));
+  #visibleTo(query, userId, blockedTypes = []) {
+    return query.where((builder) => {
+      builder.where({ user_id: userId });
+      builder.orWhere((global) => {
+        global.whereNull('user_id');
+        if (blockedTypes.length > 0) global.whereNotIn('type', blockedTypes);
+      });
+    });
+  }
+
+  /** Los tipos que este usuario no debe ver. Sin reparto configurado, ninguno. */
+  async #blockedTypesFor(userId) {
+    if (!userId || !this.routingService) return [];
+    try {
+      return await this.routingService.blockedTypesForUser(userId);
+    } catch (error) {
+      // Un fallo acá no puede dejar la campana vacía ni, peor, mostrarle a
+      // alguien lo que no le toca: se cae del lado de mostrar de más, que es
+      // el comportamiento que había antes del reparto.
+      console.error('⚠️ [Notificaciones] No se pudo resolver el reparto por perfiles:', error.message);
+      return [];
+    }
   }
 
   async create({ type, title, body, link, userId = null, createdBy = null, batchId = null }) {
@@ -52,19 +85,42 @@ export class NotificationService {
       batch_id: batchId
     });
     const notification = await db('notifications').where({ id }).first();
+
+    /*
+     * El push NO se puede filtrar al leer, porque ya salió: el público se
+     * resuelve acá, una vez, con las MISMAS filas de las que sale el filtro de
+     * la campana. Si cada canal lo resolviera por su cuenta, el aviso le
+     * sonaría en el bolsillo a alguien que después no lo encuentra en el panel.
+     *
+     * Solo para los avisos de "para todos": uno dirigido ya tiene destinatario.
+     */
+    let audienceUserIds = null;
+    if (!userId && this.routingService) {
+      audienceUserIds = await this.routingService.audienceUserIds(type).catch((error) => {
+        console.error('⚠️ [Notificaciones] No se pudo resolver el público del push:', error.message);
+        return null;
+      });
+    }
+
     // Dispara y se olvida: `sendForNotification` ya se traga su propio error.
-    this.pushService?.sendForNotification(notification);
+    this.pushService?.sendForNotification(notification, { audienceUserIds });
     return notification;
   }
 
   async getRecent({ userId, limit = MAX_RECENT } = {}) {
     const query = db('notifications').orderBy('created_at', 'desc').limit(limit);
-    return userId ? this.#visibleTo(query, userId) : query;
+    if (!userId) return query;
+    return this.#visibleTo(query, userId, await this.#blockedTypesFor(userId));
   }
 
   async getUnreadCount({ userId } = {}) {
     const query = db('notifications').where({ is_read: false });
-    const [{ count }] = await (userId ? this.#visibleTo(query, userId) : query).count('* as count');
+    if (!userId) {
+      const [{ count }] = await query.count('* as count');
+      return Number(count);
+    }
+    const [{ count }] = await this.#visibleTo(query, userId, await this.#blockedTypesFor(userId))
+      .count('* as count');
     return Number(count);
   }
 
@@ -79,12 +135,24 @@ export class NotificationService {
    */
   async markRead(id, { userId } = {}) {
     const query = db('notifications').where({ id });
-    const afectadas = await (userId ? this.#visibleTo(query, userId) : query).update({ is_read: true });
+    if (!userId) return (await query.update({ is_read: true })) > 0;
+    const afectadas = await this.#visibleTo(query, userId, await this.#blockedTypesFor(userId))
+      .update({ is_read: true });
     return afectadas > 0;
   }
 
+  /**
+   * "Marcar todas leídas" marca exactamente **lo que esa persona ve**.
+   *
+   * El reparto por perfiles entra también acá y no solo en la lectura: un aviso
+   * de "para todos" es UNA fila con el `is_read` compartido, así que marcar un
+   * tipo que a uno le esconden se lo borraría de la campana a quien sí tenía
+   * que atenderlo, sin haberlo visto nunca.
+   */
   async markAllRead({ userId } = {}) {
     const query = db('notifications').where({ is_read: false });
-    return (userId ? this.#visibleTo(query, userId) : query).update({ is_read: true });
+    if (!userId) return query.update({ is_read: true });
+    return this.#visibleTo(query, userId, await this.#blockedTypesFor(userId))
+      .update({ is_read: true });
   }
 }

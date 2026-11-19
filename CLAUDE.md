@@ -2175,6 +2175,72 @@ antes de tocar el arranque de producción.
   `p.section-subheading` del resto de `/admin`. El cálculo de a quién le llega
   cruzaba el rol **por su nombre** y ahora por `role_id`, que es el dato que de
   verdad los une.
+- **Cada aviso automático se puede acotar a ciertos perfiles**
+  (`notification_routing`, `notificationAudience.js` con test,
+  `notificationRoutingService.js`, `GET`/`PUT /api/notification-routing` bajo `roles.manage`,
+  tercera pestaña de `/admin/avisos`). Todas las automáticas nacen con `user_id` en NULL —"para
+  todos"—, que era lo correcto cuando eran ocho avisos del negocio; hoy son diecisiete tipos muy
+  distintos y le suenan en el teléfono a todo el mundo: el "Recordatorio de reunión sin entregar"
+  le interesa a quien lleva la agenda, "pago verificado" a Finanzas y "escribió y nadie le
+  respondió" a quien trabaja leads. Con los tres mezclados la campana deja de mirarse — **645 sin
+  leer** (19/11/2026) es exactamente eso, y a partir de ahí el aviso que sí importaba tampoco se ve.
+  **Un tipo SIN filas va a todos**: el valor por defecto es el comportamiento de hoy, así que la
+  función se enciende cuando alguien la configura y un entorno donde la migración no corrió se
+  comporta igual que antes, en vez de dejar a medio equipo sin avisos. Por lo mismo la pregunta que
+  se contesta es "**qué se esconde**" (`blockedTypesFor`) y no "qué se muestra": preguntando al
+  revés, el tipo que se agregue mañana no estaría en ninguna lista permitida y desaparecería de
+  todas las campanas sin que nadie lo note.
+  Se guarda el **perfil y no la persona**, por la misma razón que el área comercial se define por
+  permiso: lo que se reparte es un trabajo, no una lista de nombres que hay que corregir cada vez
+  que alguien entra o sale.
+  El filtro se resuelve **al leer**, al revés que los avisos manuales, que se expanden a una fila
+  por destinatario (`resolveRecipients()`). Son avisos distintos: el manual es un hecho puntual
+  ("reunión a las 5") y quien entre al rol mañana no debería verlo —el push ya salió sin él—,
+  mientras que el automático es un estado que sigue siendo cierto mientras nadie lo atienda ("este
+  lead sigue sin respuesta"), así que al setter que entra hoy le sirve ver los de ayer. Y
+  expandirlo multiplicaría cada aviso del bot por la cantidad de empleados, que es justo lo que el
+  `user_id` en NULL evita.
+  Lo que **no** se puede filtrar al leer es el **push**: ese ya salió. Por eso `create()` resuelve
+  el público una vez y se lo pasa a `sendForNotification`, con las MISMAS filas de las que sale el
+  filtro de la campana — si cada canal lo resolviera por su cuenta, el aviso le sonaría en el
+  bolsillo a alguien que después no lo encuentra en el panel, que es la regla que ya gobernaba
+  `notifications.user_id`. Un público acotado que hoy no tiene a nadie es una lista **vacía** y no
+  `null`: "no le toca a nadie" y "le toca a todos" son cosas distintas, y confundirlas mandaría el
+  aviso al equipo entero justo cuando alguien lo acotó.
+  El reparto entra también en **"Marcar todas leídas"**: un aviso de "para todos" es UNA fila con
+  el `is_read` compartido, así que marcar un tipo que a uno le esconden se lo borraría de la
+  campana a quien sí tenía que atenderlo, sin haberlo visto nunca.
+  El **catálogo de tipos vive en el backend** (`NOTIFICATION_TYPES`) y viaja en la respuesta del
+  `GET`, no copiado en la pantalla: con una copia en cada lado, el tipo que se agregue mañana
+  aparece en la base y no en el formulario, así que nadie puede enrutarlo. Lleva etiqueta y
+  descripción en castellano y va agrupado por el trabajo al que pertenece — una lista de
+  diecisiete claves como `whatsapp_reminder_undeliverable` no se puede repartir entre perfiles
+  porque nadie sabe qué significan. El aviso manual (`MANUAL_NOTICE_TYPE`) queda fuera a propósito:
+  esos ya eligen destinatario al mandarse, y enrutarlos además por su tipo haría que uno dirigido a
+  tres personas se le escondiera a una por su perfil — dos reglas peleando por el mismo aviso.
+  Se guarda **tipo por tipo** y no la matriz entera: la pantalla se edita marcando casillas, y
+  mandar las diecisiete filas en cada clic haría que dos personas configurando a la vez se pisaran
+  el trabajo entero en vez de la casilla que tocaron. "Todo el equipo" es una **opción más** y no
+  la ausencia de opciones, porque si no, devolver un tipo a todos obliga a adivinar que hay que
+  desmarcarlo todo. Las filas se **cachean 30 s** e se invalidan al guardar: de ellas depende cada
+  lectura de la campana, que se consulta al abrir el menú y cada 60 s para el contador, y sin caché
+  serían dos consultas por minuto y por persona sobre una tabla que cambia una vez al mes. El
+  perfil del lector se consulta por su id y **no se lee del token**: el JWT lleva el nombre del rol
+  y no su id, y dura 8 h — a quien le cambian el perfil seguiría recibiendo los avisos del anterior
+  toda su sesión.
+- **El aviso de la campana se puede abrir entero** ("Ver todo" en `AdminNavbar.vue`). El cuerpo se
+  recorta a dos líneas (`-webkit-line-clamp: 2`) y estos avisos son párrafos —"escribió hace 1427
+  min… Escribió: «Ok»… Hay que responderle a mano"—, así que lo que se leía era el principio de la
+  primera frase y nada de lo que hay que hacer. Tres detalles: la fila pasó de ser **un `<button>`
+  a un `<div>` con dos botones adentro**, porque un botón dentro de otro es HTML inválido y el clic
+  en "Ver todo" habría disparado además la navegación —o sea que desplegar el texto te sacaba de la
+  campana—; desplegado se respetan los **saltos de línea** (`white-space: pre-line`), porque
+  aplastados en un bloque corrido estos avisos se vuelven ilegibles justo cuando alguien los abrió
+  para leerlos; y si hay que ofrecer el botón se decide por el **largo del texto** (~100
+  caracteres, o un salto de línea) y no midiendo el DOM: medir `scrollHeight` obliga a un reflow
+  por aviso cada vez que se abre la campana, y el costo de pasarse es un "Ver todo" que despliega
+  una línea de más, mientras que el de quedarse corto es un texto recortado sin forma de abrirlo.
+  Lo desplegado se olvida al cerrar el menú: es un gesto del momento, no una preferencia.
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`), más
   `user_permissions`, que son las **excepciones de una persona** sobre lo que le da su rol. Los
   permisos efectivos (rol + otorgados − revocados) se resuelven en UN solo sitio

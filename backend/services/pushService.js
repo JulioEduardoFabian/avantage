@@ -337,8 +337,15 @@ export class PushService {
    * encima. Se envuelve acá y no en el llamador para que ningún camino futuro
    * pueda, por olvidarse un `.catch()`, hacer caer un webhook por un push.
    */
-  sendForNotification(notification) {
+  sendForNotification(notification, { audienceUserIds = null } = {}) {
     if (!this.isConfigured() || !notification) return;
+    /*
+     * Un público acotado por perfiles que hoy no tiene a NADIE es una lista
+     * vacía, y entonces no hay a quién empujar: mandarlo igual sería ignorar
+     * justo el recorte que alguien configuró. Distinto de `null`, que es "no
+     * hay reparto para este tipo" y significa todos.
+     */
+    if (Array.isArray(audienceUserIds) && audienceUserIds.length === 0) return;
     this.send({
       title: notification.title,
       body: notification.body || '',
@@ -353,7 +360,12 @@ export class PushService {
       // de la MISMA columna que decide quién lo ve en la campana: si el push
       // fuera a todos y la campana solo al destinatario, el aviso dirigido le
       // sonaría en el bolsillo a gente que después no lo encuentra en el panel.
-      userIds: notification.user_id ? [notification.user_id] : null
+      //
+      // `audienceUserIds` es la misma idea un escalón más abajo: lo que el
+      // reparto por perfiles (`notification_routing`) dejó como público de
+      // este TIPO. Lo resuelve `notificationService.create()` con las mismas
+      // filas que filtran la campana, por la razón de arriba; acá solo se usa.
+      userIds: notification.user_id ? [notification.user_id] : audienceUserIds
     }).catch((error) => console.error(`[Push] Fallo al empujar la notificación: ${error.message}`));
   }
 }

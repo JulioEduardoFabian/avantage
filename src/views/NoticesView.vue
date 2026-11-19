@@ -185,12 +185,32 @@
               :class="{ 'is-on': view === 'matriz' }"
               @click="setView('matriz')"
             >Quién recibe qué</button>
+            <!--
+              La tercera pestaña no habla de los avisos que se escriben acá,
+              sino de los AUTOMÁTICOS: los del bot, Finanzas y proyectos, que
+              hoy le suenan en el teléfono a todo el mundo. Vive en esta
+              pantalla porque la pregunta es la misma —"a quién le llega qué"—
+              y separarla en otro menú dejaría dos sitios distintos para
+              contestarla. Pide `roles.manage` y no `notices.send`: reparte
+              trabajo entre perfiles, que es lo que administra ese permiso.
+            -->
+            <button
+              v-if="puedeEnrutar"
+              type="button"
+              class="tab"
+              :class="{ 'is-on': view === 'automaticos' }"
+              @click="setView('automaticos')"
+            >Avisos automáticos</button>
           </div>
-          <span class="muted">{{ notices.length }} envío{{ notices.length === 1 ? '' : 's' }}</span>
+          <span v-if="view !== 'automaticos'" class="muted">
+            {{ notices.length }} envío{{ notices.length === 1 ? '' : 's' }}
+          </span>
+          <span v-else class="muted">{{ tiposAcotados }} de {{ routing.types.length }} acotados</span>
         </div>
 
-        <p v-if="loadingHistory" class="muted">Cargando…</p>
-        <p v-else-if="notices.length === 0" class="muted">
+        <p v-if="view === 'automaticos' && loadingRouting" class="muted">Cargando…</p>
+        <p v-else-if="view !== 'automaticos' && loadingHistory" class="muted">Cargando…</p>
+        <p v-else-if="view !== 'automaticos' && notices.length === 0" class="muted">
           Todavía no se mandó ningún aviso desde acá.
         </p>
 
@@ -235,7 +255,7 @@
         </ul>
 
         <!-- ───────────────────── Quién recibe qué ───────────────────── -->
-        <div v-else class="matrix-wrap">
+        <div v-else-if="view === 'matriz'" class="matrix-wrap">
           <div class="legend">
             <span class="legend-item"><i class="cell-dot is-read">✓</i> lo leyó</span>
             <span class="legend-item"><i class="cell-dot is-unread">●</i> le llegó, sin leer</span>
@@ -322,6 +342,53 @@
             </ul>
           </div>
         </div>
+
+        <!-- ──────────────────── Avisos automáticos ───────────────────── -->
+        <div v-else-if="view === 'automaticos'" class="routing">
+          <p class="routing-intro">
+            Estos los manda el sistema solo. <strong>Sin perfiles marcados van a
+            todo el equipo</strong>, que es como funcionan hoy; marcando alguno,
+            ese aviso deja de aparecer en la campana y en el teléfono de los
+            demás.
+          </p>
+          <p v-if="!routing.editable" class="routing-warn">
+            Falta aplicar la migración pendiente en el servidor
+            (<code>npm run migrate</code>): hasta entonces todo sigue yendo a
+            todo el equipo y lo que se marque acá no se puede guardar.
+          </p>
+          <p v-if="routingError" class="routing-warn">{{ routingError }}</p>
+
+          <div v-for="grupo in tiposPorGrupo" :key="grupo.nombre" class="routing-group">
+            <h4 class="routing-group-title">{{ grupo.nombre }}</h4>
+            <div v-for="t in grupo.tipos" :key="t.type" class="routing-row">
+              <div class="routing-what">
+                <strong>{{ t.label }}</strong>
+                <span class="routing-desc">{{ t.description }}</span>
+              </div>
+              <div class="routing-roles">
+                <!-- "Todo el equipo" es una opción más y no la ausencia de
+                     opciones: sin ella, dejar un tipo como está obliga a
+                     adivinar que desmarcar todo es lo que lo devuelve a todos. -->
+                <button
+                  type="button"
+                  class="role-chip"
+                  :class="{ 'is-on': (routing.routing[t.type] || []).length === 0 }"
+                  :disabled="!routing.editable || guardando === t.type"
+                  @click="setRoles(t.type, [])"
+                >Todo el equipo</button>
+                <button
+                  v-for="r in routing.roles"
+                  :key="r.id"
+                  type="button"
+                  class="role-chip"
+                  :class="{ 'is-on': (routing.routing[t.type] || []).includes(r.id) }"
+                  :disabled="!routing.editable || guardando === t.type"
+                  @click="toggleRole(t.type, r.id)"
+                >{{ r.name }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </main>
@@ -331,6 +398,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { avatarColor, initials } from '../avatars.js';
+import { hasPermission } from '../auth.js';
 
 /**
  * A dónde puede llevar un aviso.
@@ -369,7 +437,9 @@ const form = ref(emptyForm());
 
 /* La vista elegida se recuerda, entre `try` porque en una ventana privada el
    acceso al `localStorage` lanza (mismo cuidado que Entregables). */
-const view = ref(readStored('avisos.view') === 'matriz' ? 'matriz' : 'lista');
+const VISTAS = ['lista', 'matriz', 'automaticos'];
+const guardada = readStored('avisos.view');
+const view = ref(VISTAS.includes(guardada) ? guardada : 'lista');
 
 function readStored(clave) {
   try {
@@ -597,7 +667,97 @@ function fullDate(iso) {
   return iso ? new Date(iso).toLocaleString('es-PE', { timeZone: 'America/Lima' }) : '';
 }
 
-onMounted(refresh);
+// ───────────────────── Avisos automáticos (enrutado) ──────────────────────
+
+/*
+ * El catálogo de tipos y los perfiles vienen del SERVIDOR y no copiados acá:
+ * con una copia en cada lado, el tipo que se agregue mañana aparece en la base
+ * y no en el formulario, así que nadie podría enrutarlo.
+ */
+const routing = ref({ types: [], roles: [], routing: {}, editable: true });
+const loadingRouting = ref(false);
+const routingError = ref('');
+const guardando = ref(null);
+
+const puedeEnrutar = computed(() => hasPermission('roles.manage'));
+
+/* Agrupados por el trabajo al que pertenecen: una lista plana de diecisiete
+   avisos no se reparte entre perfiles porque no se ve de qué va cada uno. */
+const tiposPorGrupo = computed(() => {
+  const grupos = [];
+  for (const t of routing.value.types) {
+    let grupo = grupos.find((g) => g.nombre === t.group);
+    if (!grupo) {
+      grupo = { nombre: t.group, tipos: [] };
+      grupos.push(grupo);
+    }
+    grupo.tipos.push(t);
+  }
+  return grupos;
+});
+
+/* Cuántos tienen el público acotado. Es lo que dice de un vistazo si esto
+   está configurado o si todo sigue yendo a todos. */
+const tiposAcotados = computed(() => (
+  routing.value.types.filter((t) => (routing.value.routing[t.type] || []).length > 0).length
+));
+
+async function loadRouting() {
+  if (!puedeEnrutar.value) return;
+  loadingRouting.value = true;
+  routingError.value = '';
+  try {
+    const res = await apiFetch('/api/notification-routing');
+    if (!res.ok) throw new Error('No se pudo leer el reparto de avisos automáticos.');
+    routing.value = await res.json();
+  } catch (error) {
+    routingError.value = error.message;
+  } finally {
+    loadingRouting.value = false;
+  }
+}
+
+function toggleRole(type, roleId) {
+  const actuales = routing.value.routing[type] || [];
+  const siguientes = actuales.includes(roleId)
+    ? actuales.filter((id) => id !== roleId)
+    : [...actuales, roleId];
+  return setRoles(type, siguientes);
+}
+
+/*
+ * Se guarda tipo por tipo, no la matriz entera: la pantalla se edita marcando
+ * casillas, y mandar los diecisiete en cada clic haría que dos personas
+ * configurando a la vez se pisaran el trabajo entero en vez de la casilla que
+ * tocaron. La respuesta trae la configuración completa, así que la pantalla
+ * queda mostrando lo que de verdad quedó guardado y no lo que se pidió.
+ */
+async function setRoles(type, roleIds) {
+  if (!routing.value.editable) return;
+  guardando.value = type;
+  routingError.value = '';
+  try {
+    const res = await apiFetch(`/api/notification-routing/${type}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roleIds })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'No se pudo guardar el reparto.');
+    }
+    routing.value = await res.json();
+  } catch (error) {
+    routingError.value = error.message;
+  } finally {
+    guardando.value = null;
+  }
+}
+
+onMounted(() => {
+  refresh();
+  loadRouting();
+});
 </script>
 
 <style scoped>
@@ -779,6 +939,57 @@ onMounted(refresh);
 .avatar.is-unread { box-shadow: 0 0 0 2px var(--cta); opacity: 0.7; }
 
 /* ─────────────────────────────── Pestañas ────────────────────────────── */
+
+/* ───────────────── Avisos automáticos (enrutado por perfil) ───────────── */
+.routing-intro { color: var(--text-muted); font-size: 0.85rem; margin: 0 0 0.9rem; }
+.routing-warn {
+  margin: 0 0 0.9rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--warning, #C9922E);
+  font-size: 0.82rem;
+}
+.routing-group { margin-bottom: 1.1rem; }
+.routing-group-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.routing-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+.routing-row:last-child { border-bottom: none; }
+.routing-what { flex: 1 1 15rem; min-width: 0; }
+.routing-what strong { display: block; font-size: 0.86rem; }
+.routing-desc { display: block; font-size: 0.76rem; color: var(--text-muted); line-height: 1.35; }
+.routing-roles { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: flex-start; }
+/* La píldora pulsable del panel: el color y el borde los pone `.pill`, acá
+   solo el estado elegido — misma pareja que el Libro Diario y Salarios. */
+.role-chip {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.role-chip:hover:not(:disabled) { border-color: var(--brand-olive, #6F8125); }
+.role-chip.is-on {
+  background: rgba(111, 129, 37, 0.14);
+  border-color: var(--brand-olive, #6F8125);
+  color: var(--text-main);
+  font-weight: 600;
+}
+.role-chip:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .tabs { display: inline-flex; gap: 0.25rem; }
 .tab {

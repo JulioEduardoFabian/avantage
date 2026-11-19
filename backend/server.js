@@ -65,6 +65,7 @@ import { DeliverableCalendarService } from './services/deliverableCalendarServic
 import { ScheduledMeetingService, activeMeetingForLead } from './services/scheduledMeetingService.js';
 import { CalendarSyncService } from './services/calendarSyncService.js';
 import { NotificationService } from './services/notificationService.js';
+import { NotificationRoutingService } from './services/notificationRoutingService.js';
 import { DeviceTokenService } from './services/deviceTokenService.js';
 import { PushService } from './services/pushService.js';
 import { NoticeService } from './services/noticeService.js';
@@ -196,7 +197,15 @@ const clientAccountService = new ClientAccountService();
 // de avisar al telefono.
 const deviceTokenService = new DeviceTokenService();
 const pushService = new PushService({ deviceTokenService });
-const notificationService = new NotificationService({ pushService });
+/*
+ * El reparto de los avisos automaticos entre perfiles. Va ANTES de la campana
+ * porque de el dependen sus dos canales: que filtro aplica la lectura y a que
+ * telefonos sale el push. Los dos tienen que resolver el publico con las
+ * MISMAS filas, o el aviso le suena en el bolsillo a alguien que despues no lo
+ * encuentra en el panel.
+ */
+const notificationRoutingService = new NotificationRoutingService();
+const notificationService = new NotificationService({ pushService, routingService: notificationRoutingService });
 // Los avisos que el equipo se escribe a mano: son filas de `notifications`
 // con autor, no una tabla paralela. Ver la cabecera de `noticeService.js`.
 const noticeService = new NoticeService({ notificationService });
@@ -4387,6 +4396,47 @@ app.get('/api/whatsapp/bot/quality', requireAuth, requirePermission('bot.manage'
  * administra el área comercial ve todo—, resuelta en el SERVIDOR: filtrar la
  * lista en la pantalla sería una cortina y no un permiso.
  */
+/**
+ * El reparto de los avisos AUTOMATICOS entre perfiles.
+ *
+ * Es configuracion del panel, no de un modulo: decide que le suena en el
+ * telefono a quien, asi que va con `roles.manage` — el mismo permiso con el
+ * que se administran los perfiles que esto reparte. Quien manda avisos a mano
+ * (`notices.send`) no necesita poder acotar los del bot.
+ *
+ * El catalogo de tipos viaja en la respuesta y no copiado en la pantalla: con
+ * una copia en cada lado, el tipo que se agregue manana aparece en la base y
+ * no en el formulario, asi que nadie puede enrutarlo.
+ */
+app.get('/api/notification-routing', requireAuth, requirePermission('roles.manage'), async (req, res) => {
+  try {
+    res.json(await notificationRoutingService.getConfig());
+  } catch (error) {
+    console.error('Error al leer el reparto de notificaciones:', error);
+    res.status(500).json({ error: 'No se pudo leer el reparto de notificaciones.' });
+  }
+});
+
+/**
+ * Reemplaza los perfiles de UN tipo. Se guarda tipo por tipo y no la matriz
+ * entera porque la pantalla se edita marcando casillas: mandar las quince
+ * filas en cada clic haria que dos personas configurando a la vez se pisaran
+ * el trabajo entero en vez de la casilla que tocaron.
+ *
+ * Una lista vacia devuelve ese tipo a "para todos", que es el valor por
+ * defecto seguro: lo contrario seria un aviso que deja de verlo nadie.
+ */
+app.put('/api/notification-routing/:type', requireAuth, requirePermission('roles.manage'), async (req, res) => {
+  try {
+    const config = await notificationRoutingService.setRoles(req.params.type, req.body?.roleIds || []);
+    res.json(config);
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Error al guardar el reparto de notificaciones:', error);
+    res.status(500).json({ error: 'No se pudo guardar el reparto de notificaciones.' });
+  }
+});
+
 app.get('/api/lead-handoffs', requireAuth, requireAnyPermission('leads.view', 'setter.view'), async (req, res) => {
   try {
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
