@@ -77,6 +77,28 @@ test('el evento del formulario va como evento de CRM', () => {
   });
 });
 
+test('el evento de formulario lleva el origen que ve el Administrador de eventos', () => {
+  /*
+   * Sin `leadEventSource` el evento sale igual, con el nombre por defecto: es
+   * el texto que el Administrador de eventos muestra como origen de la
+   * "Integración de CRM" y con el que el equipo reconoce que los eventos
+   * llegan desde este CRM y no de otra herramienta. Un evento sin él se acepta
+   * y queda sin atribuir a ninguna integración, que es la forma silenciosa de
+   * fallar de todo este circuito.
+   */
+  const event = buildEvent({
+    eventName: 'Cita agendada',
+    eventTime: 1760000000,
+    identifier: { kind: 'lead_id', value: 123456789012345 }
+  });
+  assert.equal(event.custom_data.lead_event_source, 'CRM AVANTAGE');
+  assert.equal(event.custom_data.event_source, 'crm');
+  assert.equal(event.action_source, 'system_generated');
+  // El lead_id de Meta va en user_data y sin hashear, que es lo que pide la
+  // Conversions API para el flujo de CRM.
+  assert.equal(event.user_data.lead_id, 123456789012345);
+});
+
 test('el evento de Click-to-WhatsApp va como mensajería y no como CRM', () => {
   // Son las dos formas que acepta Meta, y usar la del otro origen hace que el
   // evento se descarte.

@@ -14,6 +14,24 @@
  * `whatsappBotService.js` depende de ella.
  */
 import { COMPANY } from './quotationDocument.js';
+import { officeCityName } from './officeLocation.js';
+
+/*
+ * Las SEDES DE ATENCIÓN son otro dato que el domicilio legal: ese dice dónde
+ * está inscrita la empresa y estas dicen dónde se atiende, que es lo que el
+ * contacto pregunta. Sale de `COMPANY.offices` —la misma fuente que imprime
+ * el pie de la cotización— y se usa en dos lugares (la FAQ editable y la red
+ * de seguridad de `buildKnowledgeBlock`), así que se escribe una vez: con una
+ * copia en cada uno, editar una dejaría al bot diciendo dos direcciones.
+ *
+ * La pregunta directa ("¿tienen sede en Lima?") no pasa por el modelo: la
+ * contesta `officeLocation.js` con la dirección exacta. Este hecho es para
+ * las vueltas que ninguna regla va a cubrir ("¿en qué ciudades están?",
+ * "¿tienen algo por Arequipa?").
+ */
+const OFFICES_FACT = `Atendemos presencialmente en ${
+  COMPANY.offices.map((o) => `${officeCityName(o.city)} (${o.address})`).join(' y en ')
+}, y en el resto del país por Google Meet.`;
 
 export const BOT_PROMPT_DEFAULTS = {
   identity: 'Eres Avan, el asistente de Avantage Group (Perú), conversando por WhatsApp con alguien interesado en su tema de tesis.',
@@ -57,6 +75,7 @@ export const BOT_PROMPT_DEFAULTS = {
     'No necesitas llevar nada preparado a la reunión.',
     `Somos ${COMPANY.legalName}, empresa formal con RUC ${COMPANY.ruc}.`,
     `Nuestra oficina está en ${COMPANY.address}, ${COMPANY.addressCity}.`,
+    OFFICES_FACT,
     'Trabajamos con un contrato de prestación de servicios.',
     'El pago se puede hacer en cuotas; el asesor te explica el cronograma de pagos en la reunión.',
     'El tiempo que toma depende de tu avance y del alcance de tu tesis; el asesor te propone un cronograma en la reunión.'
@@ -158,9 +177,14 @@ export function buildKnowledgeBlock(settings = {}) {
   // desincronizarse de los documentos reales. Cada hecho se omite si la FAQ
   // del panel ya dice algo sobre eso (se busca su marca), para no repetirlo
   // con otras palabras.
+  // Las sedes van DESPUÉS del domicilio legal y el orden importa: el marcador
+  // del domicilio es su propia calle, que `OFFICES_FACT` también nombra, así
+  // que puesto antes lo dejaría afuera — y con él se iría el "- Perú" que es
+  // justo lo que contesta "¿no están en Perú?".
   const identityFacts = [
     [COMPANY.ruc, `Somos ${COMPANY.legalName}, empresa formal con RUC ${COMPANY.ruc}.`],
     [COMPANY.address, `Nuestra oficina está en ${COMPANY.address}, ${COMPANY.addressCity}.`],
+    [COMPANY.offices[0].address, OFFICES_FACT],
     ['contrato', 'Trabajamos con un contrato de prestación de servicios.']
   ];
   for (const [marker, fact] of identityFacts) {

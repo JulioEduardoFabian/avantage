@@ -27,7 +27,15 @@
       </div>
 
       <div class="section-body">
-        <div v-if="pendingCommunicationsCount === 0" class="empty-state">
+        <AppLoader
+          v-if="isLoading"
+          variant="table"
+          :rows="2"
+          icon="💬"
+          title="Revisando comunicaciones pendientes…"
+          subtitle="Consultando leads nuevos y solicitudes por atender."
+        />
+        <div v-else-if="pendingCommunicationsCount === 0" class="empty-state">
           <div class="empty-state-visual">
             <img src="/images/empty_inbox.jpg" alt="Bandeja al día" class="empty-state-photo" />
           </div>
@@ -77,8 +85,10 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { authState, hasPermission } from '../auth.js';
+import AppLoader from '../components/AppLoader.vue';
 
 const pendingCommunications = ref([]);
+const isLoading = ref(false);
 
 const welcomeName = computed(() => {
   if (authState.user?.name) {
@@ -92,28 +102,38 @@ const pendingCommunicationsCount = computed(() => pendingCommunications.value.le
 const TOOLS = [
   { key: 'leads.view', label: 'Funnel de Leads', description: 'Gestión comercial de candidatos y clientes en tablero Kanban', icon: '📇', to: '/admin/leads', tintClass: 'tint-amber' },
   { key: 'setter.view', label: 'Setter Funnel', description: 'Triaje de leads y conversaciones de WhatsApp, Facebook e Instagram', icon: '🎯', to: '/admin/setter-funnel', tintClass: 'tint-pink' },
-  { key: 'instagram.view', label: 'Instagram', description: 'Comentarios, DMs, menciones e interacciones de Instagram Business', icon: '📸', to: '/admin/instagram', tintClass: 'tint-purple' },
+  { key: 'whatsapp.view', label: 'WhatsApp', description: 'Bandeja de conversaciones en vivo y control del asistente Avan', icon: '💚', to: '/admin/whatsapp', tintClass: 'tint-purple' },
+  { key: 'campaigns.view', label: 'Campañas Ads', description: 'Rendimiento, atribución y retorno de Meta Ads y TikTok Ads', icon: '📣', to: '/admin/campaigns', tintClass: 'tint-amber' },
+  { key: 'calendar.view', label: 'Calendario', description: 'Agenda de reuniones comerciales y cruce de disponibilidad', icon: '📅', to: '/admin/calendario', tintClass: 'tint-blue' },
   { key: 'projects.view', label: 'Proyectos & Avances', description: 'Gestión de proyectos, entregables, cronogramas y tareas', icon: '🚀', to: '/admin/projects', tintClass: 'tint-rose' },
-  { key: 'finance.view', label: 'Finanzas', description: 'Registro y visualización de ingresos y egresos del negocio', icon: '💰', to: '/admin/finance', tintClass: 'tint-amber' },
+  { key: 'deliverables.view', label: 'Entregables', description: 'Seguimiento de entregas por cliente y calendario de compromisos', icon: '📦', to: '/admin/entregables', tintClass: 'tint-amber' },
+  { key: 'collections.view', label: 'Cobranzas', description: 'Gestión de cuotas por cobrar, vencimientos y recordatorios', icon: '📞', to: '/admin/cobranzas', tintClass: 'tint-pink' },
+  { key: 'finance.view', label: 'Finanzas', description: 'Control de ingresos verificados, libro diario, gastos y planilla', icon: '💰', to: '/admin/finance', tintClass: 'tint-purple' },
+  { key: 'reports.general', label: 'Reporte General', description: 'Indicadores ejecutivos de ventas, caja, cartera y conversión', icon: '📊', to: '/admin/reporte-general', tintClass: 'tint-blue' },
+  { key: 'instagram.view', label: 'Instagram', description: 'Comentarios, DMs, menciones e interacciones de Instagram Business', icon: '📸', to: '/admin/instagram', tintClass: 'tint-rose' },
   { key: 'roles.manage', label: 'Roles y Permisos', description: 'Administración de usuarios, roles de acceso y herramientas', icon: '🔐', to: '/admin/roles', tintClass: 'tint-blue' }
 ];
 
 const availableTools = computed(() => TOOLS.filter(tool => hasPermission(tool.key)));
 
 async function fetchDashboardStats() {
+  isLoading.value = true;
   try {
     if (authState.token) {
       const res = await fetch('/api/leads', {
         headers: { 'Authorization': `Bearer ${authState.token}` }
       });
       if (res.ok) {
-        const leads = await res.json();
+        const data = await res.json();
+        const leads = Array.isArray(data) ? data : (data.leads || []);
         // Pending leads in initial status (nuevo or contactado)
         pendingCommunications.value = leads.filter(l => l.status === 'nuevo');
       }
     }
   } catch (err) {
     console.warn('Dashboard stats fetch:', err);
+  } finally {
+    isLoading.value = false;
   }
 }
 

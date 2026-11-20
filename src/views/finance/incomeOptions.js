@@ -1,3 +1,6 @@
+import { ref } from "vue";
+import { apiFetch } from "../../apiClient.js";
+
 /**
  * Opciones y cálculos que comparten la pestaña de INGRESOS y el desplegable
  * del plan de cobro. Deben coincidir con las constantes equivalentes del
@@ -27,6 +30,60 @@ export const EMITIR_OPCIONES = ["factura", "boleta", "nrus", "rxh", "c. interno"
  * finanzas, distinta de la operativa ("BCP").
  */
 export const BANCOS = ["BCP", "BCP Finanzas", "Interbank", "Efectivo"];
+
+/** Áreas de la empresa de fábrica del Libro Diario (espejo de `DEFAULT_AREAS` del backend). */
+export const DEFAULT_AREAS = ["Ventas", "Marketing", "Operaciones", "Administración", "Recursos Humanos", "Finanzas"];
+
+/*
+ * Las listas VIGENTES: las de fábrica más las que el equipo agregó
+ * (`/api/finance/options`). Son refs compartidos por todo el módulo, así que
+ * una cuenta agregada en el Libro Diario aparece al instante en los
+ * desplegables de las demás pestañas. Arrancan con las de fábrica para que la
+ * pantalla funcione mientras la petición viaja o si falla.
+ */
+export const bancos = ref([...BANCOS]);
+export const areas = ref([...DEFAULT_AREAS]);
+/** Las agregadas, con su id: son las únicas que se pueden quitar. */
+export const customOptions = ref([]);
+
+function applyOptions(data) {
+  if (Array.isArray(data?.banks) && data.banks.length) bancos.value = data.banks;
+  if (Array.isArray(data?.areas) && data.areas.length) areas.value = data.areas;
+  if (Array.isArray(data?.custom)) customOptions.value = data.custom;
+}
+
+let pending = null;
+/** Carga las listas una vez por sesión (`force` para volver a pedirlas). */
+export function loadFinanceOptions({ force = false } = {}) {
+  if (pending && !force) return pending;
+  pending = apiFetch("/api/finance/options")
+    .then(async (res) => {
+      if (res.ok) applyOptions(await res.json());
+    })
+    .catch(() => {});
+  return pending;
+}
+
+async function mutate(url, options) {
+  const res = await apiFetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "No se pudo guardar el cambio.");
+  applyOptions(data);
+  return data;
+}
+
+/** Agrega un área (`kind: 'area'`) o una cuenta (`kind: 'banco'`). Devuelve el nombre guardado. */
+export async function addFinanceOption(kind, label) {
+  const data = await mutate("/api/finance/options", {
+    method: "POST",
+    body: JSON.stringify({ kind, label }),
+  });
+  return data.option?.label || label;
+}
+
+export function removeFinanceOption(id) {
+  return mutate(`/api/finance/options/${id}`, { method: "DELETE" });
+}
 
 /** Sufijo de clase CSS de un banco ("BCP Finanzas" → "bcp-finanzas"). */
 export function bankSlug(banco) {

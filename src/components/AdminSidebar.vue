@@ -31,8 +31,9 @@
         </router-link>
       </div>
 
+      <!-- Comercial y Embudo -->
       <div class="nav-section">
-        <div class="section-title" v-if="!isCollapsed">Menú</div>
+        <div class="section-title" v-if="!isCollapsed">Comercial</div>
 
         <router-link
           v-if="hasPermission('leads.view')"
@@ -44,7 +45,7 @@
           <svg class="nav-icon" style="color: var(--accent-amber);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Funnel</span>
+          <span class="nav-label" v-if="!isCollapsed">Funnel de Ventas</span>
         </router-link>
 
         <router-link
@@ -61,18 +62,20 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('leads.report')"
-          to="/admin/reporte-leads"
+          v-if="hasPermission('calendar.view')"
+          to="/admin/calendario"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/reporte-leads' }"
+          :class="{ 'is-active': $route.path === '/admin/calendario' }"
           @click="closeMobile"
         >
           <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <path d="M14 2v6h6"/>
-            <path d="M9 17v-4M12 17v-6M15 17v-3"/>
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+            <circle cx="12" cy="15" r="1.6" fill="currentColor" stroke="none"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Reporte de Leads</span>
+          <span class="nav-label" v-if="!isCollapsed">Calendario</span>
         </router-link>
 
         <router-link
@@ -91,28 +94,49 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('webhooks.view')"
-          to="/admin/webhooks"
+          v-if="hasPermission('contracts.manage')"
+          to="/admin/contracts"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/webhooks' }"
+          :class="{ 'is-active': $route.path === '/admin/contracts' }"
           @click="closeMobile"
         >
           <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
-            <line x1="12" y1="2" x2="12" y2="12"/>
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <path d="M14 2v6h6"/>
+            <path d="M8 13h8M8 17h5"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Webhooks</span>
+          <span class="nav-label" v-if="!isCollapsed">Contratos</span>
         </router-link>
 
         <router-link
-          v-if="hasPermission('social.view')"
-          to="/admin/social"
+          v-if="hasPermission('documents.view')"
+          to="/admin/documents"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/social' }"
+          :class="{ 'is-active': $route.path === '/admin/documents' }"
           @click="closeMobile"
         >
-          <BrandIcon name="facebook" :size="22" class="nav-icon-brand" />
-          <span class="nav-label" v-if="!isCollapsed">Interacciones</span>
+          <svg class="nav-icon" style="color: var(--accent-amber);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+            <rect x="8" y="2" width="8" height="4" rx="1"/>
+            <path d="M8 11h8M8 15h5"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Documentos</span>
+        </router-link>
+      </div>
+
+      <!-- Canales y Mensajería -->
+      <div class="nav-section">
+        <div class="section-title" v-if="!isCollapsed">Canales &amp; Bots</div>
+
+        <router-link
+          v-if="hasPermission('whatsapp.view')"
+          to="/admin/whatsapp"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/whatsapp' }"
+          @click="closeMobile"
+        >
+          <BrandIcon name="whatsapp" :size="22" class="nav-icon-brand" />
+          <span class="nav-label" v-if="!isCollapsed">WhatsApp</span>
         </router-link>
 
         <router-link
@@ -127,14 +151,14 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('whatsapp.view')"
-          to="/admin/whatsapp"
+          v-if="hasPermission('social.view')"
+          to="/admin/social"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/whatsapp' }"
+          :class="{ 'is-active': $route.path === '/admin/social' }"
           @click="closeMobile"
         >
-          <BrandIcon name="whatsapp" :size="22" class="nav-icon-brand" />
-          <span class="nav-label" v-if="!isCollapsed">WhatsApp</span>
+          <BrandIcon name="facebook" :size="22" class="nav-icon-brand" />
+          <span class="nav-label" v-if="!isCollapsed">Interacciones</span>
         </router-link>
 
         <router-link
@@ -151,22 +175,11 @@
           </svg>
           <span class="nav-label" v-if="!isCollapsed">Personalidad del Bot</span>
         </router-link>
+      </div>
 
-        <router-link
-          v-if="hasPermission('availability.view')"
-          to="/admin/availability"
-          class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/availability' }"
-          @click="closeMobile"
-        >
-          <svg class="nav-icon" style="color: var(--accent-emerald);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-            <line x1="16" y1="2" x2="16" y2="6"/>
-            <line x1="8" y1="2" x2="8" y2="6"/>
-            <line x1="3" y1="10" x2="21" y2="10"/>
-          </svg>
-          <span class="nav-label" v-if="!isCollapsed">Disponibilidad</span>
-        </router-link>
+      <!-- Operaciones y Entregas -->
+      <div class="nav-section">
+        <div class="section-title" v-if="!isCollapsed">Operaciones</div>
 
         <router-link
           v-if="hasPermission('projects.view')"
@@ -198,34 +211,39 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('calendar.view')"
-          to="/admin/calendario"
+          v-if="hasPermission('availability.view')"
+          to="/admin/availability"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/calendario' }"
+          :class="{ 'is-active': $route.path === '/admin/availability' }"
           @click="closeMobile"
         >
-          <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="4" width="18" height="18" rx="2"/>
+          <svg class="nav-icon" style="color: var(--accent-emerald);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
             <line x1="16" y1="2" x2="16" y2="6"/>
             <line x1="8" y1="2" x2="8" y2="6"/>
             <line x1="3" y1="10" x2="21" y2="10"/>
-            <circle cx="12" cy="15" r="1.6" fill="currentColor" stroke="none"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Calendario</span>
+          <span class="nav-label" v-if="!isCollapsed">Disponibilidad</span>
         </router-link>
 
         <router-link
-          v-if="hasPermission('collections.view')"
-          to="/admin/cobranzas"
+          v-if="hasPermission('notices.send')"
+          to="/admin/avisos"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/cobranzas' }"
+          :class="{ 'is-active': $route.path === '/admin/avisos' }"
           @click="closeMobile"
         >
           <svg class="nav-icon" style="color: var(--accent-amber);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.35 1.9.66 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.31 1.85.53 2.81.66A2 2 0 0 1 22 16.92z"/>
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Cobranzas</span>
+          <span class="nav-label" v-if="!isCollapsed">Avisos al equipo</span>
         </router-link>
+      </div>
+
+      <!-- Finanzas y Reportes -->
+      <div class="nav-section">
+        <div class="section-title" v-if="!isCollapsed">Finanzas &amp; Reportes</div>
 
         <router-link
           v-if="hasPermission('finance.view')"
@@ -242,34 +260,67 @@
         </router-link>
 
         <router-link
-          v-if="hasPermission('documents.view')"
-          to="/admin/documents"
+          v-if="hasPermission('collections.view')"
+          to="/admin/cobranzas"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/documents' }"
+          :class="{ 'is-active': $route.path === '/admin/cobranzas' }"
           @click="closeMobile"
         >
           <svg class="nav-icon" style="color: var(--accent-amber);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-            <rect x="8" y="2" width="8" height="4" rx="1"/>
-            <path d="M8 11h8M8 15h5"/>
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.35 1.9.66 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.31 1.85.53 2.81.66A2 2 0 0 1 22 16.92z"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Documentos</span>
+          <span class="nav-label" v-if="!isCollapsed">Cobranzas</span>
         </router-link>
 
         <router-link
-          v-if="hasPermission('contracts.manage')"
-          to="/admin/contracts"
+          v-if="hasPermission('reports.general')"
+          to="/admin/reporte-general"
           class="nav-item"
-          :class="{ 'is-active': $route.path === '/admin/contracts' }"
+          :class="{ 'is-active': $route.path === '/admin/reporte-general' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3v18h18"/>
+            <rect x="7" y="12" width="3" height="5" rx="1"/>
+            <rect x="12" y="8" width="3" height="9" rx="1"/>
+            <rect x="17" y="5" width="3" height="12" rx="1"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Reporte General</span>
+        </router-link>
+
+        <router-link
+          v-if="hasPermission('reports.setters')"
+          to="/admin/reporte-setters"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/reporte-setters' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--accent-pink);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+            <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Reporte de Setters</span>
+        </router-link>
+
+        <router-link
+          v-if="hasPermission('leads.report')"
+          to="/admin/reporte-leads"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/reporte-leads' }"
           @click="closeMobile"
         >
           <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
             <path d="M14 2v6h6"/>
-            <path d="M8 13h8M8 17h5"/>
+            <path d="M9 17v-4M12 17v-6M15 17v-3"/>
           </svg>
-          <span class="nav-label" v-if="!isCollapsed">Contratos</span>
+          <span class="nav-label" v-if="!isCollapsed">Reporte de Leads</span>
         </router-link>
+      </div>
+
+      <!-- Configuración y Sistema -->
+      <div class="nav-section">
+        <div class="section-title" v-if="!isCollapsed">Sistema</div>
 
         <router-link
           v-if="hasPermission('leads.routing')"
@@ -314,6 +365,20 @@
             <path d="M6 12v5c0 1.1 2.7 2 6 2s6-.9 6-2v-5"/>
           </svg>
           <span class="nav-label" v-if="!isCollapsed">Carreras</span>
+        </router-link>
+
+        <router-link
+          v-if="hasPermission('webhooks.view')"
+          to="/admin/webhooks"
+          class="nav-item"
+          :class="{ 'is-active': $route.path === '/admin/webhooks' }"
+          @click="closeMobile"
+        >
+          <svg class="nav-icon" style="color: var(--accent-cyan);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+            <line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+          <span class="nav-label" v-if="!isCollapsed">Webhooks</span>
         </router-link>
       </div>
     </div>

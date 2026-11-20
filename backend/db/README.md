@@ -36,6 +36,77 @@ npm run migrate:make -- nombre_migracion  # crea un nuevo archivo de migración
 Los archivos de migración viven en `backend/db/migrations/` y se ejecutan en orden por su prefijo de
 timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 
+### Dos reglas para escribir una migración
+
+Las dos salieron del mismo fallo en producción, el 01/11/2026, y las comprueba
+`backend/services/__tests__/migrationHygiene.test.js`.
+
+**1. Una migración puede importar funciones puras, nunca una lista de columnas.**
+
+`20261125000000_create_attribution_evidence.js` hacía su backfill con
+`.select('id', ...LEAD_ORIGIN_COLUMNS)`, importando esa constante de
+`leadOrigin.js` para no repetir la lista. Después se le agregaron a esa constante
+las columnas de Smart+ (`tiktok_parent_ad_id` y compañía), que las crea
+`20261127000000` — una migración **posterior**. Resultado: la de atribución
+empezó a pedirle a MySQL columnas que en su momento no existían y murió con
+`Unknown column 'tiktok_parent_ad_id'`.
+
+La distinción que importa: la **función** es la lógica, y conviene que sea una
+sola (una copia dentro de la migración va a decir lo viejo el día que alguien
+corrija la original). La **lista de columnas** es una foto del esquema en ese
+punto de la historia, y por definición no puede venir de un archivo que sigue
+creciendo. Se congela en el propio archivo de la migración.
+
+**2. En MySQL el DDL no es transaccional: toda migración tiene que poder
+reintentarse.**
+
+Cuando aquella murió en el backfill, sus cuatro columnas ya estaban agregadas.
+knex no pudo deshacerlas —MySQL hace commit implícito en cada DDL— y tampoco
+registró la migración como aplicada, así que el reintento chocó contra
+`Duplicate column name 'origin_platform'` y quedó trabado: ni avanzaba ni se
+podía revertir sin tocar la base a mano.
+
+Entonces, en toda migración nueva:
+
+```js
+// Columnas: una por una, y solo las que falten. Agregarlas en un solo
+// `alterTable` es más rápido, pero si una ya está el ALTER entero falla.
+for (const [nombre, definir] of NUEVAS) {
+  if (await knex.schema.hasColumn('leads', nombre)) continue;
+  await knex.schema.alterTable('leads', definir);
+}
+
+// Tablas
+if (!(await knex.schema.hasTable('mi_tabla'))) { /* createTable */ }
+
+// Índices: knex no tiene `hasIndex`, así que se pregunta a information_schema
+// por el nombre que knex le pone por convención (`<tabla>_<columna>_index`).
+async function hasIndex(knex, tabla, indice) {
+  const [rows] = await knex.raw(
+    `SELECT 1 FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
+    [tabla, indice]
+  );
+  return rows.length > 0;
+}
+```
+
+Ese `hasIndex` se **repite** en cada migración en vez de vivir en un módulo
+compartido, y es a propósito: lo que una migración importa de afuera tiene que
+poder cambiar sin cambiarla (es la regla 1 otra vez).
+
+El `down()` se escribe simétrico —quitando solo lo que esté— porque uno que
+asume el estado completo no se puede correr después de un `up()` que murió a la
+mitad, que es justamente la única situación para la que existe.
+
+Y un backfill que sella un dato va con `whereNull(<la columna>)`: no es solo
+para que el reintento sea rápido, es que un sello se escribe una vez y volver a
+pasarle por encima rompe la regla que la migración vino a establecer.
+
+**Las migraciones ya aplicadas no se reescriben** para cumplir nada de esto:
+cambiar una que corrió en producción es la otra forma de dejar la base y el
+código diciendo cosas distintas. El test las exige desde `20261125000000`.
+
 ### Migraciones existentes
 
 | Archivo | Descripción |
@@ -72,6 +143,11 @@ timestamp. Cada uno exporta `up()` (aplicar cambio) y `down()` (revertirlo).
 | `20261029000000_create_project_settings.js` | Crea `project_settings` (fila única): la configuración del módulo de Proyectos. Por ahora solo `notice_email`, el correo al que llega el aviso de "se creó un proyecto nuevo" — un proyecto nace casi siempre solo, al cerrarse una venta, así que nadie se enteraba hasta entrar a mirar. Mismo patrón y mismas razones que `deliverable_settings`: un solo destinatario y en la base, no en el `.env`, porque cambia cuando cambia quién ocupa el puesto. |
 | `20261030000000_alter_whatsapp_bot_sessions_add_paused_alert.js` | Agrega `whatsapp_bot_sessions.paused_alert_at`: cuándo se avisó por última vez de que un contacto escribió con el bot **pausado**. Con el bot apagado (alguien respondió a mano, o se mandó una plantilla de reactivación) esos mensajes solo quedaban en la bitácora interna y no le llegaban a nadie — el 01/10 así se quedó sin respuesta un lead que preguntó el precio dos veces. La marca va en la base y no en memoria porque el proceso se reinicia en cada despliegue y porque el aviso tiene que espaciarse aunque lleguen diez burbujas seguidas. |
 | `20261109000000_alter_leads_add_deal_cancelled.js` | Agrega `leads.deal_cancelled_at` / `deal_cancelled_by` / `deal_cancelled_reason`: la venta que se firmó y después **no llegó a concretarse**. Hasta ahora no había forma de decirlo, así que el cronograma de un cliente que se retractó se quedaba para siempre en Cobranzas y su saldo seguía contando como «por cobrar». Se marca el **cierre** y no cada cuota —el trato es del lead, y marcando fila por fila basta olvidar una para que el cliente reaparezca— y **no se toca `finance_income.estado`**: lo ya verificado entró de verdad y sigue en los libros (una devolución es un egreso del Libro Diario), y deshacerlo es borrar la marca, sin tener que recordar en qué estado estaba cada cuota. |
+| `20261122000000_alter_sales_commissions_payment_details.js` | Agrega `sales_commissions.banco` y `.metodo_pago`, y crea `sales_commission_receipts` (1:N, en cascada con la comisión): el **pago** de una comisión se registra como cualquier otro egreso de Finanzas. Sin banco el egreso caía en el cajón «Sin cuenta» de `getOverview()` —restaba del total pero no de la tarjeta de la cuenta de la que de verdad salió, así que el saldo decía más de lo que hay— y sin comprobante el único pago de Finanzas que no se podía respaldar era justo el que se le hace a una persona del equipo. La tabla de comprobantes está calcada de `finance_salary_receipts` y usa la misma carpeta `uploads/finance-receipts/`: un pago al equipo se respalda igual se anote en la planilla o en esta pestaña. |
+| `20261125000000_create_attribution_evidence.js` | Agrega `leads.origin_platform` (el **sello** del origen: se escribe una vez al nacer la ficha y no se reescribe) más `attribution_method` / `attribution_confidence` / `attribution_reconciled_at` (con qué evidencia se emparejó el envío de la plataforma con esta ficha, y cuándo se la comparó), y crea `attribution_conflicts`: los emparejamientos que necesitan que los resuelva una persona. Cierra un error que corría solo — la importación de TikTok emparejaba por los últimos 9 dígitos del teléfono y con eso escribía campaña, grupo y anuncio; como `leadOrigin()` preguntaba por `tiktok_*` primero, esa ficha pasaba a ser "TikTok" en todas las hojas y tapaba su origen real, y la conciliación diaria corre con `apply: true`. El teléfono sigue sirviendo para no duplicar a una persona; para **atribuir** hace falta el id que emitió la plataforma. El backfill sella lo que ya existe con el MISMO `leadOrigin()` y deja `attribution_reconciled_at` en null a propósito: esas fichas se sellaron con lo que ya tenían guardado, no comparándolas contra la plataforma. |
+| `20261126000000_alter_scheduled_meetings_add_attendance.js` | Agrega `scheduled_meetings.attendance` / `attendance_at` / `attendance_by`: si el contacto **asistió** a la reunión. La tabla sabía si la reunión se había cancelado (el evento desapareció del Google Calendar del asesor) pero no si alguien se presentó, así que todo lo que mide el embudo contaba como cita a la que nadie fue — un anuncio que trae gente que agenda y no aparece se leía igual que uno que trae gente que se presenta. Tres estados, como `leads.qualified`: el vacío es "nadie lo registró" y no "no vino" (un `false` por defecto mostraría como ausencias todas las reuniones viejas, que son casi todas). Lo marca una persona y nunca un automatismo: Google Calendar no sabe quién entró a la sala. Texto y no booleano porque esto crece ("reprogramada en el acto", "asistió tarde"). |
+| `20261127000000_alter_leads_add_tiktok_smart_plus.js` | Agrega `leads.tiktok_parent_ad_id`, `tiktok_creative_id`, `tiktok_video_id`, `tiktok_video_name` y `tiktok_creative_valid_from` / `_to`: la jerarquía de las campañas **Smart+** de TikTok, que no tienen un anuncio y una pieza sino un anuncio **padre** y piezas creativas que la plataforma combina y rota sola. El CRM guardaba un solo `tiktok_ad_id`, así que de un lead de Smart+ no se podía decir qué pieza lo trajo ni se podía decir que no se sabía. El gasto se reporta al padre, así que el costo por cita y por venta se calculan ahí (con el gasto en el padre y las citas en la pieza, la división no da el costo de nada) y la pieza queda **desconocida** — nunca se infiere por descarte. Anuncio, pieza y video son tres ids DISTINTOS: un mismo video vive en varias piezas. Nacen vacías y no hay backfill: TikTok no expone el nivel hijo en esta cuenta hoy, y esa es la respuesta correcta (ver `MINIMUM_ACCESS` en `bridgeContract.js` y `diagnosticarSmartPlus.js`). |
+| `20261128000000_create_tiktok_capi_tables.js` | Crea `tiktok_capi_stage_events` (qué etapa se le reporta a TikTok y con qué evento estándar) y `tiktok_capi_events` (la bitácora de lo enviado, con el **código propio de TikTok** además del estado HTTP: la Business API responde 200 con el fallo adentro, y un rechazo anotado como enviado no se reintenta nunca). Es la hermana de `meta_capi_*`: TikTok nos manda los leads y nunca se enteraba de lo que pasó después, así que su optimización solo podía perseguir "más formularios llenados". El identificador es el `lead_id` de TikTok y nada más —no hay equivalente del `ctwa_clid`—, y se guarda también en la bitácora para que el envío se pueda explicar si la ficha se borra. Siembra las etapas clave resolviéndolas como el resto del sistema. Las credenciales son del `.env`. |
 
 ### Cronograma de pagos y entregables bloqueados
 

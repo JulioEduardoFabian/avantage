@@ -7,6 +7,7 @@
  */
 
 import { COMPANY } from '../services/quotationDocument.js';
+import { officeCityName } from '../services/officeLocation.js';
 
 /**
  * F1 — Primera vez que un lead pregunta por el precio: NO se da un número ni
@@ -160,6 +161,47 @@ export function trustCredentials() {
  */
 export function trustDoubtHandoff() {
   return 'Entiendo que quieras estar seguro antes de avanzar, y haces bien en preguntarlo 🙌';
+}
+
+/**
+ * El contacto pregunta si tenemos sede en una ciudad donde SÍ la tenemos (ver
+ * `officeQuestion` en services/officeLocation.js). Recibe las sedes por las
+ * que preguntó, en el orden del catálogo.
+ *
+ * Cuatro decisiones:
+ *
+ * 1. Se contesta **sí** y con la dirección, de una. "Trabajamos en todo el
+ *    Perú por videollamada" no responde lo que preguntaron —si pueden ir— y
+ *    quien pregunta lo lee como que no hay oficina (es el mismo error que la
+ *    regla dura del prompt del LLM le prohíbe cometer).
+ * 2. La dirección sale de `COMPANY.offices`, la misma que imprime el pie de
+ *    la cotización, y llega hasta el piso y la oficina: el que pregunta por
+ *    la sede va a ir.
+ * 3. Se nombra también la otra sede. "¿Tienen en Lima?" casi siempre viene de
+ *    alguien que no sabe dónde más estamos, y son dos líneas.
+ * 4. El Meet va al final y como alternativa, no como respuesta: suma para el
+ *    que está lejos y no borra la oficina que acaba de preguntar.
+ *
+ * Como en `trustCredentials`, el texto NO trae el paso pendiente pegado
+ * detrás: el turno se gasta entero en responder y el horario se vuelve a
+ * pedir en el turno siguiente, por el camino normal.
+ */
+export function officeLocations(offices = []) {
+  const asked = offices.length ? offices : COMPANY.offices;
+  const askedCities = new Set(asked.map((o) => o.city));
+  const others = COMPANY.offices.filter((o) => !askedCities.has(o.city));
+
+  const line = (o) => `📍 *${officeCityName(o.city)}*: ${o.address}`;
+  const head = asked.length > 1
+    ? '¡Sí! Te paso las dos direcciones 🙌'
+    : `¡Sí! Tenemos oficina en ${officeCityName(asked[0].city)} 🙌`;
+
+  const parts = [head, '', asked.map(line).join('\n')];
+  if (others.length) {
+    parts.push('', `También atendemos en ${others.map((o) => `${officeCityName(o.city)} (${o.address})`).join(' y en ')}.`);
+  }
+  parts.push('', 'Y si te queda lejos, la reunión con el asesor también se hace por Google Meet.');
+  return parts.join('\n');
 }
 
 /**

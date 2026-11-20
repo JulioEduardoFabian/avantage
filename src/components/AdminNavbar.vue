@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <header class="admin-navbar">
     <div class="navbar-inner">
       <!-- Left side: Collapse / Sidebar Toggle -->
@@ -39,14 +39,13 @@
           </svg>
         </button>
 
-        <!-- Messages Icon with Red Badge -->
+        <!-- Acceso rápido a Conversaciones / WhatsApp -->
         <div class="badge-icon-wrapper">
-          <button class="icon-btn" title="Comunicaciones y Mensajes">
+          <button class="icon-btn" title="Ir a Conversaciones de WhatsApp" @click="router.push('/admin/whatsapp')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-          <span class="notification-badge red-badge">0</span>
         </div>
 
         <!-- Notification Bell with Red Badge -->
@@ -69,21 +68,47 @@
             <div v-if="notifications.length === 0" class="notif-empty">
               Sin notificaciones todavía.
             </div>
+            <!--
+              Cada aviso es un <div> con DOS botones adentro y no un botón que
+              envuelve todo, que es como estaba: un botón dentro de otro es HTML
+              inválido, y el clic en "Ver todo" habría disparado además la
+              navegación del aviso — o sea que desplegar el texto te sacaba de
+              la campana, que es lo contrario de lo que se pide.
+            -->
             <div v-else class="notif-list custom-scrollbar">
-              <button
+              <div
                 v-for="notif in notifications"
                 :key="notif.id"
-                type="button"
                 class="notif-item"
                 :class="{ 'is-unread': !notif.is_read }"
-                @click="openNotification(notif)"
               >
-                <span class="notif-item-icon">{{ notif.type === 'meeting_booked' ? '📅' : '⚠️' }}</span>
-                <span class="notif-item-body">
-                  <strong class="notif-item-title">{{ notif.title }}</strong>
-                  <span v-if="notif.body" class="notif-item-text">{{ notif.body }}</span>
-                </span>
-              </button>
+                <button type="button" class="notif-item-main" @click="openNotification(notif)">
+                  <span class="notif-item-icon">{{ notif.type === 'meeting_booked' ? '📅' : '⚠️' }}</span>
+                  <span class="notif-item-body">
+                    <strong class="notif-item-title">{{ notif.title }}</strong>
+                    <!--
+                      Desplegado se respetan los saltos de línea del cuerpo
+                      (`pre-line`): estos avisos vienen escritos en párrafos —el
+                      mensaje del contacto va en su propio renglón— y aplastados
+                      en un bloque corrido se vuelven ilegibles justo cuando uno
+                      los abrió para leerlos enteros.
+                    -->
+                    <span
+                      v-if="notif.body"
+                      class="notif-item-text"
+                      :class="{ 'is-expanded': expandedNotifs.has(notif.id) }"
+                    >{{ notif.body }}</span>
+                  </span>
+                </button>
+                <button
+                  v-if="isLongNotif(notif)"
+                  type="button"
+                  class="notif-expand"
+                  @click.stop="toggleNotifText(notif.id)"
+                >
+                  {{ expandedNotifs.has(notif.id) ? 'Ver menos' : 'Ver todo' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -93,7 +118,7 @@
           <button type="button" class="avatar-wrapper" @click="isUserMenuOpen = !isUserMenuOpen">
             <span class="avatar-circle-wrap">
               <span class="avatar-circle">
-                <img v-if="authState.user?.avatar" :src="authState.user.avatar" alt="Avatar" />
+                <img v-if="authState.user?.avatar_url" :src="authState.user.avatar_url" alt="Avatar" />
                 <span v-else class="avatar-initials">{{ userInitials }}</span>
               </span>
               <span class="online-indicator"></span>
@@ -111,6 +136,19 @@
               <div class="user-email">{{ authState.user?.email || 'admin@avantage.pe' }}</div>
               <div class="user-role-badge">{{ authState.user?.role || 'Admin' }}</div>
             </div>
+
+            <div class="dropdown-divider"></div>
+
+            <!-- "Mi perfil" va primero y sin `v-if`: es la única entrada del
+                 menú que no depende de ningún permiso, porque todo el mundo
+                 tiene cuenta. -->
+            <router-link to="/admin/perfil" class="dropdown-item" @click="isUserMenuOpen = false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+              </svg>
+              Mi perfil
+            </router-link>
 
             <div class="dropdown-divider"></div>
 
@@ -192,10 +230,51 @@ async function fetchNotifications() {
 async function toggleNotifDropdown() {
   isNotifDropdownOpen.value = !isNotifDropdownOpen.value;
   if (isNotifDropdownOpen.value) await fetchNotifications();
+  else expandedNotifs.value = new Set();
+}
+
+/*
+ * Qué avisos están desplegados. Es un Set de ids y vive en la pantalla, no en
+ * la base: desplegar un texto para leerlo es un gesto del momento, no una
+ * preferencia que valga la pena recordar entre sesiones.
+ *
+ * Se vacía al cerrar el menú, para que la próxima vez la lista vuelva a verse
+ * completa de un vistazo en vez de con tres avisos abiertos de la vez pasada.
+ */
+const expandedNotifs = ref(new Set());
+
+/*
+ * Cuándo ofrecer "Ver todo". El cuerpo se recorta a dos líneas por CSS
+ * (`-webkit-line-clamp`), y en el ancho de este menú con esta tipografía esas
+ * dos líneas son unos 100 caracteres.
+ *
+ * Es una estimación y no una medición del DOM a propósito: medir
+ * `scrollHeight` contra `clientHeight` obliga a un reflow por aviso cada vez
+ * que se abre la campana, y el costo de equivocarse acá es mínimo — en el peor
+ * caso aparece un "Ver todo" que despliega una línea de más. Lo que no puede
+ * pasar es lo contrario: que un texto recortado no ofrezca cómo abrirlo, y por
+ * eso el umbral se queda corto en vez de pasarse.
+ */
+const NOTIF_CLAMP_CHARS = 100;
+
+function isLongNotif(notif) {
+  const body = notif.body || '';
+  // Un cuerpo con saltos de línea ya ocupa más de dos líneas aunque sea corto.
+  return body.length > NOTIF_CLAMP_CHARS || body.includes('\n');
+}
+
+function toggleNotifText(id) {
+  // Se reemplaza el Set en vez de mutarlo: Vue no reacciona a `.add()` sobre
+  // un Set dentro de un ref.
+  const next = new Set(expandedNotifs.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedNotifs.value = next;
 }
 
 async function openNotification(notif) {
   isNotifDropdownOpen.value = false;
+  expandedNotifs.value = new Set();
   if (!notif.is_read) {
     try {
       await apiFetch(`/api/notifications/${notif.id}/read`, { method: 'POST' });
@@ -221,16 +300,31 @@ async function markAllNotificationsRead() {
 const currentPageTitle = computed(() => {
   if (route.path === '/dashboard') return 'Inicio';
   if (route.path === '/admin/database') return 'Base de Datos de Leads';
-  if (route.path === '/admin/leads') return 'Funnel de Leads';
+  if (route.path === '/admin/leads') return 'Funnel de Ventas';
   if (route.path === '/admin/setter-funnel') return 'Setter Funnel';
-  if (route.path === '/admin/campaigns') return 'Campañas';
-  if (route.path === '/admin/finance') return 'Finanzas';
+  if (route.path === '/admin/reporte-leads') return 'Reporte de Leads';
+  if (route.path === '/admin/reporte-setters') return 'Reporte de Setters';
+  if (route.path === '/admin/reporte-general') return 'Reporte General';
+  if (route.path === '/admin/avisos') return 'Avisos al Equipo';
+  if (route.path === '/admin/campaigns') return 'Campañas Publicitarias';
+  if (route.path === '/admin/finance') return 'Finanzas y Tesorería';
+  if (route.path === '/admin/cobranzas') return 'Cartera de Cobranzas';
+  if (route.path === '/admin/calendario') return 'Calendario Comercial';
+  if (route.path === '/admin/entregables') return 'Entregables';
   if (route.path === '/admin/contracts') return 'Contratos';
+  if (route.path === '/admin/documents') return 'Documentos Emitidos';
+  if (route.path === '/admin/whatsapp') return 'WhatsApp Business';
   if (route.path === '/admin/instagram') return 'Interacciones de Instagram';
   if (route.path === '/admin/social') return 'Interacciones de Facebook';
+  if (route.path === '/admin/availability') return 'Mi Disponibilidad';
+  if (route.path === '/admin/bot-script') return 'Personalidad de Avan';
+  if (route.path === '/admin/reparto') return 'Reparto de Leads';
+  if (route.path === '/admin/carreras') return 'Catálogo de Carreras';
+  if (route.path === '/admin/webhooks') return 'Monitor de Webhooks';
   if (route.path.startsWith('/admin/projects')) return 'Gestión de Proyectos';
-  if (route.path === '/admin/roles') return 'Roles y Permisos';
-  return 'Dashboard';
+  if (route.path === '/admin/roles') return 'Perfiles y Permisos';
+  if (route.path === '/admin/perfil') return 'Mi Perfil';
+  return 'Panel Administrativo';
 });
 
 const userInitials = computed(() => {
@@ -562,7 +656,14 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
+/* La fila. Ya no es el boton: adentro van el de abrir y el de desplegar. */
 .notif-item {
+  border-bottom: 1px solid var(--border-color);
+  transition: background 0.15s ease;
+}
+
+/* Lo que abre el aviso: ocupa la fila entera menos el "Ver todo". */
+.notif-item-main {
   display: flex;
   align-items: flex-start;
   gap: 0.65rem;
@@ -570,10 +671,34 @@ onUnmounted(() => {
   padding: 0.7rem 0.9rem;
   background: none;
   border: none;
-  border-bottom: 1px solid var(--border-color);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s ease;
+  color: inherit;
+  font: inherit;
+}
+
+/*
+ * "Ver todo" va debajo y alineado con el texto, no al lado: puesto a la
+ * derecha le robaba ancho al cuerpo, que es justo lo que se esta tratando de
+ * mostrar. Y es discreto a proposito — lo que se mira en esta lista son los
+ * avisos, no sus controles.
+ */
+.notif-expand {
+  display: block;
+  margin: -0.35rem 0 0.5rem 2.65rem;
+  padding: 0.1rem 0.35rem;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--brand-olive, #6F8125);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notif-expand:hover {
+  background: var(--surface-2);
+  text-decoration: underline;
 }
 
 .notif-item:last-child {
@@ -582,6 +707,10 @@ onUnmounted(() => {
 
 .notif-item:hover {
   background: var(--surface-2);
+}
+
+.notif-item-main:hover {
+  background: transparent;
 }
 
 .notif-item.is-unread {
@@ -615,5 +744,21 @@ onUnmounted(() => {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+/*
+ * Desplegado: sin recorte y respetando los saltos de linea con los que estos
+ * avisos vienen escritos (el mensaje del contacto va en su propio renglon).
+ * Aplastados en un bloque corrido se vuelven ilegibles justo cuando alguien
+ * los abrio para leerlos enteros.
+ *
+ * `-webkit-line-clamp: unset` y no quitar el `display: -webkit-box`: el box
+ * sigue sirviendo y asi la regla desplegada es exactamente la inversa de la
+ * recortada, sin tener que repetir las otras cuatro propiedades.
+ */
+.notif-item-text.is-expanded {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  white-space: pre-line;
 }
 </style>

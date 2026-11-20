@@ -1,4 +1,5 @@
 import { db } from '../db/connection.js';
+import { stampFirstResponseByLead } from './leadFirstResponse.js';
 
 /**
  * Notas/observaciones internas de un lead: la bitácora que deja el setter o el
@@ -72,6 +73,18 @@ export class LeadNoteService {
       author_name: author?.name || null,
       body: text
     });
+
+    /*
+     * La primera nota de una persona cuenta como la primera respuesta al lead.
+     *
+     * Es el único registro que deja una LLAMADA: el teléfono no pasa por el
+     * sistema, así que sin esto un lead al que el setter llamó tres veces
+     * figuraba igual que uno que nadie tocó —y ese era justo el caso del 55%
+     * de los leads del anuncio "FORM | contrato | 25Oct" el 31/10/2026—. Solo
+     * cuando la escribe una persona: una nota sin autor la pone un
+     * automatismo, y eso no es haber contestado.
+     */
+    if (author?.id) await stampFirstResponseByLead(leadId, { sentBy: author.id });
 
     const rows = await this.listForLead(leadId);
     return rows.find((n) => n.id === id) || null;

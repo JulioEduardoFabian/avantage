@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
 import { uploadDir as projectUploadDir } from '../middleware/upload.js';
+import { avatarUrlFor } from './userService.js';
 
 /**
  * Estado con el que nace un proyecto recién ganado, todavía sin el primer pago
@@ -168,6 +169,10 @@ export class ProjectService {
       .select(
         'projects.*',
         db.raw('MAX(leader.name) as leader_name'),
+        // La foto del líder viaja como URL ya armada (`avatarUrlFor`), igual que
+        // en cualquier otra lectura de usuarios: la tabla de Proyectos dibuja el
+        // círculo con la imagen si la hay y con las iniciales si no.
+        db.raw('MAX(leader.avatar_filename) as leader_avatar_filename'),
         db.raw('MAX(lead.full_name) as client_name'),
         db.raw('COUNT(tasks.id) as total_tasks'),
         db.raw("SUM(CASE WHEN tasks.status = 'completado' THEN 1 ELSE 0 END) as completed_tasks")
@@ -179,8 +184,9 @@ export class ProjectService {
       .orderBy('projects.created_at', 'desc');
 
     const collaboratorsByProject = await this.#collaboratorsByProject(rows.map((row) => row.id));
-    const withTeam = rows.map((row) => ({
+    const withTeam = rows.map(({ leader_avatar_filename: leaderAvatar, ...row }) => ({
       ...this.withProgress(row),
+      leader_avatar_url: avatarUrlFor(leaderAvatar),
       collaborators: collaboratorsByProject.get(row.id) || []
     }));
 
@@ -195,12 +201,16 @@ export class ProjectService {
     const rows = await db('project_collaborators')
       .join('users', 'users.id', 'project_collaborators.user_id')
       .whereIn('project_collaborators.project_id', projectIds)
-      .select('project_collaborators.project_id', 'users.id', 'users.name')
+      .select('project_collaborators.project_id', 'users.id', 'users.name', 'users.avatar_filename')
       .orderBy('users.name', 'asc');
 
     for (const row of rows) {
       if (!byProject.has(row.project_id)) byProject.set(row.project_id, []);
-      byProject.get(row.project_id).push({ id: row.id, name: row.name });
+      byProject.get(row.project_id).push({
+        id: row.id,
+        name: row.name,
+        avatar_url: avatarUrlFor(row.avatar_filename)
+      });
     }
     return byProject;
   }
@@ -353,11 +363,15 @@ export class ProjectService {
   }
 
   async getCollaborators(projectId) {
-    return db('project_collaborators')
+    const rows = await db('project_collaborators')
       .join('users', 'users.id', 'project_collaborators.user_id')
       .where('project_collaborators.project_id', projectId)
-      .select('users.id', 'users.name', 'users.email')
+      .select('users.id', 'users.name', 'users.email', 'users.avatar_filename')
       .orderBy('users.name', 'asc');
+    return rows.map(({ avatar_filename: avatarFilename, ...row }) => ({
+      ...row,
+      avatar_url: avatarUrlFor(avatarFilename)
+    }));
   }
 
   async addCollaborator(projectId, userId) {

@@ -126,7 +126,12 @@ export class WhatsappWebhookService {
           await this.leadService.findOrCreateFromWhatsApp({
             phone: senderId,
             fullName: contact?.profile?.name,
-            source: detectWhatsappChannel(message.referral)
+            source: detectWhatsappChannel(message.referral),
+            // El anuncio del que salió el clic, para que quede en el LEAD y no
+            // solo en el `referral` de este mensaje: este webhook responde 200
+            // antes de procesar, así que un mensaje que no se guarda deja al
+            // lead sin origen para siempre (ver `ctwaAttribution`).
+            referral: message.referral || null
           });
 
           // Mensajes de texto siempre; un audio solo si se pudo transcribir
@@ -145,7 +150,12 @@ export class WhatsappWebhookService {
             // aviso. Desde el otro lado eso se lee como un visto. Ahora al
             // menos se admite que llegó y se pide el dato por escrito — ver
             // `handleUnreadableMessage`, que decide a qué tipos sí contestar.
-            await this.botService.handleUnreadableMessage(senderId, message.type);
+            // El nombre del archivo ya cacheado viaja con el aviso: es lo que
+            // permite nombrar en el aviso interno el archivo que hay que
+            // abrir, en vez de mandar a buscarlo en la conversación.
+            await this.botService.handleUnreadableMessage(senderId, message.type, {
+              mediaFilename: record?.media_filename || null
+            });
           }
         } catch (error) {
           console.error(`❌ [WhatsApp Webhook] Error al guardar el mensaje ${message.id}:`, error);

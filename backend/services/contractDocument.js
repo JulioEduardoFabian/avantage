@@ -395,7 +395,8 @@ export function buildContractDocument(contract) {
   /* El logo lleva su propio texto, así que manda el alto y el ancho sigue su
      proporción. print-color-adjust para que el olivo no salga en gris. */
   .c-logo { height: 38px; width: auto; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .c-brand small { font-size: 7.5pt; color: #5d5e51; letter-spacing: 0.4px; }
+  .c-brand small { display: block; font-size: 7.5pt; color: #5d5e51; letter-spacing: 0.4px; }
+  .c-contact { font-weight: 600; color: #68761f; }
   .c-number { text-align: right; font-size: 8pt; color: #5d5e51; }
   .c-number b { display: block; font-size: 10pt; color: #1f1f1c; }
 
@@ -456,7 +457,13 @@ export function buildContractDocument(contract) {
         ${BRAND_LOGO
           ? `<img class="c-logo" src="${BRAND_LOGO}" alt="Avantage Group">`
           : `<svg viewBox="0 0 70 58" aria-hidden="true">${agMarkPaths()}</svg>`}
-        <div><small>${esc(COMPANY.legalName)} · RUC ${esc(COMPANY.ruc)}</small></div>
+        <div>
+          <small>${esc(COMPANY.legalName)} · RUC ${esc(COMPANY.ruc)}</small>
+          <!-- Los teléfonos de atención van en el contrato y no solo en la
+               cotización: este es el documento que el cliente se queda, y es
+               al que recurre cuando necesita reclamar algo durante el trabajo. -->
+          <small class="c-contact">${COMPANY.contactPhones.map((t) => esc(t)).join(' · ')}</small>
+        </div>
       </div>
       <div class="c-number">Contrato<b>${esc(number)}</b></div>
     </header>

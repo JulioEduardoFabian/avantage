@@ -58,6 +58,22 @@
         </option>
       </select>
 
+      <!--
+        De dónde salió el lead. Una sola lista con las dos preguntas porque son
+        dos recortes del mismo dato: la PLATAFORMA que lo trajo (Meta, TikTok…)
+        y el CANAL por el que llegó (formulario, WhatsApp, mensaje directo).
+        Separarlas en dos desplegables agrega un control a una barra que ya
+        tiene cuatro, y casi nunca se usan juntas.
+      -->
+      <select v-model="origin" class="form-select report-filter" aria-label="Filtrar por origen del lead">
+        <option value="">Origen: todos</option>
+        <optgroup v-for="group in originGroups" :key="group.name" :label="group.name">
+          <option v-for="option in group.options" :key="option.key" :value="option.key">
+            {{ option.label }}
+          </option>
+        </optgroup>
+      </select>
+
       <select v-model="status" class="form-select report-filter" aria-label="Filtrar por etapa actual">
         <option value="">Etapa actual: todas</option>
         <option v-for="option in stageFilterOptions" :key="option.key" :value="option.key">
@@ -85,7 +101,15 @@
     <p v-if="scopeNote" class="info-box report-scope">ℹ️ {{ scopeNote }}</p>
     <p v-if="errorMessage" class="info-box report-alert">⚠️ {{ errorMessage }}</p>
 
-    <div v-if="!isLoading && leads.length === 0" class="empty-state">
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      variant="table"
+      icon="🧾"
+      title="Cargando bitácora y reporte de leads…"
+      subtitle="Consultando trazabilidad de etapas, responsables y movimientos."
+    />
+
+    <div v-else-if="leads.length === 0" class="empty-state">
       <p class="empty-state-title">No hay leads que mostrar</p>
       <p class="empty-state-text">
         {{ hasFilters
@@ -121,6 +145,12 @@
                   <span class="report-client">{{ lead.full_name || 'Sin nombre' }}</span>
                   <span class="report-sub">#{{ lead.id }}{{ lead.phone ? ` · ${lead.phone}` : '' }}</span>
                   <span class="report-sub">Registrado el {{ formatLeadDate(lead.created_at) }}</span>
+                  <!-- El canal escrito y no solo filtrable: un filtro cuyo
+                       resultado no se puede comprobar en la fila no sirve
+                       para investigar nada. -->
+                  <span v-if="lead.origin" class="report-origin" :title="originDetail(lead)">
+                    {{ originText(lead) }}
+                  </span>
                 </td>
                 <td data-label="Etapa actual">
                   <span class="pill" :class="boardPill(lead)">
@@ -149,9 +179,36 @@
                   <span v-if="lead.blocked_moves" class="report-sub">{{ lead.blocked_moves }} bloqueado(s)</span>
                 </td>
                 <td class="report-actions-col">
-                  <button type="button" class="btn-action-ghost report-btn" @click="toggle(lead.id)">
-                    {{ isOpen(lead.id) ? 'Ocultar' : 'Ver trazabilidad' }}
-                  </button>
+                  <div class="report-actions">
+                    <button type="button" class="btn-action-ghost report-btn" @click="toggle(lead.id)">
+                      {{ isOpen(lead.id) ? 'Ocultar' : 'Ver trazabilidad' }}
+                    </button>
+                    <!--
+                      La bitácora dice que el bot lo congeló; lo que le
+                      escribieron está en la conversación, y hasta ahora había
+                      que buscarla en otra pantalla. El botón sale siempre
+                      —incluso si el lead no entró por WhatsApp—: saber que
+                      nunca hubo conversación también es una respuesta, y
+                      averiguarlo de antemano costaría una consulta por fila.
+                    -->
+                    <button type="button" class="btn-action-ghost report-btn" @click="openChat(lead)">
+                      💬 Conversación
+                    </button>
+                    <!--
+                      Al tablero donde está la ficha, con ella abierta. El
+                      reporte mira los dos funnels a la vez, así que el destino
+                      lo decide la etapa del lead y no la pantalla. Sale solo
+                      si esa persona puede entrar a ese tablero: sin el
+                      permiso, el guard del router la mandaría al Dashboard
+                      sin decirle por qué.
+                    -->
+                    <router-link
+                      v-if="canOpenFunnel(lead)"
+                      :to="leadFunnelLink(lead)"
+                      class="btn-action-ghost report-btn report-open-link"
+                      :title="`Abrir su ficha en ${boardName(lead)}`"
+                    >↗ Ver en el funnel</router-link>
+                  </div>
                 </td>
               </tr>
 
@@ -208,13 +265,43 @@
         </button>
       </nav>
     </template>
+
+    <!--
+      La conversación del lead, en modo lectura para quien solo supervisa.
+      Se cierra con la ✕ o con Esc y no al hacer clic afuera: con permiso para
+      responder, ahí adentro puede haber una respuesta a medio escribir.
+    -->
+    <div v-if="chatLead" class="modal-overlay">
+      <div class="modal-content report-chat-modal" role="dialog" aria-modal="true" aria-labelledby="report-chat-title">
+        <header class="modal-header">
+          <div>
+            <h3 id="report-chat-title" class="modal-title">
+              <span class="heading-icon" aria-hidden="true">💬</span>
+              {{ chatLead.full_name || 'Lead sin nombre' }}
+            </h3>
+            <p class="report-chat-sub">
+              #{{ chatLead.id }}{{ chatLead.phone ? ` · ${chatLead.phone}` : '' }}
+              <template v-if="chatLead.origin"> · {{ originText(chatLead) }}</template>
+            </p>
+          </div>
+          <button type="button" class="modal-close-btn" title="Cerrar" aria-label="Cerrar" @click="closeChat()">✕</button>
+        </header>
+        <div class="modal-body report-chat-body">
+          <LeadConversation :lead="chatLead" :readonly="!canReply" class="report-chat" />
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import { hasPermission } from '../auth.js';
 import { formatLeadDate } from '../leadCardDate.js';
+import { BOARD_LABEL, leadBoard, leadBoardPermission, leadFunnelLink } from '../leadDeepLink.js';
+import LeadConversation from '../components/LeadConversation.vue';
+import AppLoader from '../components/AppLoader.vue';
 
 /*
  * Reporte de Leads: la bitácora de etapas (`lead_stage_changes`) de todos los
@@ -240,11 +327,13 @@ const scope = ref('all');
 const summary = reactive({ leads: 0, moves: 0, blocked: 0, unmoved: 0 });
 const actorOptions = ref([]);
 const stageOptions = ref([]);
+const originOptions = ref([]);
 const isLoading = ref(false);
 const errorMessage = ref('');
 
 const search = ref('');
 const actor = ref('');
+const origin = ref('');
 const status = ref('');
 const from = ref('');
 const to = ref('');
@@ -254,7 +343,7 @@ const onlyBlocked = ref(false);
 const open = ref(new Set());
 
 const hasFilters = computed(() =>
-  Boolean(search.value || actor.value || status.value || from.value || to.value || onlyBlocked.value));
+  Boolean(search.value || actor.value || origin.value || status.value || from.value || to.value || onlyBlocked.value));
 
 const allExpanded = computed(() => leads.value.length > 0 && leads.value.every((lead) => open.value.has(lead.id)));
 
@@ -264,6 +353,79 @@ const allExpanded = computed(() => leads.value.length > 0 && leads.value.every((
  * dónde a dónde se movió un lead, incluso cruzando de tablero).
  */
 const stageFilterOptions = computed(() => stageOptions.value);
+
+/**
+ * Las opciones de origen, agrupadas como las manda el servidor ("Plataforma" y
+ * "Canal"). El orden de los grupos es el de llegada: la plataforma primero,
+ * que es la pregunta más frecuente.
+ */
+const originGroups = computed(() => {
+  const groups = [];
+  for (const option of originOptions.value) {
+    const name = option.group || 'Origen';
+    let group = groups.find((g) => g.name === name);
+    if (!group) groups.push((group = { name, options: [] }));
+    group.options.push(option);
+  }
+  return groups;
+});
+
+/** Los iconos son de la pantalla; la plataforma y el canal, del servidor. */
+const CHANNEL_ICON = {
+  WhatsApp: '💬',
+  Formulario: '📝',
+  'Mensaje directo': '✉️'
+};
+
+/** "📝 Meta · Formulario", la línea de origen de la fila. */
+function originText(lead) {
+  const origen = lead.origin;
+  if (!origen) return '';
+  const icono = CHANNEL_ICON[origen.channel] || '•';
+  return `${icono} ${origen.platform}${origen.channel ? ` · ${origen.channel}` : ''}`;
+}
+
+/**
+ * El detalle que no entra en la fila: la red donde vio el anuncio, la campaña
+ * y el anuncio. Va en el `title` porque es lo que se mira cuando ya se eligió
+ * esta fila, no mientras se recorre la lista.
+ */
+function originDetail(lead) {
+  const origen = lead.origin;
+  if (!origen) return '';
+  const partes = [`Plataforma: ${origen.platform}`, `Canal: ${origen.channel || 'sin dato'}`];
+  if (origen.network) partes.push(`Red: ${origen.network}`);
+  if (origen.campaignName) partes.push(`Campaña: ${origen.campaignName}`);
+  if (origen.adName) partes.push(`Anuncio: ${origen.adName}`);
+  if (origen.conflict) partes.push('Hay otra plataforma que también reclama este lead');
+  return partes.join('\n');
+}
+
+/**
+ * Responder exige los permisos de los tableros: `leads.report` alcanza para
+ * LEER el hilo (el servidor lo acepta en el GET y no en el POST), así que
+ * quien solo supervisa lo ve en modo lectura en vez de recibir un 403 al
+ * apretar enviar.
+ */
+const canReply = computed(() => hasPermission(['leads.view', 'setter.view']));
+
+/** El lead cuya conversación se está mirando, o `null`. */
+const chatLead = ref(null);
+
+function openChat(lead) {
+  chatLead.value = lead;
+}
+
+function closeChat() {
+  chatLead.value = null;
+}
+
+function onKeydown(event) {
+  if (event.key === 'Escape' && chatLead.value) closeChat();
+}
+
+document.addEventListener('keydown', onKeydown);
+onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
 
 /**
  * Por qué la lista puede ser más corta de lo que alguien espera. El reporte usa
@@ -298,7 +460,16 @@ function stageText(stage) {
 }
 
 function boardName(lead) {
-  return lead.stage?.board === 'ventas' ? 'Funnel de Ventas' : 'Setter Funnel';
+  return BOARD_LABEL[leadBoard(lead)];
+}
+
+/**
+ * El enlace al tablero solo sale si esa persona puede entrar: `leads.report`
+ * no implica ver el funnel, y un enlace que siempre rebota al Dashboard se
+ * lee como que el panel está roto.
+ */
+function canOpenFunnel(lead) {
+  return hasPermission(leadBoardPermission(lead));
 }
 
 function boardPill(lead) {
@@ -319,6 +490,7 @@ function altaOrigin(entry) {
 function clearFilters() {
   search.value = '';
   actor.value = '';
+  origin.value = '';
   status.value = '';
   from.value = '';
   to.value = '';
@@ -337,6 +509,7 @@ async function load() {
     const params = new URLSearchParams({ page: String(page.value) });
     if (search.value.trim()) params.set('search', search.value.trim());
     if (actor.value) params.set('actor', actor.value);
+    if (origin.value) params.set('origin', origin.value);
     if (status.value) params.set('status', status.value);
     if (from.value) params.set('from', from.value);
     if (to.value) params.set('to', to.value);
@@ -356,6 +529,7 @@ async function load() {
     Object.assign(summary, data.summary || {});
     actorOptions.value = data.options?.actors || [];
     stageOptions.value = data.options?.stages || [];
+    originOptions.value = data.options?.origins || [];
     // Al cambiar de página o de filtro, lo desplegado era de otras filas.
     open.value = new Set();
   } catch (error) {
@@ -378,7 +552,7 @@ watch(search, () => {
   }, 350);
 });
 
-watch([actor, status, from, to, onlyBlocked], () => {
+watch([actor, origin, status, from, to, onlyBlocked], () => {
   page.value = 1;
   load();
 });
@@ -521,6 +695,61 @@ onMounted(load);
 }
 
 .report-btn { padding: 0.3rem 0.65rem; font-size: 0.78rem; }
+
+/* El enlace se ve y se alinea como los dos botones de al lado: en la misma
+   columna, la diferencia entre un <a> y un <button> no es información. */
+.report-open-link {
+  display: inline-block;
+  text-align: center;
+  text-decoration: none;
+}
+
+/* Las dos acciones de la fila, una debajo de la otra: en línea ensanchan la
+   columna y le quitan sitio al nombre del lead, que es lo que se busca. */
+.report-actions {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+}
+
+/* De dónde salió el lead. Va con el mismo peso que el resto de los subtítulos
+   de la celda —no es el dato principal de la fila— pero con su propio fondo,
+   porque es lo que se recorre con la vista cuando el filtro de origen está
+   puesto. */
+.report-origin {
+  display: inline-block;
+  margin-top: 0.15rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.71rem;
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+/* ---- Modal de la conversación ---- */
+.report-chat-modal { max-width: 560px; }
+
+.report-chat-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* El hilo trae su propio scroll, así que el cuerpo del modal no lleva el suyo:
+   dos barras anidadas dejan el cuadro de respuesta fuera de la vista. */
+.report-chat-body {
+  overflow: hidden;
+  padding-top: 0.9rem;
+}
+
+/* Igual que en la ficha del funnel: un tope y no una altura fija. El hilo ya
+   limita su propio scroll (46vh), así que una altura fija le dejaría un hueco
+   entre los mensajes y el cuadro de respuesta. */
+.report-chat {
+  max-height: 72vh;
+}
 
 .is-open-row { background: var(--surface-1); }
 .report-timeline-row td { background: var(--surface-1); padding-top: 0.2rem; }

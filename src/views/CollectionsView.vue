@@ -64,7 +64,15 @@
     <p v-if="errorMessage" class="info-box collections-alert">⚠️ {{ errorMessage }}</p>
     <p v-if="successMessage" class="info-box collections-ok">✅ {{ successMessage }}</p>
 
-    <div v-if="!isLoading && visible.length === 0" class="empty-state">
+    <AppLoader
+      v-if="isLoading && rows.length === 0"
+      variant="table"
+      icon="📞"
+      title="Cargando cartera de cobranzas…"
+      subtitle="Consultando cuotas pendientes, vencimientos y estado de entregas."
+    />
+
+    <div v-else-if="visible.length === 0" class="empty-state">
       <p class="empty-state-title">No hay nada que cobrar acá</p>
       <p class="empty-state-text">
         Aparecen las cuotas del cronograma mientras no estén verificadas por Finanzas.
@@ -203,6 +211,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import AppLoader from '../components/AppLoader.vue';
 
 const rows = ref([]);
 const summary = reactive({

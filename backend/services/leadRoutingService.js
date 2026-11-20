@@ -1,7 +1,7 @@
 import { db } from '../db/connection.js';
 import { UserService } from './userService.js';
 import { WhatsappBotSettingsService } from './whatsappBotSettingsService.js';
-import { pickNext } from './leadRouting.js';
+import { pickNext, routesNow } from './leadRouting.js';
 
 /**
  * Configuración del reparto automático de leads (`/admin/reparto`).
@@ -11,11 +11,13 @@ import { pickNext } from './leadRouting.js';
  * el punto por el que pasan los tres caminos automáticos (el bot, los
  * formularios de Meta y el evaluador).
  *
- * **El reparto corre exactamente cuando el bot está apagado** (`isActive()`).
- * No hay un segundo interruptor propio: ver la migración
- * `20261112000000_alter_whatsapp_bot_settings_add_global_switch.js`. Mientras
- * Avan atiende, él es el que califica y agenda, y repartir a la vez pondría a
- * una persona a trabajar en paralelo la misma conversación.
+ * **Qué se reparte depende de quién atiende al lead, no del interruptor del
+ * bot** (`routesNow()` en `leadRouting.js`): los de formulario (TikTok, Meta) y
+ * los del evaluador se reparten SIEMPRE, porque el bot no los atiende nunca —
+ * Avan contesta mensajes, no escribe primero—, y los que nacen de una
+ * conversación de WhatsApp solo cuando el bot está apagado. Sigue sin haber un
+ * interruptor propio del reparto: ver la migración
+ * `20261112000000_alter_whatsapp_bot_settings_add_global_switch.js`.
  *
  * Cada cambio vuelve a poner en cero los `current_weight`: la vuelta del
  * reparto arranca de nuevo con el equipo nuevo, y así la vista previa de la
@@ -28,8 +30,13 @@ export class LeadRoutingService {
   }
 
   /**
-   * ¿El reparto está repartiendo ahora mismo? Sí exactamente cuando el bot
-   * está apagado.
+   * ¿Se reparten también las conversaciones de WhatsApp? Sí exactamente cuando
+   * el bot está apagado.
+   *
+   * Ya no es "¿el reparto está corriendo?": los leads de formulario y los del
+   * evaluador se reparten siempre (ver `routesNow()`), así que el reparto
+   * nunca está del todo quieto. Esto contesta por la otra mitad, que es la que
+   * el bot sí atiende, y es lo que muestra la banda de la pantalla.
    *
    * Es una función y no una columna para que no haya dos verdades: con un
    * `lead_routing_pools.enabled` propio, apagar el bot y olvidarse de activar
@@ -104,8 +111,12 @@ export class LeadRoutingService {
     const candidates = team.filter((user) => !inPool.has(user.id));
 
     return {
-      // `active` es lo que la pantalla muestra en la banda de arriba, y sale
-      // del interruptor del bot y no de `pool.enabled` (ver `isActive()`).
+      /*
+       * `active` responde por las conversaciones de WhatsApp (sale del
+       * interruptor del bot, no de `pool.enabled`); los formularios y el
+       * evaluador se reparten siempre, así que la banda de la pantalla tiene
+       * que poder decir las dos cosas y no una sola.
+       */
       pool: { id: pool.id, name: pool.name, active: await this.isActive() },
       members,
       candidates
@@ -129,8 +140,16 @@ export class LeadRoutingService {
    * uno) y tenerlas dentro alargaría el bloqueo justo en el camino por el que
    * entra cada lead.
    */
-  async pickAssignee() {
-    if (!(await this.isActive())) return null;
+  async pickAssignee({ botWillAttend = false } = {}) {
+    /*
+     * `botWillAttend` lo dice el camino de alta: solo el lead que nace de una
+     * conversación de WhatsApp lo atiende el bot. Por defecto es `false`
+     * —o sea, se reparte— por la misma razón que `autoRoute` viene en `true`:
+     * el camino que tiene que acordarse de algo tiene que ser el excepcional, o
+     * el próximo que se agregue se olvida y sus leads quedan sin dueño sin que
+     * nada falle.
+     */
+    if (!routesNow({ botWillAttend, botEnabled: await this.botSettings.isBotEnabled() })) return null;
 
     const pool = await this.#defaultPool();
     const team = await this.users.listCommercialTeam();

@@ -31,185 +31,245 @@
       </select>
       <select v-model="bancoFilter" class="ledger-filter" aria-label="Filtrar por banco">
         <option value="">Todo banco</option>
-        <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+        <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
       </select>
+      <!--
+        Los cierres dados por caído no se listan salvo que se pidan acá. El
+        interruptor dice cuántos hay aunque estén escondidos: esconder filas sin
+        decirlo deja a quien mira sin forma de saber que falta algo, y es lo que
+        hacía que las cifras de arriba no cuadraran con lo que había en pantalla.
+      -->
+      <label
+        v-if="totals.cierresDescartados > 0"
+        class="ledger-toggle"
+        :class="{ 'is-on': showCancelled }"
+        title="Los cierres que no llegaron a concretarse no se listan: su cobro ya no se espera"
+      >
+        <input v-model="showCancelled" type="checkbox" />
+        <span>🚫 Ver no concretados ({{ totals.cierresDescartados }})</span>
+      </label>
+      <!--
+        Un trato con cronograma cuyo lead todavía no está en Ganado: el contrato
+        escribe las cuotas en Finanzas en cuanto se guarda, y se guarda ANTES de
+        cerrar. No es una venta, así que no se lista salvo que se pida — y el
+        interruptor dice cuántos hay, por la misma razón que el de arriba.
+      -->
+      <label
+        v-if="totals.cierresSinGanar > 0"
+        class="ledger-toggle"
+        :class="{ 'is-on': showUnwon }"
+        title="Leads con cronograma (por ejemplo, desde su contrato) que todavía no están en Ganado"
+      >
+        <input v-model="showUnwon" type="checkbox" />
+        <span>📝 Ver sin ganar ({{ totals.cierresSinGanar }})</span>
+      </label>
+      <!--
+        El rango corre sobre la fecha en que entró el dinero (`fecha`) y no
+        sobre la pactada (`due_date`): es la que la tabla muestra, la que ordena
+        y la que suman los totales de abajo. Se aplica cuota por cuota, así que
+        un cierre que cruza el borde del rango se sigue viendo, pero solo con
+        las cuotas que caen dentro — y sus totales dicen justo eso.
+      -->
+      <LedgerDateRange
+        v-model:desde="desde"
+        v-model:hasta="hasta"
+        noun="Fecha del cobro"
+      />
       <button
         type="button"
         class="btn-primary ledger-add-btn"
-        @click="isFormOpen ? closeForm() : openCreate()"
+        @click="openCreate()"
       >
-        {{ isFormOpen ? (editingRow ? "✕ Cancelar edición" : "✕ Cerrar") : "+ Registrar ingreso" }}
+        + Registrar ingreso
       </button>
     </div>
 
     <p v-if="errorMessage" class="info-box ledger-alert">⚠️ {{ errorMessage }}</p>
     <p v-if="successMessage" class="info-box ledger-success">✅ {{ successMessage }}</p>
 
-    <section v-if="isFormOpen" class="glass-panel ledger-form-panel">
-      <h3 v-if="editingRow" class="ledger-form-title">
-        Editando el ingreso <strong>{{ editingRow.code }}</strong> — los comprobantes y el
-        archivo tributario se gestionan desde su fila en la tabla.
-      </h3>
-      <form class="ledger-form" @submit.prevent="submit">
-        <div class="ledger-form-grid">
-          <div class="form-group">
-            <label class="form-label">Fecha</label>
-            <input v-model="form.fecha" type="date" class="form-input" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Vence</label>
-            <input v-model="form.dueDate" type="date" class="form-input" />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Mes</label>
-            <input :value="mesPreview" type="text" class="form-input" readonly />
-          </div>
-          <div class="form-group ledger-form-wide">
-            <label class="form-label">Lead</label>
-            <select v-model="form.leadId" class="form-select">
-              <option :value="null">— Sin asociar —</option>
-              <option v-for="lead in leads" :key="lead.id" :value="lead.id">
-                {{ lead.name }}{{ lead.dni ? ` · DNI ${lead.dni}` : "" }}
-              </option>
-            </select>
-            <div v-if="selectedLead" class="lead-total-box">
-              <template v-if="editingTotal">
-                <input
-                  v-model="totalAmountDraft"
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  class="form-input lead-total-input"
-                  placeholder="Precio total (S/)"
-                />
-                <button type="button" class="btn-secondary lead-total-btn" @click="saveTotalAmount">Guardar</button>
-                <button type="button" class="btn-secondary lead-total-btn" @click="editingTotal = false">Cancelar</button>
+    <div v-if="isFormOpen" class="modal-overlay" @click.self="closeForm()">
+      <div class="modal-content journal-modal" role="dialog" aria-modal="true" aria-labelledby="income-modal-title">
+        <header class="modal-header">
+          <div>
+            <h3 id="income-modal-title" class="modal-title">
+              <span class="heading-icon" aria-hidden="true">📥</span>
+              {{ editingRow ? `Editar ingreso ${editingRow.code}` : 'Registrar nuevo ingreso' }}
+            </h3>
+            <p class="journal-modal-sub">
+              <template v-if="editingRow">
+                Los comprobantes y el archivo tributario se gestionan desde su fila en la tabla.
               </template>
               <template v-else>
-                <span v-if="selectedLead.total_amount != null">
-                  Precio total: <strong>S/ {{ formatAmount(selectedLead.total_amount) }}</strong>
-                  · Registrado: S/ {{ formatAmount(selectedLead.registered_amount) }}
-                  · Saldo: <strong :class="{ 'is-out': selectedLead.balance_amount > 0 }">
-                    S/ {{ formatAmount(selectedLead.balance_amount) }}
-                  </strong>
-                </span>
-                <span v-else class="ledger-muted">Este lead no tiene un precio total registrado.</span>
-                <button type="button" class="lead-total-edit-btn" @click="startEditTotal">✎ editar precio total</button>
+                El código se autogenera al guardar y las cuotas del mismo cliente comparten su código.
               </template>
+            </p>
+          </div>
+          <button type="button" class="modal-close-btn" title="Cerrar" aria-label="Cerrar" @click="closeForm()">✕</button>
+        </header>
+
+        <form id="income-form" class="modal-body journal-modal-body" @submit.prevent="submit">
+          <div class="ledger-form-grid">
+            <div class="form-group">
+              <label class="form-label">Fecha</label>
+              <input v-model="form.fecha" type="date" class="form-input" required />
             </div>
-            <!-- Avisar ANTES de que teclee el monto: una cuota nueva sobre un
-                 cierre caído se registra igual (a veces el cliente vuelve y se
-                 cobra algo), pero no lo reactiva, y descubrirlo después de
-                 guardar es peor. -->
-            <p v-if="selectedLead?.deal_cancelled" class="lead-cancelled-warning">
-              🚫 El cierre de este cliente está dado por caído. La cuota se registra igual,
-              pero el cierre no vuelve a contar hasta que lo reactives desde su fila.
-            </p>
+            <div class="form-group">
+              <label class="form-label">Vence</label>
+              <input v-model="form.dueDate" type="date" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mes</label>
+              <input :value="mesPreview" type="text" class="form-input" readonly />
+            </div>
+            <div class="form-group ledger-form-wide">
+              <label class="form-label">Lead / Cliente</label>
+              <select v-model="form.leadId" class="form-select">
+                <option :value="null">— Sin asociar —</option>
+                <option v-for="lead in leads" :key="lead.id" :value="lead.id">
+                  {{ lead.name }}{{ lead.dni ? ` · DNI ${lead.dni}` : "" }}
+                </option>
+              </select>
+              <div v-if="selectedLead" class="lead-total-box">
+                <template v-if="editingTotal">
+                  <input
+                    v-model="totalAmountDraft"
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    class="form-input lead-total-input"
+                    placeholder="Precio total (S/)"
+                  />
+                  <button type="button" class="btn-secondary lead-total-btn" @click="saveTotalAmount">Guardar</button>
+                  <button type="button" class="btn-secondary lead-total-btn" @click="editingTotal = false">Cancelar</button>
+                </template>
+                <template v-else>
+                  <span v-if="selectedLead.total_amount != null">
+                    Precio total: <strong>S/ {{ formatAmount(selectedLead.total_amount) }}</strong>
+                    · Registrado: S/ {{ formatAmount(selectedLead.registered_amount) }}
+                    · Saldo: <strong :class="{ 'is-out': selectedLead.balance_amount > 0 }">
+                      S/ {{ formatAmount(selectedLead.balance_amount) }}
+                    </strong>
+                  </span>
+                  <span v-else class="ledger-muted">Este lead no tiene un precio total registrado.</span>
+                  <button type="button" class="lead-total-edit-btn" @click="startEditTotal">✎ editar precio total</button>
+                </template>
+              </div>
+              <p v-if="selectedLead?.deal_cancelled" class="lead-cancelled-warning">
+                🚫 El cierre de este cliente está dado por caído. La cuota se registra igual,
+                pero el cierre no vuelve a contar hasta que lo reactives desde su fila.
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Cuota</label>
+              <select v-model="form.cuota" class="form-select" required>
+                <option v-for="c in CUOTAS" :key="c" :value="c">{{ c }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Emitir</label>
+              <select v-model="form.emitir" class="form-select" required>
+                <option v-for="e in EMITIR_OPCIONES" :key="e" :value="e">{{ e }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Monto (S/)</label>
+              <input
+                v-model="form.monto"
+                type="number"
+                step="0.01"
+                min="0.01"
+                class="form-input"
+                placeholder="0.00"
+                required
+              />
+            </div>
+            <div class="form-group">
+              <label class="form-label">ITF (S/)</label>
+              <input
+                v-model="form.itf"
+                type="number"
+                step="0.01"
+                min="0"
+                class="form-input"
+                :placeholder="formatAmount(itfSugerido)"
+                @input="onItfInput"
+              />
+              <p v-if="itfEditado" class="ledger-receipt-hint">
+                La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
+                <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Banco</label>
+              <select v-model="form.banco" class="form-select" required>
+                <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Estado</label>
+              <select v-model="form.estado" class="form-select" :disabled="editingRow?.estado === 'verificado'">
+                <option value="pendiente">Pendiente</option>
+                <option value="pagado">Pagado</option>
+              </select>
+              <p v-if="editingRow?.estado === 'verificado'" class="ledger-receipt-hint">
+                Ingreso verificado: usa el botón ✓ de su fila para quitar la verificación.
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Tributario</label>
+              <input
+                v-model="form.tributario"
+                type="text"
+                class="form-input"
+                list="income-tributario"
+                placeholder="Ej: Renta 4ta, IGV..."
+              />
+              <datalist id="income-tributario">
+                <option value="Renta 3ra" />
+                <option value="Renta 4ta" />
+                <option value="IGV" />
+                <option value="No aplica" />
+              </datalist>
+            </div>
+            <div v-if="!editingRow" class="form-group">
+              <label class="form-label">Tributario — archivo o imagen (opcional)</label>
+              <input ref="tributarioInput" type="file" class="form-input" @change="onTributarioChange" />
+            </div>
+            <div v-if="!editingRow" class="form-group ledger-form-wide">
+              <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
+              <input
+                ref="fileInput"
+                type="file"
+                accept="image/*,application/pdf"
+                multiple
+                class="form-input"
+                @change="onFileChange"
+              />
+              <p class="ledger-receipt-hint">
+                Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
+              </p>
+            </div>
           </div>
-          <div class="form-group">
-            <label class="form-label">Cuota</label>
-            <select v-model="form.cuota" class="form-select" required>
-              <option v-for="c in CUOTAS" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Emitir</label>
-            <select v-model="form.emitir" class="form-select" required>
-              <option v-for="e in EMITIR_OPCIONES" :key="e" :value="e">{{ e }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Monto (S/)</label>
-            <input
-              v-model="form.monto"
-              type="number"
-              step="0.01"
-              min="0.01"
-              class="form-input"
-              placeholder="0.00"
-              required
-            />
-          </div>
-          <div class="form-group">
-            <label class="form-label">ITF (S/)</label>
-            <input
-              v-model="form.itf"
-              type="number"
-              step="0.01"
-              min="0"
-              class="form-input"
-              :placeholder="formatAmount(itfSugerido)"
-              @input="onItfInput"
-            />
-            <!--
-              La fórmula pasó de imponer el valor a proponerlo, así que cuando
-              lo escrito se aparta de ella hay que poder ver de cuánto es la
-              diferencia y volver atrás de un clic.
-            -->
-            <p v-if="itfEditado" class="ledger-receipt-hint">
-              La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
-              <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
-            </p>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Banco</label>
-            <select v-model="form.banco" class="form-select" required>
-              <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Estado</label>
-            <select v-model="form.estado" class="form-select" :disabled="editingRow?.estado === 'verificado'">
-              <option value="pendiente">Pendiente</option>
-              <option value="pagado">Pagado</option>
-            </select>
-            <p v-if="editingRow?.estado === 'verificado'" class="ledger-receipt-hint">
-              Ingreso verificado: usa el botón ✓ de su fila para quitar la verificación.
-            </p>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Tributario</label>
-            <input
-              v-model="form.tributario"
-              type="text"
-              class="form-input"
-              list="income-tributario"
-              placeholder="Ej: Renta 4ta, IGV..."
-            />
-            <datalist id="income-tributario">
-              <option value="Renta 3ra" />
-              <option value="Renta 4ta" />
-              <option value="IGV" />
-              <option value="No aplica" />
-            </datalist>
-          </div>
-          <div v-if="!editingRow" class="form-group">
-            <label class="form-label">Tributario — archivo o imagen (opcional)</label>
-            <input ref="tributarioInput" type="file" class="form-input" @change="onTributarioChange" />
-          </div>
-          <div v-if="!editingRow" class="form-group ledger-form-wide">
-            <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
-            <input
-              ref="fileInput"
-              type="file"
-              accept="image/*,application/pdf"
-              multiple
-              class="form-input"
-              @change="onFileChange"
-            />
-            <p class="ledger-receipt-hint">
-              Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
-            </p>
-          </div>
-        </div>
+        </form>
 
-        <button type="submit" class="btn-primary ledger-submit-btn" :disabled="isSaving">
-          {{ isSaving ? "Guardando..." : editingRow ? "Guardar cambios" : "Guardar ingreso" }}
-        </button>
-      </form>
-    </section>
+        <footer class="journal-modal-footer">
+          <div class="journal-modal-actions">
+            <button type="button" class="btn-action-secondary" @click="closeForm()">Cancelar</button>
+            <button type="submit" form="income-form" class="btn-action-primary" :disabled="isSaving">
+              {{ isSaving ? "Guardando..." : editingRow ? "Guardar cambios" : "Guardar ingreso" }}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando ingresos...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="📥"
+      title="Cargando ingresos y cierres…"
+      subtitle="Sincronizando planes de cobro, cuotas y estado de verificación."
+    />
 
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Sin ingresos registrados</p>
@@ -223,6 +283,21 @@
         Filtrando por <strong>{{ bancoFilter }}</strong>: las cifras de abajo y las de cada
         cierre cuentan <strong>solo</strong> las cuotas cobradas por esa cuenta. El precio
         total del trato no se reparte por banco, así que queda fuera.
+      </p>
+
+      <!--
+        Mismo aviso y mismas razones que el del banco: la tira de totales suma
+        lo que pasó el filtro, así que un recorte de fechas sin decirlo se lee
+        como "este mes se cobró menos" cuando lo que hay es un rango puesto.
+      -->
+      <p v-if="hasDateRange" class="ledger-range-notice">
+        <span>
+          Mostrando solo las cuotas cobradas <strong>{{ rangeLabel(desde, hasta) }}</strong>.
+          El precio total de cada cierre es el del trato completo y no se recorta.
+        </span>
+        <button type="button" class="ledger-range-notice-btn" @click="clearDateRange()">
+          Ver todo el histórico
+        </button>
       </p>
 
       <dl class="ledger-summary">
@@ -264,7 +339,9 @@
           <dd class="is-out">S/ {{ formatAmount(totals.porCobrar) }}</dd>
         </div>
         <!-- Solo aparece si hay algo descartado: un recuadro en cero todos los
-             días enseña a no mirarlo. -->
+             días enseña a no mirarlo. Cuenta SIEMPRE los cierres caídos, se
+             estén listando o no: esconderlos es sacarlos de la lista de a quién
+             cobrar, no olvidarse de que existieron. -->
         <div
           v-if="!bancoFilter && totals.descartado > 0"
           class="ledger-summary-item"
@@ -272,6 +349,11 @@
         >
           <dt>No concretado</dt>
           <dd class="is-muted">S/ {{ formatAmount(totals.descartado) }}</dd>
+          <small class="ledger-summary-note">
+            {{ totals.cierresDescartados }}
+            {{ totals.cierresDescartados === 1 ? "cierre" : "cierres" }}
+            <template v-if="hiddenCancelled > 0">· fuera de la tabla</template>
+          </small>
         </div>
         <div
           class="ledger-summary-item"
@@ -290,12 +372,33 @@
 
       <div v-if="paged.length === 0" class="empty-state">
         <p class="empty-state-title">Ningún cierre coincide</p>
+        <!-- Lo que queda escondido se dice antes que "ajusta los filtros": sin
+             esto, buscar un cliente cuyo cierre se cayó contesta "no hay nada"
+             y manda a revisar si se perdió la ficha. -->
+        <p v-if="hiddenCancelled > 0" class="empty-state-text">
+          Hay {{ hiddenCancelled }}
+          {{ hiddenCancelled === 1 ? "cierre no concretado" : "cierres no concretados" }}
+          que la tabla no está listando.
+        </p>
         <p class="empty-state-text">
+          <template v-if="hasDateRange">
+            No hay cuotas cobradas {{ rangeLabel(desde, hasta) }}.
+          </template>
           Ajusta la búsqueda o los filtros para volver a ver el registro.
         </p>
-        <button type="button" class="btn-secondary ledger-submit-btn" @click="clearFilters()">
-          Quitar filtros
-        </button>
+        <div class="empty-state-actions">
+          <button
+            v-if="hiddenCancelled > 0"
+            type="button"
+            class="btn-secondary ledger-submit-btn"
+            @click="showCancelled = true"
+          >
+            Ver los no concretados
+          </button>
+          <button type="button" class="btn-secondary ledger-submit-btn" @click="clearFilters()">
+            Quitar filtros
+          </button>
+        </div>
       </div>
 
       <template v-else>
@@ -359,8 +462,16 @@
                   <div class="cuota-cell">
                     <span v-if="row.emitir" class="cuota-tag">{{ row.emitir }}</span>
                     <span class="cuota-title">{{ row.cuota }}</span>
-                    <span v-if="row.due_date" class="cuota-due" :class="{ 'is-overdue': isOverdue(row) }">
+                    <!-- La fecha pactada sola no dice nada: "05/12/2026" obliga a
+                         contar días. Al lado va el plazo en voz alta, que es lo
+                         que de verdad se lee, y el color nunca va solo. -->
+                    <span
+                      v-if="row.due_date"
+                      class="cuota-due"
+                      :class="{ 'is-overdue': isOverdue(row), 'is-due-soon': dueOf(row)?.urgent }"
+                    >
                       vence {{ formatDate(row.due_date) }}
+                      <template v-if="dueOf(row)?.urgent"> · {{ dueOf(row).label }}</template>
                     </span>
                   </div>
                 </td>
@@ -413,18 +524,28 @@
                       <span>{{ verifySaving === row.id ? '…' : 'Por verificar' }}</span>
                     </button>
 
-                    <!-- Status pill: Pendiente -->
+                    <!-- Status pill: Pendiente.
+                         Se pone roja a tres días de la fecha pactada y sigue
+                         roja una vez vencida: pasarse de la fecha no es salir
+                         del aviso. Lo que cambia es la frase que lleva al lado,
+                         porque de eso depende cómo se encara la llamada. -->
                     <button
                       v-else
                       type="button"
                       class="clean-status-pill is-pendiente"
+                      :class="{ 'is-urgent': dueOf(row)?.urgent }"
                       :disabled="estadoSaving === row.id"
-                      title="Pendiente de pago. Clic para marcar como cobrado"
+                      :title="dueOf(row)?.urgent
+                        ? `Pendiente de pago y ${dueOf(row).label} (${formatDate(row.due_date)}). Clic para marcar como cobrado`
+                        : 'Pendiente de pago. Clic para marcar como cobrado'"
                       @click="toggleEstado(row)"
                     >
                       <span class="pill-dot"></span>
                       <span>{{ estadoSaving === row.id ? '…' : 'Pendiente' }}</span>
                     </button>
+                    <span v-if="dueOf(row)?.urgent" class="due-soon-chip">
+                      {{ dueOf(row).overdue ? "⚠️" : "⏰" }} {{ dueOf(row).label }}
+                    </span>
 
                     <!-- Warning chip only if 1st payment is NOT verified -->
                     <span
@@ -475,43 +596,12 @@
                   </div>
                 </td>
                 <td>
-                  <div class="receipt-cell">
-                    <span
-                      v-for="rcpt in row.receipts"
-                      :key="rcpt.id"
-                      class="receipt-thumb"
-                      :title="receiptTitle(rcpt)"
-                    >
-                      <a
-                        v-if="receiptUrls[rcpt.id]"
-                        :href="receiptUrls[rcpt.id]"
-                        target="_blank"
-                        rel="noopener"
-                        class="receipt-thumb-link"
-                      >
-                        <span v-if="isPdfReceipt(rcpt.mime_type, rcpt.original_name)" class="receipt-thumb-pdf">PDF</span>
-                        <img v-else :src="receiptUrls[rcpt.id]" alt="Comprobante" />
-                      </a>
-                      <span v-else-if="rcpt.missing" class="receipt-thumb-missing">!</span>
-                      <span v-else class="receipt-thumb-loading">…</span>
-                      <button
-                        type="button"
-                        class="receipt-remove"
-                        title="Eliminar comprobante"
-                        @click="removeReceipt(rcpt.id)"
-                      >✕</button>
-                    </span>
-                    <label class="receipt-add" title="Agregar comprobantes (imágenes o PDF)">
-                      <input
-                        type="file"
-                        accept="image/*,application/pdf"
-                        multiple
-                        hidden
-                        @change="(e) => uploadReceipts(row.id, e)"
-                      />
-                      +
-                    </label>
-                  </div>
+                  <ReceiptCell
+                    :receipts="row.receipts"
+                    :urls="receiptUrls"
+                    @upload="(e) => uploadReceipts(row.id, e)"
+                    @remove="removeReceipt"
+                  />
                 </td>
                 <td class="ledger-col-actions">
                   <div class="ledger-row-actions">
@@ -580,16 +670,21 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { apiFetch } from "../../apiClient.js";
 import { hasPermission } from "../../auth.js";
-import { isPdfReceipt, loadReceiptUrl } from "./receiptImage.js";
+import { loadReceiptUrl } from "./receiptImage.js";
 import { openIncomeReceipt } from "./receiptDocument.js";
 import { dayOnly, formatAmount, formatDate } from "./format.js";
-import { agreedAmount, unexpectedAmount } from "./dealCancellation.js";
-import { BANCOS, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
+import { summariseDeals } from "./dealCancellation.js";
+import { dueState, nextDueState } from "./dueSoon.js";
+import { bancos, CUOTAS, EMITIR_OPCIONES, calcItf } from "./incomeOptions.js";
 import { useLedgerTable } from "./useLedgerTable.js";
+import LedgerDateRange from "./LedgerDateRange.vue";
+import { rangeLabel } from "./dateRange.js";
 import DealPlanHeader from "./DealPlanHeader.vue";
 import LedgerPagination from "./LedgerPagination.vue";
+import ReceiptCell from "./ReceiptCell.vue";
 import SendTributarioModal from "./SendTributarioModal.vue";
 import SendReceiptModal from "./SendReceiptModal.vue";
+import AppLoader from "../../components/AppLoader.vue";
 import "./ledger.css";
 
 const props = defineProps({
@@ -692,8 +787,12 @@ const plansByLead = computed(() => {
     const plan = byKey[groupKeyOf(row)] || (byKey[groupKeyOf(row)] = {
       leadId: row.lead_id ?? null,
       registered: 0, verificado: 0, porVerificar: 0, pendiente: 0, itf: 0,
-      code: null, firstId: null,
+      code: null, firstId: null, cuotas: [],
     });
+    // Para el aviso de vencimiento del cierre: se junta el plan COMPLETO, así
+    // que un recorte de fechas o un filtro de banco no puede esconder la cuota
+    // que está por vencer — que es justo la que hay que ver.
+    plan.cuotas.push(row);
     const monto = Number(row.monto) || 0;
     plan.registered += monto;
     plan.itf += Number(row.itf) || 0;
@@ -707,6 +806,7 @@ const plansByLead = computed(() => {
     }
   }
   for (const plan of Object.values(byKey)) {
+    plan.dueAlert = nextDueState(plan.cuotas);
     plan.registered = Math.round(plan.registered * 100) / 100;
     const total = plan.leadId != null ? totalByLead.get(plan.leadId) : null;
     plan.total = total != null ? Number(total) : null;
@@ -777,6 +877,10 @@ function groupByLead(payments) {
         cancelledAt: row.lead_deal_cancelled_at || null,
         cancelledReason: row.lead_deal_cancelled_reason || null,
         cancelledBy: row.lead_deal_cancelled_by_name || null,
+        // `false` solo cuando el servidor dice que el lead NO es una venta
+        // cerrada (ver `backend/services/dealClosure.js`); una respuesta sin
+        // el campo no esconde nada.
+        closed: row.lead_deal_closed !== false,
         payments: [],
       };
       byKey.set(key, group);
@@ -788,14 +892,45 @@ function groupByLead(payments) {
     // El cierre se ordena por su cuota más reciente, no por la primera.
     group.lastFecha = group.payments.reduce((max, p) => (dayOnly(p.fecha) > max ? dayOnly(p.fecha) : max), "");
     Object.assign(group, figuresFor(group));
+    // Sale del plan completo del lead y no de `group.payments`, que son solo
+    // las cuotas que pasaron los filtros. Un cierre caído no avisa: su cobro
+    // ya no se espera, y perseguirlo es justo lo que se dio por terminado.
+    // Uno sin ganar tampoco: su cuota "vencida" es la fecha que propuso un
+    // contrato que el cliente todavía no firmó, no una deuda.
+    group.dueAlert = (group.cancelled || !group.closed) ? null : (plansByLead.value[group.key]?.dueAlert || null);
   }
   return [...byKey.values()];
 }
 
+/**
+ * Los cierres dados por caído NO se listan salvo que se pidan.
+ *
+ * Son el final de un trato, no parte del trabajo del día: quien abre INGRESOS
+ * viene a ver qué se cobró y qué falta cobrar, y mezclarlos obliga a saltearlos
+ * con la vista en cada página. Se esconden con el interruptor de la barra, que
+ * dice cuántos hay — esconderlos sin decirlo sería perderlos.
+ *
+ * Arranca siempre apagado y no se recuerda entre visitas a propósito: un
+ * recorte que sobrevive a la recarga esconde filas sin que nadie lo haya
+ * pedido ese día.
+ */
+const showCancelled = ref(false);
+/**
+ * Lo mismo para los tratos que todavía no se ganaron: INGRESOS es el registro
+ * de las ventas cerradas, y un lead en cotización con su contrato en borrador
+ * no lo es aunque ya tenga cuotas. Mismo criterio que el de arriba: apagado al
+ * entrar y sin recordarse.
+ */
+const showUnwon = ref(false);
+const isDealVisible = (group) =>
+  (showCancelled.value || !group.cancelled) && (showUnwon.value || group.closed);
+
 const {
-  search, estado: estadoFilter, banco: bancoFilter, sort, page, pageSize,
-  grouped, paged, totalPages, range, isFiltered, toggleSort, sortCaret, clearFilters
+  search, estado: estadoFilter, banco: bancoFilter, desde, hasta, sort, page, pageSize,
+  grouped, paged, totalPages, range, isFiltered, hasDateRange,
+  toggleSort, sortCaret, clearFilters, clearDateRange
 } = useLedgerTable(rows, {
+  groupFilter: isDealVisible,
   searchText: (row) => [row.code, row.lead_name, row.lead_dni, row.cuota, row.emitir, row.tributario, row.banco]
     .filter(Boolean).join(" "),
   // Se ordenan y se paginan los cierres, así que los sorters reciben el grupo.
@@ -806,6 +941,10 @@ const {
   defaultSort: { key: "fecha", dir: "desc" },
   groupBy: groupByLead,
 });
+
+// Mostrar u ocultar cambia cuántos cierres hay que paginar: la página 3 de
+// antes puede no existir después.
+watch([showCancelled, showUnwon], () => { page.value = 1; });
 
 /**
  * Cierres abiertos. Por defecto están todos plegados —la lista se lee como un
@@ -848,39 +987,17 @@ async function onPlanSaved(event) {
  * filtro: la tira resume tratos, no asientos sueltos. Solo lo verificado es
  * dinero confirmado, y "por cobrar" incluye lo que ni siquiera se ha
  * registrado en una cuota todavía.
+ *
+ * Se le pasan TODOS los cierres y, aparte, cuáles se están listando: la
+ * aritmética de los dos universos —lo que se ve y lo que ya no se espera—
+ * vive en `summariseDeals()` y no acá, porque es la misma resta que explica la
+ * banda de cada fila caída.
  */
-const totals = computed(() => {
-  let precioTotal = 0;
-  let registrado = 0;
-  let verificado = 0;
-  let porVerificar = 0;
-  let descartado = 0;
-  let itf = 0;
-  for (const group of grouped.value) {
-    // Un cierre sin precio total definido cuenta por lo que ya tiene registrado.
-    precioTotal += agreedAmount(group);
-    registrado += group.registered;
-    verificado += group.verificado;
-    porVerificar += group.porVerificar;
-    itf += group.itf;
-    /*
-     * Lo que un cierre caído ya no va a traer. Se cuenta aparte en vez de
-     * descontarse del precio total: el trato se pactó y esa cifra es historia,
-     * pero sumarla en "por cobrar" hace esperar una plata que nadie espera. El
-     * dinero que sí entró antes de que el cliente se cayera no se descarta.
-     */
-    if (group.cancelled) descartado += unexpectedAmount(group);
-  }
-  return {
-    precioTotal,
-    registrado,
-    verificado,
-    porVerificar,
-    descartado: Math.round(descartado * 100) / 100,
-    porCobrar: Math.round((precioTotal - verificado - porVerificar - descartado) * 100) / 100,
-    itf,
-  };
-});
+const totals = computed(() => summariseDeals(grouped.value, isDealVisible));
+
+/** Cierres caídos que la tabla está escondiendo ahora mismo. */
+const hiddenCancelled = computed(() =>
+  (showCancelled.value ? 0 : totals.value.cierresDescartados));
 
 function emptyForm() {
   return {
@@ -944,6 +1061,15 @@ function usarItfSugerido() {
 }
 
 /** Cuota pactada cuya fecha ya pasó y que todavía nadie cobró. */
+/**
+ * El aviso de vencimiento de una cuota, o `null` si no hay nada que avisar.
+ * La regla vive en `dueSoon.js`; acá solo se consulta, para que la pastilla, el
+ * renglón de la cuota y la insignia del cierre no puedan decir cosas distintas.
+ */
+function dueOf(row) {
+  return dueState(row);
+}
+
 function isOverdue(row) {
   if (row.estado === "verificado") return false;
   const due = dayOnly(row.due_date || "");
@@ -952,12 +1078,6 @@ function isOverdue(row) {
 
 function onFileChange(event) {
   pendingFiles = Array.from(event.target.files || []).slice(0, MAX_RECEIPTS);
-}
-
-/** Texto del tooltip de una miniatura, avisando si el archivo ya no está. */
-function receiptTitle(rcpt) {
-  const name = rcpt.original_name || "Comprobante";
-  return rcpt.missing ? `${name} — el archivo ya no está en el servidor` : name;
 }
 
 function onTributarioChange(event) {
@@ -1404,7 +1524,9 @@ onBeforeUnmount(releaseUrls);
   color: var(--text-muted, #94a3b8);
 }
 
-.cuota-due.is-overdue {
+.cuota-due.is-overdue,
+/* Mismo rojo que la vencida: a tres días ya es el mismo trabajo, llamar. */
+.cuota-due.is-due-soon {
   color: #e11d48;
   font-weight: 600;
 }
@@ -1514,6 +1636,41 @@ onBeforeUnmount(releaseUrls);
 .clean-status-pill.is-pendiente:hover:not(:disabled) {
   background: rgba(245, 158, 11, 0.15);
   border-color: rgba(245, 158, 11, 0.4);
+}
+
+/* Pendiente con la fecha encima: el ámbar de "todavía no toca" pasa al rojo de
+   "esto es de esta semana". Es un modificador y cambia SOLO el color, para que
+   siga siendo la misma pastilla pulsable con el mismo comportamiento. */
+.clean-status-pill.is-pendiente.is-urgent {
+  background: rgba(225, 29, 72, 0.08);
+  border-color: rgba(225, 29, 72, 0.3);
+  color: #e11d48;
+}
+
+.clean-status-pill.is-pendiente.is-urgent .pill-dot {
+  background: #e11d48;
+}
+
+.clean-status-pill.is-pendiente.is-urgent:hover:not(:disabled) {
+  background: rgba(225, 29, 72, 0.16);
+  border-color: rgba(225, 29, 72, 0.45);
+}
+
+/* El plazo escrito al lado de la pastilla. El color no puede ir solo: en
+   deuteranopía el rojo y el ámbar son el mismo color, y de esta marca depende a
+   quién se llama hoy. */
+.due-soon-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 4px;
+  background: rgba(225, 29, 72, 0.08);
+  border: 1px solid rgba(225, 29, 72, 0.2);
+  color: #e11d48;
+  font-size: 0.65rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .initial-blocking-chip {

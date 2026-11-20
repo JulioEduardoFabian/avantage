@@ -23,6 +23,7 @@
         {{ botPaused ? '🙋 Lo atiendes tú — Avan está en pausa en este chat' : '🤖 Avan está atendiendo este chat' }}
       </span>
       <button
+        v-if="!readonly"
         type="button"
         class="lead-chat-bot-toggle"
         :disabled="togglingBot"
@@ -91,7 +92,17 @@
       @click="scrollToBottom(true)"
     >↓ Últimos mensajes</button>
 
-    <form class="lead-chat-composer" @submit.prevent="send">
+    <!--
+      En modo lectura no hay cuadro de respuesta: así se abre desde el Reporte
+      de Leads, que es una pantalla de supervisión y cuyo permiso
+      (`leads.report`) el servidor no acepta para responder. Un cuadro que
+      siempre termina en 403 es peor que no tenerlo.
+    -->
+    <p v-if="readonly" class="lead-chat-readonly">
+      👁️ Solo lectura. Para responderle, entra a su ficha en el funnel.
+    </p>
+
+    <form v-else class="lead-chat-composer" @submit.prevent="send">
       <p v-if="!waId" class="lead-chat-blocked">
         Este contacto todavía no escribió por WhatsApp, así que no hay conversación abierta a la que responder.
       </p>
@@ -144,7 +155,9 @@ import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 
 const props = defineProps({
-  lead: { type: Object, required: true }
+  lead: { type: Object, required: true },
+  /** Sin cuadro de respuesta ni pausa de Avan: el hilo y nada más. */
+  readonly: { type: Boolean, default: false }
 });
 
 const MAX_LENGTH = 1000;
@@ -575,6 +588,16 @@ onBeforeUnmount(() => {
 }
 
 /* ---- Responder ---- */
+.lead-chat-readonly {
+  margin: 0;
+  padding: 0.55rem 0.85rem;
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-2, var(--surface-1));
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .lead-chat-composer {
   flex: 0 0 auto;
   border-top: 1px solid var(--border-color);

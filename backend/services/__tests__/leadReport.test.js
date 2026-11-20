@@ -3,13 +3,19 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  ORIGIN_OPTIONS,
   actorKey,
   actorLabel,
+  applySearch,
   buildTimeline,
+  matchesOrigin,
   nextDay,
   normalizeFilters,
-  parseActor
+  parseActor,
+  parseOrigin
 } from '../leadReportService.js';
+import { db } from '../../db/connection.js';
+import { leadOrigin } from '../leadOrigin.js';
 import { buildStatusLabeler } from '../funnelStageLabel.js';
 
 /**
@@ -146,4 +152,106 @@ test('el intento rechazado viaja marcado y con su motivo', () => {
   );
   assert.equal(timeline[1].blocked, true);
   assert.equal(timeline[1].reason, 'el lead ya es del closer');
+});
+
+test('el origen del filtro solo se acepta en los códigos del desplegable', () => {
+  assert.deepEqual(parseOrigin('platform:meta'), { kind: 'platform', key: 'meta', label: 'Meta' });
+  assert.deepEqual(parseOrigin('channel:whatsapp'), { kind: 'channel', key: 'whatsapp', label: 'WhatsApp' });
+  // Lo que no es uno de los códigos no filtra: ni una clave inventada, ni el
+  // tipo cambiado, ni texto suelto que terminaría en una comparación.
+  assert.equal(parseOrigin('platform:google'), null);
+  assert.equal(parseOrigin('canal:whatsapp'), null);
+  assert.equal(parseOrigin('meta'), null);
+  assert.equal(parseOrigin(''), null);
+});
+
+test('cada opción del desplegable la entiende el filtro', () => {
+  // Las dos puntas del mismo contrato: una opción que el parser rechaza es un
+  // filtro que no devuelve nada y parece la pantalla rota.
+  for (const option of ORIGIN_OPTIONS) {
+    assert.ok(parseOrigin(option.key), `sin parsear: ${option.key}`);
+    assert.equal(parseOrigin(option.key).label, option.label);
+  }
+  assert.deepEqual([...new Set(ORIGIN_OPTIONS.map((o) => o.group))], ['Plataforma', 'Canal']);
+});
+
+test('el filtro de origen compara contra lo que dice leadOrigin, no contra el texto de source', () => {
+  // Un lead de formulario de Meta: la plataforma sale de sus columnas de
+  // atribución y no de `source`, que acá dice otra cosa.
+  const formMeta = leadOrigin({
+    source: 'WhatsApp',
+    meta_leadgen_id: '123',
+    meta_ad_id: '456',
+    origin_platform: 'Meta'
+  });
+  assert.equal(formMeta.platform, 'Meta');
+  assert.ok(matchesOrigin(formMeta, parseOrigin('platform:meta')));
+  assert.ok(matchesOrigin(formMeta, parseOrigin('channel:form')));
+  assert.ok(!matchesOrigin(formMeta, parseOrigin('channel:whatsapp')));
+  assert.ok(!matchesOrigin(formMeta, parseOrigin('platform:tiktok')));
+
+  // Sin filtro pasa todo, y un lead sin origen resuelto no se cuela.
+  assert.ok(matchesOrigin(formMeta, null));
+  assert.ok(!matchesOrigin(null, parseOrigin('platform:meta')));
+});
+
+test('el origen viaja normalizado en los filtros, como el actor', () => {
+  const filtros = normalizeFilters({ origin: 'channel:whatsapp' });
+  assert.deepEqual(filtros.origin, { kind: 'channel', key: 'whatsapp', label: 'WhatsApp' });
+  assert.equal(normalizeFilters({ origin: 'channel:fax' }).origin, null);
+  assert.equal(normalizeFilters({}).origin, null);
+});
+
+/*
+ * El buscador del reporte, leído como SQL. Knex arma la consulta sin tocar la
+ * base, así que esto se puede probar igual que el resto: lo que se comprueba es
+ * contra QUÉ se compara el número, que es de donde vino el fallo.
+ */
+
+/** El SQL que arma el buscador para esa consulta. */
+const sqlDe = (texto) => applySearch(db('leads').select('leads.id'), texto).toString();
+
+test('un número se busca contra los dígitos del teléfono, no contra el texto', () => {
+  const sql = sqlDe('982768859');
+
+  // La comparación va sobre la columna limpia (los REPLACE de PHONE_DIGITS_SQL),
+  // que es lo que encuentra al lead de Meta guardado como "+51 982 768 859".
+  assert.match(sql, /REPLACE\(/);
+  assert.match(sql, /%982768859%/);
+
+  // Y NO contra la columna cruda: ese era el LIKE que no encontraba nada en
+  // cuanto el teléfono traía espacios.
+  assert.doesNotMatch(sql, /`phone`\s+like\s+'%982768859%'/i);
+});
+
+test('un número no se busca en el nombre, el tema ni la universidad', () => {
+  const sql = sqlDe('982768859');
+
+  // Misma regla que los dos tableros (`src/leadSearch.js`): en un número, un
+  // dígito de diferencia es otra persona, y un tema de tesis que contenga esa
+  // cifra no es la ficha que se está buscando.
+  assert.doesNotMatch(sql, /full_name/);
+  assert.doesNotMatch(sql, /topic/);
+  assert.doesNotMatch(sql, /university/);
+
+  // El id sí, que es como se nombra un lead entre pantallas ("el #412").
+  assert.match(sql, /`leads`\.`id`\s*=\s*982768859/);
+});
+
+test('el número encuentra también el documento escrito con puntos', () => {
+  // `DNI_MATCH_KEY_SQL` quita los separadores, así que "70123456" encuentra
+  // al lead cargado como "70.123.456".
+  assert.match(sqlDe('70123456'), /UPPER\(REPLACE\(/);
+});
+
+test('un texto se sigue buscando en todos los campos de siempre', () => {
+  const sql = sqlDe('Cielo Padilla');
+  for (const campo of ['full_name', 'phone', 'email', 'dni', 'university', 'topic', 'assigned_to']) {
+    assert.match(sql, new RegExp(campo), `falta ${campo} en la búsqueda por texto`);
+  }
+});
+
+test('una búsqueda vacía no agrega ninguna condición', () => {
+  const base = db('leads').select('leads.id').toString();
+  assert.equal(sqlDe('   '), base);
 });

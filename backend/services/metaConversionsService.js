@@ -75,8 +75,16 @@ import { loadWinningStatuses } from './salesFunnelStage.js';
 /** Meta acepta eventos hasta 7 días hacia atrás. */
 export const BACKFILL_WINDOW_DAYS = 7;
 
-/** Nombre con el que Meta identifica de dónde salió el evento. */
-const DEFAULT_LEAD_EVENT_SOURCE = 'Avantage CRM';
+/**
+ * Nombre con el que Meta identifica de dónde salió el evento.
+ *
+ * Es el texto que el Administrador de eventos muestra como origen de la
+ * "Integración de CRM", así que lo elige el equipo y no este código: viaja tal
+ * cual en `custom_data.lead_event_source` y es con lo que ellos reconocen en
+ * esa pantalla que los eventos están llegando desde acá y no de otra
+ * herramienta. Se cambia sin tocar código con `META_CAPI_LEAD_EVENT_SOURCE`.
+ */
+const DEFAULT_LEAD_EVENT_SOURCE = 'CRM AVANTAGE';
 
 /**
  * Versión de la Graph API para ESTE endpoint, aparte de la global

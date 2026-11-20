@@ -11,6 +11,8 @@ proyectos con tareas/línea de tiempo, y gestiona acceso interno por roles y per
   servidor Express en producción.
 - **Correo**: Nodemailer (SMTP real o Ethereal como fallback de pruebas).
 - **IA**: Ollama Cloud API (embeddings + LLM), con fallback local si la API no está disponible.
+- **App de notificaciones**: Flutter (Android · iOS · Web · Windows · macOS · Linux) en `mobile/`,
+  con push por Firebase Cloud Messaging y caída a sondeo donde FCM no existe — ver la sección 6.
 
 ## 1. Configuración local
 
@@ -28,6 +30,7 @@ Variables requeridas en `.env` — referencia completa en `.env.example`:
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Conexión MySQL. |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | Firma de sesión del login interno. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Envío de correos (opcional; sin esto usa Ethereal de prueba). |
+| `LEAD_RECONCILIATION_HOUR`, `LEAD_RECONCILIATION_DAYS` | Conciliación diaria de leads de anuncios: hora de Lima a la que corre (7) y cuántos días hacia atrás revisa (3). Ver `leadReconciliationSweep.js`. |
 
 Crea la base de datos y aplica el esquema:
 
@@ -318,3 +321,260 @@ Meta y en TikTok, así que el informe de rendimiento, la exportación a Excel y 
 igual sin duplicar nada. Lo que distingue el origen es `campaigns.source` (`meta` | `tiktok` |
 `manual`), y los `external_id` de TikTok van prefijados con `tt:` para que no puedan colisionar con
 los de Meta. No hace falta ninguna migración para usar el módulo.
+
+## 5. Traer los leads de los formularios instantáneos de TikTok
+
+Si tus campañas de TikTok usan un **formulario instantáneo** (Instant Form: la persona deja sus
+datos sin salir de TikTok, el equivalente al formulario instantáneo de Meta), esos leads **no
+llegan solos al CRM**. A diferencia de Meta, TikTok no llama a ningún webhook: los leads se quedan
+en el Centro de clientes potenciales de TikTok y el panel no se entera de que existen. El síntoma
+es inconfundible: la campaña marca conversiones en el Ads Manager y su *Trazabilidad de leads* dice
+«Todavía no hay contactos atribuidos a esta campaña».
+
+El botón **📥 Leads de TikTok** (Panel → Campañas, al lado de *Sincronizar con TikTok*) los trae.
+
+### Paso 1 — Darle a la app el permiso de Lead Generation
+
+Es casi seguro que el token que creaste para sincronizar campañas **no sirve para esto**: el scope
+de generación de leads va aparte de `Ads Management`. Un token sin él sincroniza las campañas
+perfectamente y no puede leer un solo lead.
+
+1. <https://business-api.tiktok.com/portal> → **My Apps** → tu app → **Scope of permission**.
+2. Marca el permiso de **Lead Generation** (según la cuenta aparece como *Lead Ads Management* o
+   *Leads*; es el que habla de acceder a los clientes potenciales de los formularios).
+3. Guarda y **vuelve a hacer los pasos 3 y 4** de la sección anterior (autorizar + canjear). Un
+   token emitido *antes* de agregar el permiso no lo tiene: hay que generar uno nuevo y pegarlo en
+   `TIKTOK_ACCESS_TOKEN`.
+
+Para comprobarlo sin tocar nada, el diagnóstico (**solo lee**, no da de alta ningún lead):
+
+```bash
+node backend/scripts/diagnosticarTiktokLeads.js
+```
+
+Dice si el token sirve, lista los formularios de la cuenta, prueba una descarga real y cuenta lo
+que el CRM ya tiene. Si falla por permisos, lo dice con todas las letras.
+
+### Paso 2 — Importar
+
+1. **Panel → Campañas → 📥 Leads de TikTok**. Al abrirse **solo compara** (no escribe nada) y
+   muestra, formulario por formulario, cuántos leads tiene TikTok, cuántos ya están en el CRM y
+   cuántos faltan. Tarda unos segundos: TikTok no entrega los leads de una, hay que pedirle una
+   descarga por formulario y esperar a que la prepare.
+2. El botón **Importar N lead(s)** los trae. Es idempotente: un lead ya importado no se vuelve a
+   dar de alta, así que se puede correr cuantas veces haga falta.
+
+Al terminar el resumen distingue dos cosas que **no son lo mismo**:
+
+- **Importados**: fichas nuevas, gente más para trabajar.
+- **Adjuntados**: esa persona ya era un lead (mismo celular) y el formulario se sumó a su ficha en
+  vez de abrirle una segunda. Una persona es un lead, no uno por cada formulario que llena.
+
+### Qué pasa con cada lead importado
+
+- Entra al **Setter Funnel** en *Conversación abierta* —llenó un formulario pero todavía no habló
+  con nadie— y pasa por el **reparto automático** (Panel → Reparto de leads) como cualquier lead que
+  entra solo. Desde el 09/11/2026 eso vale **siempre** y no solo con el bot de WhatsApp apagado: a
+  un lead de formulario el bot no lo atiende nunca, y sin responsable no lo ve nadie salvo quien
+  reparte.
+- Se guarda su atribución (`tiktok_lead_id`, `tiktok_page_id`, `tiktok_ad_id`, `tiktok_adgroup_id`,
+  `tiktok_campaign_id`, `tiktok_created_time`) y con eso aparece en la **trazabilidad de su
+  campaña**, que es lo que estaba vacío.
+- Se fecha por **cuándo llenó el formulario en TikTok**, no por cuándo se corrió la importación:
+  un lead del 27 de octubre rescatado el 30 cuenta el 27, o el reporte nunca cierra contra el Ads
+  Manager.
+- Las respuestas se leen **por patrón y no por la clave exacta**, con el mismo extractor que los
+  formularios de Meta: el nombre de cada pregunta lo escribe quien arma el formulario. Lo que no
+  cae en ningún campo de la ficha va igual a las notas, con el nombre de su pregunta.
+
+### Si algo falla
+
+| Lo que dice el panel | Qué revisar |
+| --- | --- |
+| No se pudieron listar los formularios | Es el permiso: ver el paso 1. El diagnóstico lo confirma. |
+| La cuenta no tiene ningún formulario instantáneo | Las campañas mandan a un sitio web o a un chat, no a un Instant Form. No hay leads que traer por acá. |
+| «sigue preparándose en TikTok» | La descarga tardó más de lo normal. Vuelve a abrir el modal en un minuto; no se pierde nada. |
+| Importa pero no salen en la trazabilidad | Mira el contador **sin anuncio** del reporte: un lead sin `ad_id` entra al CRM pero no se puede acreditar a ninguna campaña. |
+
+
+## 6. App de notificaciones (`mobile/`) y push a los dispositivos
+
+La campana del navbar avisaba al equipo **solo si alguien tenía una pestaña
+abierta**. Una reunión que Avan agenda a las 11 de la noche, un pago que Finanzas
+verifica, un proyecto que nace al cerrarse una venta: todo eso se veía cuando
+alguien se acordaba de mirar. `mobile/` es una app Flutter multiplataforma que
+recibe esos mismos avisos en el teléfono, y el backend ahora los **empuja** por
+Firebase Cloud Messaging.
+
+No es un CRM en el celular: entra con la misma cuenta del panel, muestra la lista
+de avisos, marca leído y, cuando un aviso trae enlace, abre esa pantalla del
+panel en el navegador.
+
+```
+notificationService.create()        ← el punto único por el que nace TODA
+        │                             notificación del panel (ocho sitios hoy)
+        ├─ fila en `notifications`  → la campana del navbar, y la app por sondeo
+        └─ pushService.sendForNotification()
+                 │ FCM HTTP v1
+                 └─────────────────→ aviso en el teléfono, con la app cerrada
+```
+
+Se cuelga de `notificationService.create()` y no de cada ruta por la misma razón
+que el aviso de proyecto nuevo vive en `projectService`: puesto en cada llamador,
+el noveno que se agregue se olvida. Y **no espera ni lanza** — la fila ya quedó
+asentada, y un FCM caído no puede demorar el cierre de una venta.
+
+### Paso 1 — La migración
+
+```bash
+npm run migrate
+```
+
+Crea `device_tokens`: a qué dispositivos hay que avisarle. El índice único es el
+**token** a secas y no (`user_id`, `token`), porque el token identifica a la
+**instalación** y no a la persona: si en ese celular entra otra, el token se
+muda a la cuenta nueva. Con el único sobre el par quedarían dos filas vivas con
+el mismo token y los avisos de un lead le llegarían a la pantalla de quien usó el
+teléfono antes.
+
+### Paso 2 — Las credenciales del servidor
+
+En [console.firebase.google.com](https://console.firebase.google.com): crear el
+proyecto → Configuración del proyecto → **Cuentas de servicio** → «Generar nueva
+clave privada». Eso descarga un JSON con tres campos que van al `.env`:
+
+```bash
+FCM_PROJECT_ID=avantage-crm
+FCM_CLIENT_EMAIL=push@avantage-crm.iam.gserviceaccount.com
+FCM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+```
+
+Alternativas (alcanza con una de las tres): `FCM_SERVICE_ACCOUNT_JSON` con el
+JSON entero, o `FCM_SERVICE_ACCOUNT_FILE` con la ruta al archivo —fuera del
+repo—. La clave privada se pega con los `\n` escapados tal como vienen en el
+JSON: el servicio los deshace al leerla, y sin eso la firma del JWT falla con un
+error de OpenSSL que no menciona el `.env` en ninguna parte.
+
+**Sin estas variables la integración queda apagada**: nada falla, el panel sigue
+igual y la app cae sola al sondeo.
+
+### Paso 3 — La app
+
+Ver [`mobile/README.md`](mobile/README.md), que tiene el detalle de cada
+plataforma. Lo corto:
+
+```bash
+cd mobile
+flutter pub get
+```
+
+Y para compilar el APK, el script hace los siete `--dart-define` solo (lee los
+identificadores de Firebase de `android/app/google-services.json`):
+
+```powershell
+.\build-apk.ps1 -ApiBaseUrl https://tu-dominio.com
+.\build-apk.ps1 -ApiBaseUrl http://localhost:3000   # con cable y adb reverse
+```
+
+La app **arranca sin Firebase**: sondea el panel cada 45 s mientras está abierta
+y dibuja el aviso con el notificador del sistema. Con las credenciales de
+Firebase pasa a push de verdad, que llega con la app cerrada. Cuál de los dos
+está activo —y por qué— lo dice su pantalla «Estado de los avisos».
+
+### Paso 4 — Comprobarlo
+
+En la app: **Estado de los avisos → «Enviarme una notificación de prueba»**. Va
+solo a los dispositivos de esa cuenta y no deja nada en la campana del panel:
+comprueba la cadena completa (servidor → Firebase → aparato) sin esperar a que
+alguien agende una reunión.
+
+### Desplegar el push a producción
+
+Lo que este módulo agrega al despliegue normal de la sección 3. El orden
+importa: el APK se compila **al final**, porque lleva la URL del panel adentro.
+
+**1. La migración.** `device_tokens` tiene que existir antes de que nadie abra
+la app, o el registro del dispositivo falla con un 500:
+
+```bash
+npm run migrate
+```
+
+**2. La credencial de FCM, en las variables de entorno de la app Node.js**
+(hPanel → Avanzado → Node.js → tu app). En hosting compartido lo más simple es
+el JSON entero en una variable, porque no hay que subir ni versionar un archivo:
+
+```
+FCM_SERVICE_ACCOUNT_JSON={"project_id":"...","client_email":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}
+```
+
+Se pega el contenido del JSON que descarga Firebase **tal cual**, con los `\n`
+escapados como vienen: `pushService.js` los deshace al leerlo.
+
+La alternativa es `FCM_SERVICE_ACCOUNT_FILE` con una ruta **absoluta y fuera de
+la carpeta del despliegue** — mismo cuidado que `UPLOADS_DIR`: dentro, el
+despliegue por Git se la lleva, y además una clave privada no puede vivir en una
+carpeta que sirve archivos.
+
+**Si estas variables no están, el push queda apagado y nada más**: el panel
+sigue igual, la campana sigue igual, y la app cae al sondeo. No hay que
+desplegar las dos mitades el mismo día.
+
+**3. Reiniciar la app** desde hPanel, y comprobar que el servidor tomó la
+credencial. Tiene que decir `"configured": true`:
+
+```bash
+curl -s https://tu-dominio.com/api/push/status -H "Authorization: Bearer <token>"
+```
+
+**4. Compilar el APK apuntando al dominio**, ya con HTTPS:
+
+```powershell
+cd mobile
+.\build-apk.ps1 -ApiBaseUrl https://tu-dominio.com -Output "$HOME\Desktop\AvisosAvantage.apk"
+```
+
+Con `https://` desaparece todo el asunto del tráfico sin cifrar: la
+`network_security_config.xml` tiene `base-config cleartextTrafficPermitted=false`,
+así que el APK de producción exige HTTPS y no hay nada que configurar.
+
+**5. Repartir el APK.** Hoy se firma con la clave de **debug** (ver el `TODO` de
+`android/app/build.gradle.kts`). Eso instala bien y sirve para el equipo, con dos
+consecuencias que conviene saber antes de repartirlo: no se puede publicar en
+Play Store, y el día que se firme con una clave propia **hay que desinstalar la
+versión anterior** — Android rechaza una actualización firmada con otra clave.
+
+### Las plataformas
+
+| Plataforma | Push | Verificado acá |
+| --- | --- | --- |
+| Android | Sí (FCM) | ✅ compila (`flutter build apk --debug`) |
+| Web | Sí (FCM) | ✅ compila (`flutter build web --release`) |
+| iOS / macOS | Sí (FCM; iOS pide el certificado APNs en Firebase) | ❌ necesita macOS |
+| Windows | **No**: sondeo | ⚠️ pide el «Modo de desarrollador» de Windows |
+| Linux | **No**: sondeo | ❌ no se compiló desde Windows |
+
+Windows y Linux **no tienen FCM** — no es que falte configurarlo, el SDK de
+Firebase no los soporta. Ahí los avisos llegan por sondeo y solo mientras la app
+esté abierta, y la app lo dice en pantalla en vez de quedarse muda. Por eso
+`device_tokens.transport` distingue `fcm` de `polling`: esos equipos se
+registran igual —así se sabe cuántas instalaciones hay— pero el envío los
+excluye, para no gastar una llamada a Firebase en una dirección que no existe.
+
+### Si algo falla
+
+| Lo que se ve | Qué revisar |
+| --- | --- |
+| «El servidor no tiene credenciales de Firebase» | Las `FCM_*` del `.env`. El `GET /api/push/status` lo confirma. |
+| «Faltan las credenciales de Firebase en la app» | Los `--dart-define=FIREBASE_*`. Ver `mobile/README.md`. |
+| El token se registra y no llega nada | En Android, que exista `android/app/google-services.json` y que las dos líneas del plugin de Google Services estén descomentadas. En iOS, el certificado APNs. |
+| En web `getToken()` falla | Falta `--dart-define=FIREBASE_VAPID_KEY` (Cloud Messaging → Certificados push web). Solo la web la necesita. |
+| Llega pero sin sonido | El `channel_id` tiene que ser el mismo en tres lugares: `AppConfig.androidChannelId`, el `meta-data` del `AndroidManifest.xml` y `ANDROID_CHANNEL_ID` de `backend/services/pushService.js`. En Android el sonido de un canal queda congelado la primera vez y no se puede cambiar sin desinstalar la app. |
+| De golpe nadie recibe nada | Mirar el log por `[Push] Firebase rechazó las credenciales`. Un 401/403 **no** da de baja ningún token a propósito (es el servidor, no los dispositivos): solo `UNREGISTERED` e `INVALID_ARGUMENT` lo hacen. |
+
+**Lo que todavía no está verificado**: no hay un proyecto de Firebase en este
+entorno, así que la forma del payload sale de la documentación de FCM HTTP v1 y
+no de una respuesta observada. Lo que sí está probado sin credenciales son las
+reglas (`backend/services/__tests__/pushService.test.js`, 16 pruebas): el formato
+del mensaje, la lectura de la cuenta de servicio y que un 401/403 no vacíe la
+lista de dispositivos de todo el equipo.

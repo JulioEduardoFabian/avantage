@@ -5,6 +5,15 @@
  * digan la misma secuencia.
  */
 
+/**
+ * ¿Se reparte ESTE lead ahora? El de formulario y el del evaluador siempre —el
+ * bot no los atiende nunca—; el que nace de una conversación de WhatsApp, solo
+ * con el bot apagado. El porqué, en el backend.
+ */
+export function routesNow({ botWillAttend = false, botEnabled = false } = {}) {
+  return !(botWillAttend && botEnabled);
+}
+
 export function isEligible(member) {
   return Boolean(member?.active) && Number(member?.weight) > 0 && member?.eligible !== false;
 }

@@ -1,13 +1,25 @@
 <template>
   <div id="app">
+    <!-- Pantalla de carga inicial y barra de progreso superior entre rutas -->
+    <AppLoader mode="splash" :show="loadingState.isBooting" :title="loadingState.bootMessage" />
+    <AppLoader mode="topbar" :show="loadingState.isNavigating" />
+
     <!-- Admin Layout with Sidebar & Navbar for Dashboard / Admin pages -->
     <AdminLayout v-if="isAdminRoute">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <transition name="page-fade" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
     </AdminLayout>
 
     <!-- Portal de clientes: layout propio (header + bottom nav mobile) -->
     <ClientPortalLayout v-else-if="isPortalAppRoute">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <transition name="page-fade" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
     </ClientPortalLayout>
 
     <!-- Login / pantallas de auth (internas y del portal): pantalla completa, sin header/footer público -->
@@ -66,8 +78,10 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { authState, clearSession } from './auth.js';
+import { loadingState } from './loadingState.js';
 import AdminLayout from './components/AdminLayout.vue';
 import ClientPortalLayout from './components/ClientPortalLayout.vue';
+import AppLoader from './components/AppLoader.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -115,5 +129,20 @@ function handleLogout() {
   text-transform: uppercase;
   font-size: 0.72rem;
   font-family: var(--font-mono);
+}
+
+:global(.page-fade-enter-active),
+:global(.page-fade-leave-active) {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+:global(.page-fade-enter-from) {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+:global(.page-fade-leave-to) {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 </style>

@@ -1,13 +1,27 @@
 import { db } from '../db/connection.js';
+import {
+  BANCOS as BANCOS_LEDGER,
+  attachReceipts,
+  receiptRowsFromFiles,
+  unlinkQuiet
+} from './financeLedgerService.js';
 
 /**
  * Comisiones por venta cerrada.
  *
- * Hoy hay una sola: la **setter** se lleva el 2% de la venta que el closer
- * cerró con el lead que ella le pasó. Es el devengo —lo que se le debe—, no el
- * pago: cuando se le pague, ese egreso se anota en la planilla de Salarios como
- * cualquier otro. Por eso esta tabla no entra en `finance_journal` ni suma en
- * los totales de Finanzas: mezclarlas contaría el mismo dinero dos veces.
+ * Hoy hay dos: la **setter** se lleva el 2% de la venta que el closer cerró con
+ * el lead que ella le pasó, y quien **cobra** una cuota se lleva el 2% de lo
+ * que entró. Una fila es el devengo —lo que se le debe— y, cuando se le paga,
+ * la misma fila guarda el pago: su fecha (`paid_at`), la **cuenta** de la que
+ * salió (`banco`), el método y su comprobante.
+ *
+ * Esa es la razón de que el pago se anote acá y no en la planilla de Salarios:
+ * con el egreso en dos tablas, el mismo dinero se descuenta dos veces o
+ * ninguna según cuál se mire. Lo PAGADO resta en el Resumen Financiero
+ * (`financeLedgerService.getOverview()`, desde el 16/10/2026) y, desde que hay
+ * `banco`, resta en la tarjeta de SU cuenta y no en el cajón "Sin cuenta".
+ * Sigue fuera de `finance_journal`: el libro diario es contabilidad, y esto es
+ * lo que se le debe al equipo por vender.
  *
  * La comisión nace sola al ganar el lead (`leadService.updateLeadStatus()`, el
  * único camino por el que un lead llega a la etapa final) y no desde la ruta de
@@ -35,6 +49,76 @@ export const COMMISSION_ROLE_LABEL = {
   setter: 'Setter',
   cobranza: 'Cobranza'
 };
+
+/** Los dos estados de una comisión: lo que se debe y lo que ya salió. */
+export const ESTADOS = ['pendiente', 'pagado'];
+
+/**
+ * mysql2 devuelve las columnas DATE como un Date a medianoche LOCAL, y pasarlo
+ * por JSON (UTC) corre el día hacia atrás. `paid_at` se entrega siempre como
+ * "YYYY-MM-DD", igual que las fechas del resto de Finanzas: ahora es lo que
+ * carga el campo de fecha del formulario, así que un día corrido no sería solo
+ * una etiqueta mal escrita — se guardaría al editar.
+ */
+function isoDay(value) {
+  if (!value) return null;
+  if (!(value instanceof Date)) return String(value).slice(0, 10);
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+}
+
+function withIsoDates(row) {
+  return row ? { ...row, paid_at: isoDay(row.paid_at) } : row;
+}
+
+/**
+ * Las mismas cuentas que el resto de Finanzas (BCP, BCP Finanzas...). Se
+ * importan en vez de copiarse: el pago de una comisión sale de una de esas
+ * cuentas y no de una lista propia, y de eso cuelga que reste en la tarjeta de
+ * SU cuenta en el Resumen (ver `getOverview`).
+ */
+export const BANCOS = BANCOS_LEDGER;
+
+/**
+ * Lo que la edición puede cambiar de una comisión, validado y normalizado.
+ *
+ * **Lo que no se edita** es de dónde viene: el lead, la cuota, el beneficiario
+ * y `base_amount` los escribió el cierre de la venta o el cobro, y son historia
+ * —cambiarlos acá convertiría la comisión en otra—. Lo que sí se corrige es lo
+ * que se le paga (`monto`, `percent`) y cómo se pagó (cuenta, método, detalle,
+ * estado y fecha).
+ *
+ * El monto se guarda en **positivo**, como lo guardan los dos caminos de alta:
+ * acá el signo de egreso lo pone `getOverview()` al leerlo, no la fila.
+ */
+export function normalizePaymentFields({ monto, percent, estado, paidAt, banco, metodoPago, detalle }) {
+  const importe = Math.abs(Number(monto));
+  if (!Number.isFinite(importe) || importe === 0) {
+    throw new Error('El monto de la comisión debe ser un número distinto de cero.');
+  }
+  if (estado && !ESTADOS.includes(estado)) throw new Error('Estado de comisión no válido.');
+
+  const porcentaje = percent === undefined || percent === null || percent === ''
+    ? null
+    : Number(percent);
+  if (porcentaje !== null && (!Number.isFinite(porcentaje) || porcentaje < 0)) {
+    throw new Error('El porcentaje de la comisión no es válido.');
+  }
+
+  const estadoFinal = estado || 'pendiente';
+  const data = {
+    monto: Math.round(importe * 100) / 100,
+    estado: estadoFinal,
+    // Una comisión que vuelve a pendiente no conserva la fecha en que se pagó:
+    // esa fecha es lo que la fecha el egreso en el Resumen, y dejarla puesta
+    // descontaría de caja algo que no salió.
+    paid_at: estadoFinal === 'pagado' ? (paidAt || new Date().toISOString().slice(0, 10)) : null,
+    banco: banco?.trim() ? banco.trim() : null,
+    metodo_pago: metodoPago?.trim() || null,
+    detalle: detalle?.trim() || null
+  };
+  if (porcentaje !== null) data.percent = porcentaje;
+  return data;
+}
 
 /**
  * El monto de la comisión, redondeado a dos decimales.
@@ -183,7 +267,10 @@ export class CommissionService {
   }
 
   async getById(id) {
-    return db('sales_commissions').where({ id }).first();
+    const row = await db('sales_commissions').where({ id }).first();
+    if (!row) return row;
+    const [withReceipts] = await attachReceipts([row], 'sales_commission_receipts', 'commission_id');
+    return withIsoDates(withReceipts);
   }
 
   /**
@@ -211,7 +298,11 @@ export class CommissionService {
 
     if (estado) query.where('c.estado', estado);
     if (userId) query.where('c.user_id', userId);
-    return query;
+
+    // Los comprobantes del pago, igual que en el resto del libro: la pantalla
+    // los dibuja en su propia celda y desde ahí se agregan y se quitan.
+    const filas = await attachReceipts(await query, 'sales_commission_receipts', 'commission_id');
+    return filas.map(withIsoDates);
   }
 
   /** Totales para el encabezado de la pestaña: lo que se debe y lo ya pagado. */
@@ -234,11 +325,86 @@ export class CommissionService {
    * error). El pago en sí se registra en Salarios: acá solo se deja de deber.
    */
   async setEstado(id, estado, { paidAt = null } = {}) {
-    if (!['pendiente', 'pagado'].includes(estado)) {
+    if (!ESTADOS.includes(estado)) {
       throw new Error('Estado de comisión no válido.');
     }
     const fecha = estado === 'pagado' ? (paidAt || new Date().toISOString().slice(0, 10)) : null;
+    // La cuenta y el método NO se tocan acá: la píldora de la tabla solo dice
+    // si ya se pagó, y borrar de paso de dónde salió es perder un dato que
+    // alguien escribió a mano. Volver a pendiente sí suelta la fecha, porque de
+    // ella cuelga el mes en que el Resumen descuenta el egreso.
     await db('sales_commissions').where({ id }).update({ estado, paid_at: fecha });
     return this.getById(id);
+  }
+
+  /**
+   * Corrige una comisión ya registrada: lo que se le paga y cómo se le pagó.
+   *
+   * Las dos comisiones nacen solas (al ganar el lead y al marcar una cuota
+   * cobrada) con el 2% de fábrica, y hasta acá eso era inamovible: un trato
+   * distinto con la setter, un redondeo acordado o un pago hecho desde otra
+   * cuenta no se podían escribir en ningún lado. Lo que el formulario NO deja
+   * cambiar es de dónde viene la comisión —el lead, la cuota, el beneficiario y
+   * la base— por la razón de `normalizePaymentFields()`.
+   *
+   * Los comprobantes que lleguen se **suman** a los que ya tiene (igual que en
+   * el libro diario y en la planilla): quitar uno es una acción aparte, desde
+   * su miniatura.
+   */
+  async update(id, payload) {
+    const existing = await db('sales_commissions').where({ id }).first();
+    if (!existing) return null;
+
+    const data = normalizePaymentFields({
+      ...payload,
+      // Un campo que el formulario no manda conserva lo guardado: la edición
+      // corrige, no reescribe en blanco lo que nadie tocó.
+      monto: payload.monto ?? existing.monto,
+      percent: payload.percent ?? existing.percent,
+      estado: payload.estado || existing.estado,
+      paidAt: payload.paidAt || existing.paid_at
+    });
+
+    /*
+     * El % se recalcula desde el monto corregido y la base de ESA venta: un 2%
+     * guardado al lado de un monto que ya no es su 2% es una fila que se
+     * contradice sola, y la columna "%" de la pestaña sale de ahí. Se sigue
+     * **guardando** en vez de derivarse en cada lectura por la razón de la
+     * migración: el día que el porcentaje de fábrica cambie, lo ya devengado no
+     * se puede reescribir. Un `percent` explícito en el payload manda.
+     */
+    if (payload.percent === undefined || payload.percent === null || payload.percent === '') {
+      const base = Number(existing.base_amount) || 0;
+      if (base > 0) data.percent = Math.round((data.monto / base) * 10000) / 100;
+    }
+
+    await db('sales_commissions').where({ id }).update(data);
+    await this.#insertReceipts(id, payload.receipts);
+    return this.getById(id);
+  }
+
+  async #insertReceipts(commissionId, files) {
+    const rows = receiptRowsFromFiles(files, 'commission_id', commissionId);
+    if (rows.length > 0) await db('sales_commission_receipts').insert(rows);
+    return rows.length;
+  }
+
+  /** Adjunta comprobantes a una comisión ya registrada, desde su fila. */
+  async addReceipts(commissionId, files) {
+    const commission = await db('sales_commissions').where({ id: commissionId }).first();
+    if (!commission) throw new Error('Comisión no encontrada.');
+    if (!files || files.length === 0) throw new Error('No se recibió ningún comprobante.');
+    await this.#insertReceipts(commissionId, files);
+    return db('sales_commission_receipts').where('commission_id', commissionId).orderBy('id', 'asc');
+  }
+
+  async getReceiptById(id) {
+    return db('sales_commission_receipts').where({ id }).first();
+  }
+
+  async deleteReceipt(id) {
+    const receipt = await db('sales_commission_receipts').where({ id }).first();
+    if (receipt) unlinkQuiet(receipt.filename);
+    return db('sales_commission_receipts').where({ id }).del();
   }
 }

@@ -21,9 +21,14 @@
 .ledger-hint {
   font-size: 0.78rem;
   line-height: 1.5;
-  color: var(--text-muted);
-  max-width: 62ch;
+  color: var(--text-sub);
+  max-width: 100%;
   margin: 0;
+  padding: 0.65rem 0.95rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-md);
 }
 
 .ledger-hint code {
@@ -39,6 +44,11 @@
   align-items: center;
   gap: 0.65rem;
   flex-wrap: wrap;
+  padding: 0.65rem 0.85rem;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .ledger-search {
@@ -133,13 +143,30 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0.75rem 0.95rem;
+  padding: 0.8rem 1rem;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background: var(--bg-card-solid);
   box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
+
+.ledger-summary-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--border-strong);
+  opacity: 0.7;
+}
+
+.ledger-summary-item:has(dd.is-in)::before { background: #10B981; opacity: 1; }
+.ledger-summary-item:has(dd.is-out)::before { background: #EF4444; opacity: 1; }
+.ledger-summary-item:has(dd.is-pending)::before { background: #F59E0B; opacity: 1; }
 
 .ledger-summary-item:hover {
   transform: translateY(-1px);
@@ -185,6 +212,57 @@
 }
 .ledger-summary-item dd.is-pending { color: #F59E0B; }
 
+/* El renglón pequeño del recuadro: cuántos cierres hay detrás de la cifra y si
+   están fuera de la tabla. Va apagado y pequeño porque es la explicación de la
+   cifra, no otra cifra. */
+.ledger-summary-item .ledger-summary-note {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--text-muted);
+}
+
+/* Interruptor de "ver no concretados". Se viste como un filtro más —es lo que
+   es— y se enciende en el rojo apagado de la insignia del cierre caído, para
+   que se reconozca sin leerlo. */
+.ledger-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.8rem;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-sub);
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.18s ease;
+}
+
+.ledger-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text-main);
+}
+
+.ledger-toggle.is-on {
+  color: var(--accent-rose, #C85532);
+  border-color: var(--accent-rose, #C85532);
+  background: rgba(200, 85, 50, 0.08);
+}
+
+.ledger-toggle input { margin: 0; cursor: pointer; accent-color: var(--accent-rose, #C85532); }
+
+.empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
 /* ------------------------------------------------------------ Formulario */
 
 .ledger-tab .ledger-form-panel { padding: 1.5rem; }
@@ -211,6 +289,236 @@
 
 .ledger-form-grid .form-group { margin-bottom: 0; }
 .ledger-form-wide { grid-column: 1 / -1; }
+
+/* --------------------------------------------- Modal del asiento del diario
+
+   El formulario del Libro Diario se abre en un modal (el porqué está en el
+   template de `JournalTab.vue`). Acá va solo lo suyo: el velo, la tarjeta y
+   el encabezado ya los pone `src/style.css`.
+*/
+
+.journal-modal { max-width: 780px; }
+
+.journal-modal-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.journal-modal-sub strong {
+  font-family: var(--font-mono);
+  color: var(--text-sub);
+}
+
+.journal-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.journal-fieldset {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* Un rótulo por bloque en vez de once campos corridos: la fecha y el monto no
+   se leen igual que el área o el detalle, y agrupados se encuentran de un
+   vistazo. */
+.journal-legend {
+  padding: 0;
+  margin-bottom: 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* Tipo de movimiento: el signo del monto se elige acá. */
+.journal-type {
+  display: inline-flex;
+  gap: 0.2rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.journal-type-btn {
+  padding: 0.42rem 0.95rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.journal-type-btn:hover:not(.is-active) { color: var(--text-main); }
+
+/* El activo va con tinte y no con el color pleno: blanco sobre estos dos
+   verdes y rojos queda por debajo del contraste mínimo. */
+.journal-type-btn.is-in.is-active {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.45);
+}
+
+.journal-type-btn.is-out.is-active {
+  color: #B91C1C;
+  background: rgba(239, 68, 68, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.45);
+}
+
+:root[data-theme="dark"] .journal-type-btn.is-in.is-active { color: #6EE7B7; }
+:root[data-theme="dark"] .journal-type-btn.is-out.is-active { color: #FCA5A5; }
+
+/* Monto: el signo que va a quedar guardado, en su propio recuadro pegado al
+   campo. Montado encima del input (en absoluto) se superponía con el
+   marcador "0.00": el relleno que lo apartaba lo pisaba la densidad del
+   panel (`.admin-layout .form-input`, que gana por especificidad), así que
+   el signo y la cifra terminaban uno sobre el otro. Como grupo no hay
+   relleno que calcular: el ancho del signo lo pone su propio texto. */
+.journal-amount {
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+/* El realce del foco pasa del campo al grupo entero, que es lo que se ve
+   como un solo control. */
+.journal-amount:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(111, 129, 37, 0.18);
+  background: var(--bg-card-solid);
+}
+
+.journal-amount-sign {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 0.6rem;
+  border-right: 1px solid var(--border-color);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.journal-amount.is-in .journal-amount-sign { color: #10B981; }
+.journal-amount.is-out .journal-amount-sign { color: #EF4444; }
+
+/* Doble selector a propósito: el segundo le gana a `.admin-layout
+   .form-input` (0,2,0), que es quien pone el relleno y el borde del panel. */
+.journal-amount .journal-amount-input,
+.admin-layout .journal-amount .journal-amount-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  /* La mono tiene una caja de línea más baja que la del cuerpo, así que sin
+     esto el grupo quedaba ~6 px más corto que los campos de al lado (1,6 es
+     la proporción que da `line-height: normal` con la tipografía del panel). */
+  line-height: 1.6;
+}
+
+/* Las flechitas del campo numérico no sirven para un importe y le comen el
+   ancho justo donde se escribe la cifra. */
+.journal-amount-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.journal-amount-input::-webkit-outer-spin-button,
+.journal-amount-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.journal-in { color: #10B981; }
+.journal-out { color: #EF4444; }
+
+/* Comprobantes elegidos y todavía sin subir. */
+.journal-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.journal-files li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  padding: 0.2rem 0.3rem 0.2rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.75rem;
+  color: var(--text-sub);
+}
+
+.journal-file-name {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-file-remove {
+  padding: 0.12rem 0.28rem;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.journal-file-remove:hover {
+  color: var(--accent-rose);
+  background: var(--bg-card-hover);
+}
+
+/* El pie es fijo: guardar no puede quedar al final de un formulario largo. */
+.journal-modal-footer {
+  padding: 0.85rem 1.15rem;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-card-solid);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.journal-modal-error {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--accent-rose);
+}
+
+.journal-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
 
 .ledger-tab .ledger-submit-btn {
   width: auto;
@@ -429,15 +737,26 @@
 .receipt-cell {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.35rem;
   flex-wrap: wrap;
+  /* Dos miniaturas y el botón de agregar entran en una línea: con el ancho
+     justo, el "+" caía solo a un segundo renglón y estiraba la fila al doble.
+     Son 46 px cada uno más los dos huecos de 0,35rem. */
+  min-width: 150px;
 }
 
+/*
+ * La miniatura es VERTICAL y no cuadrada: un comprobante es la captura de un
+ * Yape o de una transferencia, siempre más alta que ancha. En un cuadrado de
+ * 34 px recortado al centro (`object-fit: cover`) lo que se veía era una tira
+ * del medio —ni el monto, ni la fecha, ni a quién se le pagó—, que es lo que
+ * el equipo reportó como "se ve cortado".
+ */
 .receipt-thumb {
   position: relative;
   display: inline-flex;
-  width: 34px;
-  height: 34px;
+  width: 46px;
+  height: 60px;
   border-radius: var(--radius-sm);
   overflow: hidden;
   border: 1px solid var(--border-color);
@@ -446,8 +765,17 @@
   background: var(--surface-2);
 }
 
-.receipt-thumb-link { display: block; width: 100%; height: 100%; }
-.receipt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.receipt-thumb-link {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+/* `contain` y no `cover`: entra el comprobante entero aunque sobre fondo. */
+.receipt-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 .receipt-thumb-pdf {
   display: flex;
@@ -501,8 +829,8 @@
 .receipt-thumb:hover .receipt-remove { display: block; }
 
 .receipt-add {
-  width: 34px;
-  height: 34px;
+  width: 46px;
+  height: 60px;
   border-radius: var(--radius-sm);
   border: 1px dashed var(--border-color);
   display: flex;
@@ -595,6 +923,13 @@
   .ledger-add-btn { margin-left: 0; width: 100%; }
   .ledger-summary-item { border-left: none; padding: 0.35rem 0.9rem; }
   .ledger-pagination { justify-content: center; }
+
+  /* El modal del asiento ocupa la pantalla y sus botones se apilan: el
+     principal queda abajo, bajo el pulgar. */
+  .journal-type { width: 100%; }
+  .journal-type-btn { flex: 1; }
+  .journal-modal-actions { flex-direction: column-reverse; }
+  .journal-modal-actions > button { width: 100%; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -638,4 +973,149 @@
   color: var(--primary);
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* --- Filtro de fechas (LedgerDateRange.vue) -------------------------------
+ * Los dos campos van juntos dentro de una sola cápsula, con el borde en el
+ * grupo y no en cada input: dos cajas sueltas con su propio marco dentro de
+ * una barra que ya tiene búsqueda, estado, banco y botones se leen como cuatro
+ * filtros y no como uno. El grupo se resalta cuando hay rango puesto, que es
+ * lo que evita olvidarse de que la tabla está recortada.
+ */
+.ledger-daterange {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.45rem;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: all 0.18s ease;
+}
+
+.ledger-daterange:hover { border-color: var(--border-strong); }
+
+.ledger-daterange.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(111, 129, 37, 0.14);
+}
+
+.ledger-daterange-icon { font-size: 0.8rem; line-height: 1; opacity: 0.75; }
+
+.ledger-daterange-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  cursor: pointer;
+}
+
+.ledger-daterange-label {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding-left: 0.1rem;
+}
+
+.ledger-daterange-input {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-main);
+  background: transparent;
+  border: none;
+  padding: 0 0.1rem;
+  cursor: pointer;
+  /* Un `<input type="date">` vacío mide distinto que uno con fecha: fijarle el
+     ancho evita que la barra entera se mueva al elegir el rango. */
+  min-width: 7.4rem;
+}
+
+.ledger-daterange-input:focus { outline: none; color: var(--primary); }
+
+.ledger-daterange-input::-webkit-calendar-picker-indicator {
+  opacity: 0.5;
+  cursor: pointer;
+}
+
+.ledger-daterange-input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
+.ledger-daterange-sep { font-size: 0.7rem; color: var(--text-muted); }
+
+.ledger-daterange-preset {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-sub);
+  background: var(--surface-2);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.22rem 0.3rem;
+  cursor: pointer;
+  max-width: 7.5rem;
+}
+
+.ledger-daterange-preset:focus { outline: none; border-color: var(--primary); }
+
+.ledger-daterange-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ledger-daterange-clear:hover { background: var(--accent-rose, #e11d48); color: #fff; }
+
+/* El aviso de que lo de abajo es un recorte y no el histórico completo. */
+.ledger-range-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.1rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.ledger-range-notice strong { color: var(--text-main); font-weight: 600; }
+
+.ledger-range-notice-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+  .ledger-daterange { flex-wrap: wrap; width: 100%; }
+  .ledger-daterange-field { flex: 1 1 42%; }
+  .ledger-daterange-input { min-width: 0; width: 100%; }
+  .ledger-daterange-preset { flex: 1 1 100%; max-width: none; }
+}
+
+/* Rótulo de un campo con una acción al lado ("Banco ＋ Agregar"). */
+.ledger-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.ledger-label-row .form-label {
+  margin-bottom: 0;
 }

@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
+import { stampFirstResponseByPhone } from './leadFirstResponse.js';
+import { ackHandoffFromReply } from './leadHandoffService.js';
 import { firstRealName } from './contactName.js';
 import { whatsappMediaDir } from '../middleware/upload.js';
 import { isAdFormMessage } from './whatsappBotService.js';
@@ -315,6 +317,33 @@ export class WhatsappMessageService {
       .ignore();
 
     if (!id) return { record: await this.getByMessageId(messageId), isNew: false };
+
+    /*
+     * El eco es un asesor contestando desde la app de WhatsApp Business o
+     * desde el inbox del proveedor: cuenta como primera respuesta tanto como
+     * un envío desde el panel. Sin esto, el lead atendido por fuera figuraría
+     * como sin atender.
+     *
+     * Vive ACÁ y no en `recordInboundMessage()`, donde estuvo pegado del
+     * 01/11 al 17/11/2026: ahí `sentAt` no existe, así que cada mensaje
+     * entrante nuevo lanzaba un ReferenceError justo después de guardarse. El
+     * webhook de YCloud lo atrapaba en silencio y nunca llegaba a abrir la
+     * ficha ni a llamar al bot: los leads solo recibían respuesta cuando el
+     * barrido de rescate los encontraba, minutos después ("Perdona la
+     * demora"). Además, un mensaje ENTRANTE no es una respuesta nuestra.
+     */
+    void stampFirstResponseByPhone(waId, { at: sentAt || new Date() });
+
+    /*
+     * Y si este contacto tenía una derivación sin atender, el eco ES la
+     * confirmación de atención: un asesor le escribió desde su celular. Se
+     * marca con `via: 'whatsapp_app'` porque acá no hay autor —el eco no
+     * dice qué usuario del panel lo mandó— y sin ese canal explícito un
+     * saliente sin autor se trata como Avan, que es lo que impide que la
+     * propia transferencia se acuse a sí misma. Ver `ackHandoffFromReply`.
+     */
+    void ackHandoffFromReply(waId, { via: 'whatsapp_app' });
+
     return { record: await this.getById(id), isNew: true };
   }
 
@@ -407,6 +436,20 @@ export class WhatsappMessageService {
       raw_payload: JSON.stringify(data)
     });
 
+    /*
+     * "A este lead ya se le contestó". Se marca acá —en el envío— y no
+     * calculándolo después sobre la tabla de mensajes porque el lead que
+     * importa es el que NO tiene conversación: el de formulario al que nadie
+     * escribió nunca, que es el que hay que poder listar como pendiente.
+     * No se espera: el mensaje ya salió, y lo que se perdería si falla es una
+     * marca de seguimiento (ver `leadFirstResponse.js`).
+     */
+    void stampFirstResponseByPhone(waId, { sentBy });
+    // Un saliente CON autor es una persona del panel: si este contacto tenía
+    // una derivación sin atender, acaba de atenderla. Un `sentBy` nulo es
+    // Avan y no acusa nada (ver `ackHandoffFromReply`).
+    void ackHandoffFromReply(waId, { sentBy, via: 'respuesta' });
+
     return this.getById(id);
   }
 
@@ -472,6 +515,12 @@ export class WhatsappMessageService {
       sent_by: sentBy || null,
       raw_payload: JSON.stringify(data)
     });
+
+    void stampFirstResponseByPhone(waId, { sentBy });
+    // Un saliente CON autor es una persona del panel: si este contacto tenía
+    // una derivación sin atender, acaba de atenderla. Un `sentBy` nulo es
+    // Avan y no acusa nada (ver `ackHandoffFromReply`).
+    void ackHandoffFromReply(waId, { sentBy, via: 'respuesta' });
 
     return this.getById(id);
   }
@@ -562,6 +611,8 @@ export class WhatsappMessageService {
       status: 'sent',
       raw_payload: JSON.stringify(sendData)
     });
+
+    void stampFirstResponseByPhone(waId);
 
     return this.getById(id);
   }

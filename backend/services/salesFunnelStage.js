@@ -65,6 +65,47 @@ const GRADUATED_STATUSES = ['cita_agendada', 'en_negociacion', 'ganado', 'perdid
  * acá y no comparar contra la constante de `server.js`: el que renombra la
  * columna no sabe que de eso cuelga la comisión de la setter.
  */
+/**
+ * Los status que significan "esta venta no va a pasar".
+ *
+ * Son dos y no uno: `perdido` es el desenlace del Funnel de Ventas y
+ * `descartado` el del Setter Funnel, y la pregunta "¿este lead se perdió?" se
+ * hace sobre leads de los dos tableros. Viven acá —con el resto del
+ * vocabulario de `leads.status`— y no en cada pantalla que los necesite, por lo
+ * mismo que `loadWinningStatuses()`: Campañas y el Reporte de Setters cuentan
+ * leads perdidos del mismo universo, y con una lista por módulo basta que
+ * alguien agregue un tercer desenlace para que cada uno diga un número
+ * distinto.
+ *
+ * A diferencia de los ganados, son una constante y no una consulta: no cuelgan
+ * de ninguna columna configurable (`funnel_columns.final` marca la etapa que
+ * gana, no la que pierde), así que no hay nada que leer de la base.
+ */
+export const LOST_STATUSES = new Set(['perdido', 'descartado']);
+
+/** ¿Este status es un desenlace de pérdida? */
+export function isLostStatus(status) {
+  return LOST_STATUSES.has(status);
+}
+
+/**
+ * La etapa que afirma que hay una cita.
+ *
+ * Es un desenlace fijo y no una columna configurable: `cita_agendada` es el que
+ * pone el bot al reservar el bloque, y de él cuelga que el reporte cuente una
+ * cita. Vive acá —el módulo del vocabulario de `leads.status`, igual que
+ * `LOST_STATUSES`— porque lo preguntan dos reportes: el de Campañas, para
+ * contar las citas de un anuncio, y el de Setters, para señalar las que no
+ * tienen reunión detrás. Con una copia en cada uno, el día que la etapa cambie
+ * de nombre una de las dos pantallas deja de contarlas sin que nada falle.
+ */
+export const APPOINTMENT_STATUSES = new Set(['cita_agendada']);
+
+/** ¿Este status dice que el lead tiene una cita? */
+export function isAppointmentStatus(status) {
+  return APPOINTMENT_STATUSES.has(status);
+}
+
 export async function loadWinningStatuses() {
   const columns = await db('funnel_columns').where({ final: true }).select('key');
   return new Set(['ganado', ...columns.map((column) => column.key)]);

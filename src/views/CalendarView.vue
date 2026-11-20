@@ -184,6 +184,34 @@
                 como sí lo es en una que el panel agendó por Meet.
               -->
               <span v-else-if="meeting.source !== 'google'" class="calendar-meeting-meta">Sin enlace de Meet</span>
+              <!--
+                El desenlace de la cita. Sale solo cuando la reunión YA pasó y no
+                está cancelada: antes no hay nada que registrar, y de una
+                cancelada no se puede decir que alguien no asistió — cancelar es
+                que la reunión no existe más.
+
+                Tres estados: con ninguno marcado, nadie lo registró todavía, y
+                eso es información (separa la reunión de la que no se sabe nada
+                de la que se sabe que se cayó). Volver a tocar la marca puesta
+                la borra, que es cómo se corrige un clic equivocado sin tener
+                que elegir el otro valor.
+              -->
+              <span v-if="needsAttendance(meeting)" class="calendar-meeting-attendance">
+                <button
+                  type="button"
+                  class="pill pill-toggle"
+                  :class="meeting.attendance === 'asistio' ? 'pill-success' : 'pill-neutral'"
+                  :title="attendanceTitle(meeting, 'asistio')"
+                  @click="setAttendance(meeting, 'asistio')"
+                >Asistió</button>
+                <button
+                  type="button"
+                  class="pill pill-toggle"
+                  :class="meeting.attendance === 'no_asistio' ? 'pill-danger' : 'pill-neutral'"
+                  :title="attendanceTitle(meeting, 'no_asistio')"
+                  @click="setAttendance(meeting, 'no_asistio')"
+                >No asistió</button>
+              </span>
             </div>
             <button
               type="button"
@@ -288,6 +316,7 @@
 </template>
 
 <script setup>
+import { meetingCreatedNotice } from '../meetingNotice.js';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { authState } from '../auth.js';
@@ -787,11 +816,60 @@ function openCreate(dateIso, time) {
 }
 
 function onCreated(data) {
-  notice.value = data.calendarError
-    ? `Reunión guardada, pero sin evento en Google Calendar (${data.calendarError})`
-    : '✅ Reunión agendada y enviada al calendario del asesor.';
-  setTimeout(() => { notice.value = ''; }, 8000);
+  notice.value = meetingCreatedNotice(data);
+  setTimeout(() => { notice.value = ''; }, 14000);
   load();
+}
+
+/**
+ * ¿Corresponde preguntar por la asistencia de esta reunión?
+ *
+ * Solo de la que ya empezó y no está cancelada. Antes de la hora no hay nada
+ * que registrar, y de una cancelada no se puede decir que alguien no asistió:
+ * cancelar es que la reunión no existe más, no asistir es que existió y el
+ * contacto no fue. Ofrecer el botón en los dos casos es cómo se llega a que
+ * las dos cifras signifiquen lo mismo.
+ */
+function needsAttendance(meeting) {
+  if (meeting.cancelled_at) return false;
+  return Date.parse(meeting.start_time) <= Date.now();
+}
+
+function attendanceTitle(meeting, valor) {
+  if (meeting.attendance === valor) return 'Quitar la marca (volver a "sin registrar")';
+  const quien = meeting.attendance_by_name ? ` · lo registró ${meeting.attendance_by_name}` : '';
+  return valor === 'asistio'
+    ? `Marcar que el contacto asistió${quien}`
+    : `Marcar que el contacto no asistió${quien}`;
+}
+
+/**
+ * Registra el desenlace de la reunión.
+ *
+ * Volver a tocar la marca puesta la borra: es cómo se corrige un clic
+ * equivocado sin obligar a elegir el otro valor, que sería afirmar algo que
+ * no se sabe.
+ *
+ * Se escribe la fila EN MEMORIA y no se recarga el mes: recargar devolvería
+ * al usuario al principio de la lista y volvería a pedir la disponibilidad
+ * del equipo, que es el pedido más caro de esta pantalla (misma razón que la
+ * píldora de estado del Libro Diario).
+ */
+async function setAttendance(meeting, valor) {
+  const attendance = meeting.attendance === valor ? null : valor;
+  try {
+    const response = await apiFetch(`/api/meetings/${meeting.id}/attendance`, {
+      method: 'PATCH',
+      body: JSON.stringify({ attendance })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo registrar la asistencia.');
+    meeting.attendance = data.attendance;
+    meeting.attendance_at = data.attendance_at;
+    meeting.attendance_by_name = data.attendance_by_name;
+  } catch (error) {
+    errorMessage.value = error.message;
+  }
 }
 
 async function remove(meeting) {
@@ -1119,6 +1197,13 @@ onBeforeUnmount(() => {
 .calendar-meeting-meta { font-size: 0.7rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.25rem; }
 .calendar-meeting-link { font-size: 0.74rem; color: var(--primary); text-decoration: none; }
 .calendar-meeting-link:hover { text-decoration: underline; }
+
+/*
+ * El desenlace de la cita. Las dos píldoras van en su propio renglón y no
+ * pegadas al resto de los metadatos: son lo único pulsable de la tarjeta, y
+ * mezcladas con el teléfono y el asesor se leen como otra etiqueta más.
+ */
+.calendar-meeting-attendance { display: flex; gap: 0.3rem; margin-top: 0.2rem; }
 
 /*
  * Cancelada en Google: se ve, pero se ve apagada. Sigue en el Calendario (y

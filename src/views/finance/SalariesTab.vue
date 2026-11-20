@@ -27,8 +27,16 @@
       </select>
       <select v-model="bancoFilter" class="ledger-filter" aria-label="Filtrar por banco">
         <option value="">Todo banco</option>
-        <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+        <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
       </select>
+      <!--
+        El rango corre sobre la fecha de la fila de arriba —la del pago suelto o
+        la del acuerdo—, igual que el filtro de estado y el de banco. Un acuerdo
+        que entra se muestra con TODOS sus pagos: la planilla de un proyecto se
+        lee completa o no se lee, y recortarle los pagos dejaría el porcentaje
+        de cada uno hablando de un acuerdo que no está entero a la vista.
+      -->
+      <LedgerDateRange v-model:desde="desde" v-model:hasta="hasta" noun="Fecha del pago" />
       <button type="button" class="btn-action-secondary ledger-add-btn" @click="agreementOpen ? (agreementOpen = false) : openAgreementForm()">
         {{ agreementOpen ? '✕ Cerrar' : '🏷️ Salario por proyecto' }}
       </button>
@@ -97,7 +105,7 @@
             <label class="form-label">Banco</label>
             <select v-model="form.banco" class="form-select">
               <option value="">— Sin especificar —</option>
-              <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+              <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
             </select>
           </div>
           <div class="form-group ledger-form-wide">
@@ -130,7 +138,13 @@
       </form>
     </section>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando salarios...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="🧾"
+      title="Cargando planilla y salarios…"
+      subtitle="Consultando acuerdos por proyecto y pagos registrados."
+    />
 
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Sin salarios registrados</p>
@@ -138,6 +152,16 @@
     </div>
 
     <template v-else>
+      <p v-if="hasDateRange" class="ledger-range-notice">
+        <span>
+          Mostrando solo la planilla fechada <strong>{{ rangeLabel(desde, hasta) }}</strong>,
+          y los totales cuentan únicamente eso.
+        </span>
+        <button type="button" class="ledger-range-notice-btn" @click="clearDateRange()">
+          Ver todo el histórico
+        </button>
+      </p>
+
       <dl class="ledger-summary">
         <div class="ledger-summary-item">
           <dt>Pagos</dt>
@@ -247,7 +271,7 @@
               <label class="form-label">Banco del que sale</label>
               <select v-model="paymentForm.banco" class="form-select">
                 <option value="">— Sin especificar —</option>
-                <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+                <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
               </select>
             </div>
             <div class="form-group ledger-form-wide">
@@ -284,7 +308,12 @@
 
       <div v-if="paged.length === 0" class="empty-state">
         <p class="empty-state-title">Ningún salario coincide</p>
-        <p class="empty-state-text">Ajusta la búsqueda o los filtros para volver a ver la planilla.</p>
+        <p class="empty-state-text">
+          <template v-if="hasDateRange">
+            No hay nada en la planilla fechado {{ rangeLabel(desde, hasta) }}.
+          </template>
+          Ajusta la búsqueda o los filtros para volver a ver la planilla.
+        </p>
         <button type="button" class="btn-secondary ledger-submit-btn" @click="clearFilters()">
           Quitar filtros
         </button>
@@ -390,43 +419,12 @@
                   <span v-else class="ledger-muted">—</span>
                 </td>
                 <td>
-                  <div class="receipt-cell">
-                    <span
-                      v-for="rcpt in row.receipts"
-                      :key="rcpt.id"
-                      class="receipt-thumb"
-                      :title="receiptTitle(rcpt)"
-                    >
-                      <a
-                        v-if="receiptUrls[rcpt.id]"
-                        :href="receiptUrls[rcpt.id]"
-                        target="_blank"
-                        rel="noopener"
-                        class="receipt-thumb-link"
-                      >
-                        <span v-if="isPdfReceipt(rcpt.mime_type, rcpt.original_name)" class="receipt-thumb-pdf">PDF</span>
-                        <img v-else :src="receiptUrls[rcpt.id]" alt="Comprobante" />
-                      </a>
-                      <span v-else-if="rcpt.missing" class="receipt-thumb-missing">!</span>
-                      <span v-else class="receipt-thumb-loading">…</span>
-                      <button
-                        type="button"
-                        class="receipt-remove"
-                        title="Eliminar comprobante"
-                        @click="removeReceipt(rcpt.id)"
-                      >✕</button>
-                    </span>
-                    <label class="receipt-add" title="Agregar comprobantes (imágenes o PDF)">
-                      <input
-                        type="file"
-                        accept="image/*,application/pdf"
-                        multiple
-                        hidden
-                        @change="(e) => uploadReceipts(row.id, e)"
-                      />
-                      +
-                    </label>
-                  </div>
+                  <ReceiptCell
+                    :receipts="row.receipts"
+                    :urls="receiptUrls"
+                    @upload="(e) => uploadReceipts(row.id, e)"
+                    @remove="removeReceipt"
+                  />
                 </td>
                 <td class="ledger-col-actions">
                   <div class="ledger-row-actions">
@@ -450,10 +448,14 @@
                    del monto sobre el acuerdo y lo calcula el servidor, así que
                    corregir el acuerdo lo recalcula solo. -->
               <template v-if="row.kind === 'acuerdo' && expanded[row.id]">
-                <tr v-for="child in row.children" :key="`child-${child.id}`" class="is-child">
+                <tr v-for="(child, i) in row.children" :key="`child-${child.id}`" class="is-child">
                   <td class="salary-child-cell">
+                    <!-- El pago se numera por su orden dentro del acuerdo, sin
+                         decir "de cuántos": el acuerdo guarda el monto, no un
+                         plan de cuotas, así que un denominador se leería como
+                         un total pactado que nadie escribió. -->
                     <span class="salary-child-mark" aria-hidden="true">↳</span>
-                    <span class="ledger-muted">Pago</span>
+                    <span class="ledger-muted">Pago {{ i + 1 }}</span>
                   </td>
                   <td class="ledger-date">{{ formatDate(child.fecha) }}</td>
                   <td>
@@ -483,43 +485,12 @@
                   <td>
                     <!-- El comprobante es de cada pago, no del acuerdo: es lo
                          que respalda que ESA parte salió. -->
-                    <div class="receipt-cell">
-                      <span
-                        v-for="rcpt in child.receipts"
-                        :key="rcpt.id"
-                        class="receipt-thumb"
-                        :title="receiptTitle(rcpt)"
-                      >
-                        <a
-                          v-if="receiptUrls[rcpt.id]"
-                          :href="receiptUrls[rcpt.id]"
-                          target="_blank"
-                          rel="noopener"
-                          class="receipt-thumb-link"
-                        >
-                          <span v-if="isPdfReceipt(rcpt.mime_type, rcpt.original_name)" class="receipt-thumb-pdf">PDF</span>
-                          <img v-else :src="receiptUrls[rcpt.id]" alt="Comprobante" />
-                        </a>
-                        <span v-else-if="rcpt.missing" class="receipt-thumb-missing">!</span>
-                        <span v-else class="receipt-thumb-loading">…</span>
-                        <button
-                          type="button"
-                          class="receipt-remove"
-                          title="Eliminar comprobante"
-                          @click="removeReceipt(rcpt.id)"
-                        >✕</button>
-                      </span>
-                      <label class="receipt-add" title="Agregar comprobantes (imágenes o PDF)">
-                        <input
-                          type="file"
-                          accept="image/*,application/pdf"
-                          multiple
-                          hidden
-                          @change="(e) => uploadReceipts(child.id, e)"
-                        />
-                        +
-                      </label>
-                    </div>
+                    <ReceiptCell
+                      :receipts="child.receipts"
+                      :urls="receiptUrls"
+                      @upload="(e) => uploadReceipts(child.id, e)"
+                      @remove="removeReceipt"
+                    />
                   </td>
                   <td class="ledger-col-actions">
                     <div class="ledger-row-actions">
@@ -569,10 +540,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
 import { currencySymbol, dayOnly, formatAmount, formatDate } from './format.js';
-import { isPdfReceipt, loadReceiptUrl } from './receiptImage.js';
-import { BANCOS } from './incomeOptions.js';
+import { loadReceiptUrl } from './receiptImage.js';
+import { bancos } from './incomeOptions.js';
 import { useLedgerTable } from './useLedgerTable.js';
+import LedgerDateRange from './LedgerDateRange.vue';
+import { rangeLabel } from './dateRange.js';
 import LedgerPagination from './LedgerPagination.vue';
+import ReceiptCell from './ReceiptCell.vue';
+import AppLoader from '../../components/AppLoader.vue';
 import './ledger.css';
 
 const props = defineProps({
@@ -615,8 +590,9 @@ watch(() => props.openFormTrigger, (val) => {
 });
 
 const {
-  search, estado: estadoFilter, banco: bancoFilter, sort, page, pageSize,
-  filtered, paged, totalPages, range, toggleSort, sortCaret, clearFilters
+  search, estado: estadoFilter, banco: bancoFilter, desde, hasta, sort, page, pageSize,
+  filtered, paged, totalPages, range, hasDateRange,
+  toggleSort, sortCaret, clearFilters, clearDateRange
 } = useLedgerTable(rows, {
   searchText: (row) => [row.persona, row.cargo, row.periodo, row.detalle, row.metodo_pago, row.banco]
     .filter(Boolean).join(' '),
@@ -723,12 +699,6 @@ function resetForm() {
   Object.assign(form, emptyForm());
   pendingFiles = [];
   if (fileInput.value) fileInput.value.value = '';
-}
-
-/** Texto del tooltip de una miniatura, avisando si el archivo ya no está. */
-function receiptTitle(rcpt) {
-  const name = rcpt.original_name || 'Comprobante';
-  return rcpt.missing ? `${name} — el archivo ya no está en el servidor` : name;
 }
 
 function openCreate() {
@@ -1117,16 +1087,21 @@ onBeforeUnmount(releaseUrls);
   background: var(--surface-1);
 }
 
+/*
+ * Sin `display: flex`. Puesto sobre un `<td>`, la celda deja de participar del
+ * modelo de tabla: no comparte el ancho de la columna con el resto de las
+ * filas, así que la primera columna de un pago no quedaba alineada con la de
+ * su acuerdo. Los dos elementos de adentro son en línea y se acomodan solos.
+ */
 .salary-child-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
   padding-left: 1.1rem !important;
+  white-space: nowrap;
 }
 
 .salary-child-mark {
   color: var(--text-muted);
   font-size: 0.8rem;
+  margin-right: 0.35rem;
 }
 
 .salary-percent {

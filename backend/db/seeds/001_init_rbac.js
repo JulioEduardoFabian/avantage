@@ -22,6 +22,7 @@ const PERMISOS = [
   { key: 'leads.manage_all', label: 'Ver y asignar todos los leads (jefe comercial)' },
   { key: 'leads.routing', label: 'Reparto automático de leads' },
   { key: 'leads.report', label: 'Reporte de Leads (trazabilidad de etapas)' },
+  { key: 'notices.send', label: 'Avisos al equipo (enviar notificaciones)' },
   { key: 'setter.view', label: 'Setter Funnel' },
   { key: 'setter.view_all', label: 'Ver todos los leads del Setter Funnel (no solo los asignados)' },
   { key: 'setter.filter_assignee', label: 'Filtrar el Setter Funnel por responsable (ver el tablero de cada persona)' },
@@ -40,6 +41,8 @@ const PERMISOS = [
   { key: 'collections.view', label: 'Cobranzas' },
   { key: 'finance.view', label: 'Finanzas (Ingresos y Egresos)' },
   { key: 'finance.verify', label: 'Verificar ingresos (Finanzas)' },
+  { key: 'reports.general', label: 'Reporte General (gerencia)' },
+  { key: 'reports.setters', label: 'Reporte de Setters (desempeño del equipo)' },
   { key: 'contracts.manage', label: 'Contratos' },
   { key: 'careers.manage', label: 'Catálogo de Carreras' },
   { key: 'roles.manage', label: 'Roles y Permisos' }

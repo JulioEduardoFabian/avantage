@@ -1,5 +1,25 @@
 import bcrypt from 'bcryptjs';
+import fs from 'fs';
+import path from 'path';
 import { db } from '../db/connection.js';
+import { avatarDir } from '../middleware/upload.js';
+
+/** Mínimo de caracteres de una contraseña del panel (el mismo del portal de clientes). */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/**
+ * La URL con la que el panel pide la foto de perfil de alguien, o `null` si no
+ * subió ninguna.
+ *
+ * Se arma en cada lectura y nunca se guarda: en la base vive solo el nombre del
+ * archivo, porque la carpeta base la decide `UPLOADS_DIR` y puede cambiar entre
+ * despliegues. Que sea una función y no una plantilla repetida en cada consulta
+ * es lo que hace que el avatar del navbar, el del equipo de un proyecto y el de
+ * la pantalla de Perfiles salgan siempre de la misma ruta.
+ */
+export function avatarUrlFor(filename) {
+  return filename ? `/uploads/avatars/${filename}` : null;
+}
 
 /**
  * Los permisos que definen al área comercial (ver `listCommercialTeam()`).
@@ -33,7 +53,8 @@ export class UserService {
     const user = await db('users')
       .join('roles', 'roles.id', 'users.role_id')
       .where('users.id', userId)
-      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role')
+      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role',
+        'users.avatar_filename')
       .first();
 
     if (!user) return null;
@@ -54,7 +75,14 @@ export class UserService {
       else permissions.delete(excepcion.key);
     }
 
-    return { ...user, permissions: [...permissions] };
+    /*
+     * El avatar viaja en el usuario de la sesión (no en el token: el token
+     * lleva permisos, que es lo que las rutas verifican) porque el navbar lo
+     * dibuja en todas las pantallas. Se entrega como URL y no como nombre de
+     * archivo para que ninguna vista tenga que saber de qué carpeta sale.
+     */
+    const { avatar_filename: avatarFilename, ...rest } = user;
+    return { ...rest, avatar_url: avatarUrlFor(avatarFilename), permissions: [...permissions] };
   }
 
   /**
@@ -65,7 +93,8 @@ export class UserService {
     const user = await db('users')
       .join('roles', 'roles.id', 'users.role_id')
       .where('users.id', userId)
-      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role')
+      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role',
+        'users.avatar_filename')
       .first();
     if (!user) return null;
 
@@ -82,7 +111,14 @@ export class UserService {
       .map((row) => [row.key, Boolean(row.granted)]));
 
     return {
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, role_id: user.role_id },
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        role_id: user.role_id,
+        avatar_url: avatarUrlFor(user.avatar_filename)
+      },
       permissions: todos.map((permiso) => {
         const fromRole = delRol.has(permiso.key);
         const override = excepciones.has(permiso.key) ? excepciones.get(permiso.key) : null;
@@ -156,7 +192,8 @@ export class UserService {
   async listUsers() {
     const usuarios = await db('users')
       .join('roles', 'roles.id', 'users.role_id')
-      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role_name', 'users.created_at')
+      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role_name',
+        'users.created_at', 'users.avatar_filename', 'users.password_changed_at')
       .orderBy('users.created_at', 'desc');
 
     const porRol = await db('role_permissions').select('role_id', 'permission_id');
@@ -173,13 +210,18 @@ export class UserService {
       delUsuario.get(fila.user_id).push(fila);
     }
 
-    return usuarios.map((usuario) => {
+    return usuarios.map(({ avatar_filename: avatarFilename, ...usuario }) => {
       const ids = new Set(delRol.get(usuario.role_id) || []);
       for (const fila of delUsuario.get(usuario.id) || []) {
         if (fila.granted) ids.add(fila.permission_id);
         else ids.delete(fila.permission_id);
       }
-      return { ...usuario, permission_count: ids.size, has_overrides: (delUsuario.get(usuario.id) || []).length > 0 };
+      return {
+        ...usuario,
+        avatar_url: avatarUrlFor(avatarFilename),
+        permission_count: ids.size,
+        has_overrides: (delUsuario.get(usuario.id) || []).length > 0
+      };
     });
   }
 
@@ -188,7 +230,13 @@ export class UserService {
    * proyecto (no requiere permiso de gestión de roles, a diferencia de listUsers).
    */
   async listDirectory() {
-    return db('users').select('id', 'name', 'email').orderBy('name', 'asc');
+    const usuarios = await db('users')
+      .select('id', 'name', 'email', 'avatar_filename')
+      .orderBy('name', 'asc');
+    return usuarios.map(({ avatar_filename: avatarFilename, ...usuario }) => ({
+      ...usuario,
+      avatar_url: avatarUrlFor(avatarFilename)
+    }));
   }
 
   /**
@@ -210,7 +258,8 @@ export class UserService {
   async listCommercialTeam() {
     const usuarios = await db('users')
       .join('roles', 'roles.id', 'users.role_id')
-      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role_name')
+      .select('users.id', 'users.name', 'users.email', 'users.role_id', 'roles.name as role_name',
+        'users.avatar_filename')
       .orderBy('users.name', 'asc');
 
     const porRol = await db('role_permissions')
@@ -251,7 +300,10 @@ export class UserService {
         }
         return claves.size > 0;
       })
-      .map(({ role_id, ...usuario }) => usuario);
+      .map(({ role_id, avatar_filename: avatarFilename, ...usuario }) => ({
+        ...usuario,
+        avatar_url: avatarUrlFor(avatarFilename)
+      }));
   }
 
   /**
@@ -295,5 +347,149 @@ export class UserService {
 
   async verifyPassword(user, password) {
     return bcrypt.compare(password, user.password_hash);
+  }
+
+  // ───────────────────────────── Mi perfil ──────────────────────────────────
+  //
+  // Lo que cada persona puede cambiar de su propia cuenta: su contraseña y su
+  // foto. El nombre, el correo y el rol NO están acá a propósito: de los tres
+  // cuelgan cosas de otros módulos (el correo es la identidad del login, el rol
+  // decide los permisos, y el nombre se copia como texto legible en
+  // `leads.assigned_to`, en los avisos y en los documentos emitidos), así que
+  // se gestionan desde Perfiles, que es donde se ve a quién afecta.
+
+  /**
+   * Los datos que muestra la pantalla "Mi perfil": quién es, qué rol tiene y
+   * cuándo cambió su contraseña por última vez.
+   *
+   * `password_changed_at` nulo no se traduce acá a ninguna frase: la pantalla
+   * es la que sabe cómo decirlo, y el servicio no inventa un dato que no está.
+   */
+  async getProfile(userId) {
+    const user = await db('users')
+      .join('roles', 'roles.id', 'users.role_id')
+      .where('users.id', userId)
+      .select(
+        'users.id', 'users.name', 'users.email', 'roles.name as role',
+        'users.avatar_filename', 'users.password_changed_at', 'users.created_at'
+      )
+      .first();
+    if (!user) return null;
+
+    const { avatar_filename: avatarFilename, ...rest } = user;
+    return { ...rest, avatar_url: avatarUrlFor(avatarFilename) };
+  }
+
+  /**
+   * Cambia la contraseña de la propia cuenta.
+   *
+   * Pide la **actual** aunque la sesión ya esté abierta, y no es un trámite de
+   * más: un panel que se queda abierto en una pantalla compartida permitiría
+   * que cualquiera que pase le cambie la contraseña al dueño y se quede con la
+   * cuenta. El token no se invalida (es stateless y dura 8 h), así que la
+   * sesión en curso sigue valiendo — es la contraseña lo que cambió, no la
+   * identidad.
+   *
+   * Lanza un Error con el texto que la pantalla puede mostrar tal cual; la ruta
+   * lo traduce a 400.
+   */
+  async changeOwnPassword(userId, currentPassword, newPassword) {
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) throw new Error('La cuenta ya no existe.');
+
+    if (!currentPassword || !(await bcrypt.compare(currentPassword, user.password_hash))) {
+      throw new Error('La contraseña actual no es correcta.');
+    }
+
+    return this.#writePassword(user, newPassword);
+  }
+
+  /**
+   * Le pone una contraseña nueva a otra cuenta, desde Perfiles
+   * (`roles.manage`).
+   *
+   * **No pide la contraseña actual**, porque quien la usa no la sabe: es la
+   * única forma de volver a entrar que tiene alguien que la olvidó — el panel
+   * interno no tiene recuperación por correo como el portal de clientes. Por lo
+   * mismo la decide la persona que administra y después se la entrega: el tope
+   * es el permiso, no un secreto compartido.
+   */
+  async setPasswordFor(userId, newPassword) {
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) throw new Error('La cuenta ya no existe.');
+    return this.#writePassword(user, newPassword);
+  }
+
+  /**
+   * El guardado en sí, con las dos reglas que valen para los dos caminos: el
+   * largo mínimo y que no sea la misma que ya tenía.
+   *
+   * Lo segundo no es cosmético: una pantalla que acepta "la cambié" sin
+   * cambiarla deja a la persona convencida de que rotó una contraseña
+   * filtrada. Van juntas acá y no en cada llamador por lo mismo que cualquier
+   * regla compartida: puestas en los dos, al tercer camino se olvidan.
+   */
+  async #writePassword(user, newPassword) {
+    const password = String(newPassword || '');
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      throw new Error(`La contraseña nueva debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`);
+    }
+    if (await bcrypt.compare(password, user.password_hash)) {
+      throw new Error('La contraseña nueva es igual a la actual.');
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db('users').where({ id: user.id }).update({
+      password_hash: passwordHash,
+      password_changed_at: db.fn.now()
+    });
+
+    return { changed_at: new Date().toISOString() };
+  }
+
+  /**
+   * Guarda la foto de perfil que acaba de subirse y **borra la anterior**.
+   *
+   * Lo segundo importa porque el nombre del archivo es la llave con la que se
+   * sirve (la ruta no pide sesión): dejar la vieja en disco deja su URL
+   * funcionando para siempre, y el que la tenía copiada seguiría viendo la foto
+   * que la persona acaba de reemplazar. El borrado nunca puede tumbar el
+   * cambio: si el archivo viejo ya no está —un despliegue que no conservó
+   * `uploads/`— lo que importa es que la fila quede apuntando al nuevo.
+   */
+  async setAvatar(userId, filename) {
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) throw new Error('La cuenta ya no existe.');
+
+    await db('users').where({ id: userId }).update({ avatar_filename: filename });
+    this.#removeAvatarFile(user.avatar_filename);
+
+    return { avatar_url: avatarUrlFor(filename) };
+  }
+
+  /** Quita la foto de perfil: la cuenta vuelve a verse con sus iniciales. */
+  async removeAvatar(userId) {
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) throw new Error('La cuenta ya no existe.');
+    if (!user.avatar_filename) return { avatar_url: null };
+
+    await db('users').where({ id: userId }).update({ avatar_filename: null });
+    this.#removeAvatarFile(user.avatar_filename);
+
+    return { avatar_url: null };
+  }
+
+  #removeAvatarFile(filename) {
+    if (!filename) return;
+    try {
+      // `path.basename` por si en la columna quedara algo con separadores: lo
+      // que se borra tiene que estar dentro de la carpeta de avatares y en
+      // ningún otro sitio.
+      fs.unlinkSync(path.join(avatarDir, path.basename(filename)));
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn('⚠️ No se pudo borrar la foto de perfil anterior:', error.message);
+      }
+    }
   }
 }

@@ -101,12 +101,21 @@ export function requireClientAuth(req, res, next) {
  * identifica a qué usuario pertenece la conexión cuando Google redirige de
  * vuelta a /api/google/callback, un request de navegador plano que no lleva
  * el header Authorization de la sesión.
+ *
+ * `target` dice QUÉ se está conectando, porque el callback es uno solo y las
+ * conexiones son dos cosas distintas: la de cada asesor con su propio
+ * calendario (`'user'`, la de siempre) y la cuenta única de la empresa para el
+ * calendario de Entregables (`'deliverables'`). Va firmado con el resto del
+ * state y no como parámetro suelto en la URL de retorno: de él depende en qué
+ * tabla se guarda el token, así que no puede venir de algo que se pueda
+ * escribir a mano.
  */
-export function signGoogleOAuthState(userId) {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '10m' });
+export function signGoogleOAuthState(userId, target = 'user') {
+  return jwt.sign({ userId, target }, JWT_SECRET, { expiresIn: '10m' });
 }
 
+/** El `state` ya verificado: `{ userId, target }`. */
 export function verifyGoogleOAuthState(state) {
   const payload = jwt.verify(state, JWT_SECRET);
-  return payload.userId;
+  return { userId: payload.userId, target: payload.target || 'user' };
 }

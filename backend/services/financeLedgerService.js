@@ -2,6 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db/connection.js';
 import { financeReceiptDir } from '../middleware/upload.js';
+import { MAX_WINDOW_MONTHS, resolveRange, sqlWindow } from './financeDateRange.js';
+import { isClosedDeal } from './dealClosure.js';
+import { loadWinningStatuses } from './salesFunnelStage.js';
 
 const MESES = [
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
@@ -30,6 +33,30 @@ export const EMITIR_OPCIONES = ['factura', 'boleta', 'nrus', 'rxh', 'c. interno'
  * el módulo (ingresos, libro diario, gastos fijos, salarios y el resumen).
  */
 export const BANCOS = ['BCP', 'BCP Finanzas', 'Interbank', 'Efectivo'];
+
+/**
+ * Áreas de la empresa que el Libro Diario propone de fábrica. El equipo suma
+ * las suyas desde la pestaña (`finance_options`, ver `financeOptionService`).
+ */
+export const DEFAULT_AREAS = ['Ventas', 'Marketing', 'Operaciones', 'Administración', 'Recursos Humanos', 'Finanzas'];
+
+/**
+ * Las cuentas vigentes: las de fábrica más las que el equipo agregó, en ese
+ * orden. Es la lista con la que se valida un ingreso o un asiento y con la que
+ * el Resumen arma una tarjeta por cuenta: si la validación aceptara un banco
+ * que el Resumen no conoce, su dinero contaría en el total y no en ninguna
+ * tarjeta ni en la gráfica mensual.
+ */
+export async function loadBanks() {
+  try {
+    const rows = await db('finance_options').where({ kind: 'banco' }).orderBy('id', 'asc').select('label');
+    return [...BANCOS, ...rows.map((r) => r.label).filter((l) => !BANCOS.includes(l))];
+  } catch (error) {
+    // Sin la tabla (migración pendiente) siguen valiendo las de fábrica.
+    if (error?.code === 'ER_NO_SUCH_TABLE') return [...BANCOS];
+    throw error;
+  }
+}
 export const MONEDAS = ['soles', 'dolares'];
 /**
  * Ciclo de vida de un ingreso. "verificado" es el único estado que suma en las
@@ -151,6 +178,34 @@ export async function attachReceipts(rows, table, foreignKey) {
 }
 
 /**
+ * El resumen cuando el rango pedido no contiene ningún mes (las dos fechas al
+ * revés). Devuelve la MISMA forma que `getOverview()` —con `byBank` en cero y
+ * las listas vacías— en vez de un error o de campos ausentes: la pantalla lee
+ * `data.totals.egresosPorOrigen.libro` antes de la primera respuesta, y un
+ * `undefined` ahí se ve como una tarjeta rota y no como "no hay nada en este
+ * período".
+ */
+function emptyOverview({ from = '', to = '', banks = BANCOS } = {}) {
+  return {
+    months: [],
+    banks,
+    rango: { desde: from || '', hasta: to || '', recortado: true },
+    ingresos: [],
+    egresos: [],
+    totals: {
+      ingresos: 0,
+      egresos: 0,
+      balance: 0,
+      egresosPorOrigen: { libro: 0, salarios: 0, comisiones: 0, itf: 0 },
+      pendientes: { salarios: 0, comisiones: 0, total: 0 },
+      totalTransactions: 0,
+      byBank: banks.map((banco) => ({ banco, ingresos: 0, egresos: 0 }))
+    },
+    recentTransactions: []
+  };
+}
+
+/**
  * Libro contable de Finanzas: ingresos (con comprobantes hijos), libro diario y
  * gastos fijos. Cada registro lleva un código autogenerado por día y las
  * pestañas de ingresos/diario calculan el ITF automáticamente.
@@ -262,12 +317,44 @@ export class FinanceLedgerService {
         'leads.deal_cancelled_at as lead_deal_cancelled_at',
         'leads.deal_cancelled_reason as lead_deal_cancelled_reason',
         'cancelador.name as lead_deal_cancelled_by_name',
+        'leads.status as lead_status',
         'users.name as created_by_name'
       )
       .orderBy('finance_income.fecha', 'desc')
       .orderBy('finance_income.id', 'desc');
 
+    await this.#markClosedDeals(rows);
     return attachReceipts(rows, 'finance_income_receipts', 'income_id');
+  }
+
+  /**
+   * Escribe en cada cuota `lead_deal_closed`: si su lead es una venta cerrada
+   * o un trato que todavía no se ganó (ver `dealClosure.js`). Se deriva en
+   * cada lectura y no se guarda, como `is_locked` de un hito: el lead pasa a
+   * Ganado desde otra pantalla. Una cuota sin lead no es "sin cerrar": nadie
+   * puede ganar un lead que no existe, así que se lista siempre.
+   */
+  async #markClosedDeals(rows) {
+    const leadIds = [...new Set(rows.map((row) => row.lead_id).filter(Boolean))];
+    if (!leadIds.length) {
+      for (const row of rows) row.lead_deal_closed = true;
+      return;
+    }
+    const [winning, projects] = await Promise.all([
+      loadWinningStatuses(),
+      db('projects').whereIn('lead_id', leadIds).distinct('lead_id')
+    ]);
+    const withProject = new Set(projects.map((p) => p.lead_id));
+    const withMoney = new Set(
+      rows.filter((row) => row.lead_id && row.estado !== 'pendiente').map((row) => row.lead_id)
+    );
+    for (const row of rows) {
+      row.lead_deal_closed = !row.lead_id || isClosedDeal({
+        status: row.lead_status,
+        hasProject: withProject.has(row.lead_id),
+        hasMoney: withMoney.has(row.lead_id)
+      }, winning);
+    }
   }
 
   /** Cuotas de UN lead/proyecto (portal de clientes: no la tabla completa de Finanzas). */
@@ -309,11 +396,11 @@ export class FinanceLedgerService {
    * siempre de la fecha; el ITF se propone con la fórmula y se puede corregir,
    * ver `resolveItf`).
    */
-  #normalizeIncome({ fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario }) {
+  #normalizeIncome({ fecha, dueDate, leadId, cuota, emitir, monto, itf, banco, estado, tributario }, banks = BANCOS) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!CUOTAS.includes(cuota)) throw new Error('La cuota debe ser 1era, 2da o 3era.');
     if (!EMITIR_OPCIONES.includes(emitir)) throw new Error('El campo "emitir" no es válido.');
-    if (!BANCOS.includes(banco)) throw new Error(`El banco debe ser uno de: ${BANCOS.join(', ')}.`);
+    if (!banks.includes(banco)) throw new Error(`El banco debe ser uno de: ${banks.join(', ')}.`);
     const numericMonto = Number(monto);
     if (!Number.isFinite(numericMonto) || numericMonto <= 0) {
       throw new Error('El monto debe ser un número mayor a 0.');
@@ -505,7 +592,7 @@ export class FinanceLedgerService {
   }
 
   async createIncome({ createdBy, isInitialPayment, ...fields }) {
-    const values = this.#normalizeIncome(fields);
+    const values = this.#normalizeIncome(fields, await loadBanks());
     await this.#assertWithinLeadTotal(values.lead_id, values.monto);
     const [id] = await db('finance_income').insert({
       ...values,
@@ -525,7 +612,7 @@ export class FinanceLedgerService {
   async updateIncome(id, fields) {
     const existing = await db('finance_income').where({ id }).first();
     if (!existing) return null;
-    const values = this.#normalizeIncome(fields);
+    const values = this.#normalizeIncome(fields, await loadBanks());
     await this.#assertWithinLeadTotal(values.lead_id, values.monto, id);
     if (values.lead_id && values.lead_id !== existing.lead_id) {
       values.code = await this.#codeForIncome(values.lead_id, values.fecha);
@@ -584,6 +671,7 @@ export class FinanceLedgerService {
     if (!leadId) throw new Error('El cronograma necesita un lead asociado.');
     const lead = await db('leads').where({ id: leadId }).first();
     if (!lead) throw new Error('Lead no encontrado.');
+    const banks = await loadBanks();
 
     const entries = (Array.isArray(installments) ? installments : []).map((item, index) => {
       const monto = Number(item.monto);
@@ -596,7 +684,7 @@ export class FinanceLedgerService {
         monto: Math.round(monto * 100) / 100,
         dueDate: dayOnly(item.dueDate),
         emitir: EMITIR_OPCIONES.includes(item.emitir) ? item.emitir : null,
-        banco: BANCOS.includes(item.banco) ? item.banco : null
+        banco: banks.includes(item.banco) ? item.banco : null
       };
     });
 
@@ -835,10 +923,10 @@ export class FinanceLedgerService {
   }
 
   /** Valida y normaliza los campos editables de un asiento (alta y edición). */
-  #normalizeJournal({ fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino }) {
+  #normalizeJournal({ fecha, detalle, monto, itf, moneda, banco, estado, area, asientoPorDestino }, banks = BANCOS) {
     if (!fecha) throw new Error('La fecha es obligatoria.');
     if (!detalle || !detalle.trim()) throw new Error('El detalle es obligatorio.');
-    if (!BANCOS.includes(banco)) throw new Error(`El banco debe ser uno de: ${BANCOS.join(', ')}.`);
+    if (!banks.includes(banco)) throw new Error(`El banco debe ser uno de: ${banks.join(', ')}.`);
     const numericMonto = Number(monto);
     if (!Number.isFinite(numericMonto)) throw new Error('El monto debe ser un número.');
 
@@ -858,7 +946,7 @@ export class FinanceLedgerService {
   async createJournal({ receipts, createdBy, ...fields }) {
     const files = receipts || [];
     try {
-      const values = this.#normalizeJournal(fields);
+      const values = this.#normalizeJournal(fields, await loadBanks());
       const [id] = await db('finance_journal').insert({
         ...values,
         code: await nextCode('finance_journal', values.fecha),
@@ -886,7 +974,7 @@ export class FinanceLedgerService {
       return null;
     }
     try {
-      await db('finance_journal').where({ id }).update(this.#normalizeJournal(fields));
+      await db('finance_journal').where({ id }).update(this.#normalizeJournal(fields, await loadBanks()));
       const rows = receiptRowsFromFiles(files, 'journal_id', id);
       if (rows.length > 0) await db('finance_journal_receipts').insert(rows);
       return this.getJournalById(id);
@@ -1004,16 +1092,31 @@ export class FinanceLedgerService {
 
   /**
    * Panel de control de pago mensual: cada gasto fijo con el estado
-   * (pagado/pendiente) de los últimos `monthsBack` meses.
+   * (pagado/pendiente) de un tramo de meses.
+   *
+   * Dos formas de pedir el tramo, y `from`/`to` manda si viene: los meses de un
+   * rango de fechas concreto (lo que elige el filtro "desde / hasta" de la
+   * pestaña) o los últimos `monthsBack` meses, que es como se pedía antes y
+   * sigue siendo el valor por defecto. La ventana se recorta a 24 columnas
+   * —una matriz más ancha no se lee— y, si el rango es más largo, se devuelven
+   * los **últimos** 24: de un tramo largo lo que se revisa es cómo viene
+   * terminando. `periods` viaja en la respuesta, así que la pantalla dibuja los
+   * meses que de verdad se consultaron y no los que pidió.
    */
-  async getFixedExpensesPanel({ monthsBack = 6 } = {}) {
-    const months = Math.min(Math.max(Number(monthsBack) || 6, 1), 24);
-    const now = new Date();
-    const periods = [];
-    for (let i = months - 1; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      periods.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-    }
+  async getFixedExpensesPanel({ monthsBack = 6, from = null, to = null } = {}) {
+    const porRango = resolveRange({ from, to });
+    const periods = porRango?.periods || (() => {
+      const months = Math.min(Math.max(Number(monthsBack) || 6, 1), MAX_WINDOW_MONTHS);
+      const now = new Date();
+      const out = [];
+      for (let i = months - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      }
+      return out;
+    })();
+
+    if (periods.length === 0) return { periods: [], expenses: [] };
 
     const expenses = await db('finance_fixed_expenses')
       .select('id', 'code', 'concepto', 'metodo_pago', 'banco')
@@ -1098,31 +1201,74 @@ export class FinanceLedgerService {
    * falsearía el balance; lo devengado y sin pagar viaja aparte en
    * `totals.pendientes` para poder mostrarlo como obligación.
    *
-   * La ventana de meses es del GRÁFICO (la evolución mensual) y nada más. El
-   * saldo de cada cuenta y los totales se calculan sobre TODO el dinero
-   * confirmado, sin ventana: un saldo recortado a los últimos N meses no es un
-   * saldo — deja afuera la plata que entró antes y sigue en la cuenta, y la
-   * fechada más adelante (una cuota adelantada al mes que viene) se caía del
-   * grid en silencio, así que la tarjeta de BCP Finanzas decía S/ 700.00 con
-   * S/ 3,700.00 verificados en INGRESOS.
+   * **El rango de fechas (`from`/`to`) recorta el PERÍODO y no el saldo.** Es
+   * la distinción que sostiene toda la pantalla:
+   *
+   *  - Lo que recorta: la evolución mensual, los totales de ingresos y egresos
+   *    con su desglose, el balance del período, el conteo de movimientos y los
+   *    últimos movimientos. Son preguntas sobre un tramo de tiempo ("¿cuánto
+   *    entró en octubre?") y sin el recorte no se pueden contestar.
+   *  - Lo que NO recorta nunca: el saldo acumulado de cada cuenta
+   *    (`totals.byBank`). Un saldo recortado a un rango no es un saldo — deja
+   *    afuera la plata que entró antes y sigue en la cuenta, y la fechada más
+   *    adelante (una cuota adelantada al mes que viene) se caería del grid en
+   *    silencio: así la tarjeta de BCP Finanzas decía S/ 700.00 con S/ 3,700.00
+   *    verificados en INGRESOS. La pantalla ya lo rotula "sin recorte de
+   *    fechas", y `rango` viaja en la respuesta para que pueda explicarlo.
+   *
+   * **Sin rango, la pantalla dice exactamente lo que decía antes del filtro**:
+   * los totales cuentan todo el histórico confirmado y la ventana de meses es
+   * solo del gráfico. Esa es la razón de que el rango arranque vacío en vez de
+   * traer un mes puesto de fábrica — un recorte que nadie pidió cambia en
+   * silencio el número por el que se entra a esta pantalla.
    */
-  async getOverview({ monthsBack = 6 } = {}) {
-    const months = Math.min(Math.max(Number(monthsBack) || 6, 1), 24);
-    const now = new Date();
-    const monthKeys = [];
-    for (let i = months - 1; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-    }
-    const earliest = `${monthKeys[0]}-01`;
-    // Fin de la ventana: el primer día del mes siguiente al último del gráfico.
-    // Se escribe en la consulta en vez de dejar que el grid descarte lo que no
-    // entra, que es lo que escondía el problema.
-    const afterLast = (() => {
-      const [y, m] = monthKeys[monthKeys.length - 1].split('-').map(Number);
-      const d = new Date(y, m, 1);
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  async getOverview({ monthsBack = 6, from = null, to = null } = {}) {
+    /*
+     * El rango que de verdad se aplica. `resolveRange()` cierra el extremo que
+     * la pantalla dejó abierto (sin "hasta", hasta hoy) y recorta el tramo a 24
+     * columnas; devuelve null si no se pidió ningún rango, y ahí los meses del
+     * gráfico son los últimos `monthsBack`, como siempre.
+     */
+    const porRango = resolveRange({ from, to });
+    const monthKeys = porRango?.periods || (() => {
+      const months = Math.min(Math.max(Number(monthsBack) || 6, 1), MAX_WINDOW_MONTHS);
+      const now = new Date();
+      const out = [];
+      for (let i = months - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      }
+      return out;
     })();
+
+    /*
+     * Un rango imposible (las dos fechas al revés) devuelve la misma forma
+     * vacía en vez de un error: la pantalla ya está pintada y lo que
+     * corresponde es que diga "nada en este período", no que se rompa.
+     */
+    const ventana = monthKeys.length > 0
+      ? sqlWindow({ from: porRango?.desde, to: porRango?.hasta, periods: monthKeys })
+      : null;
+    const BANKS = await loadBanks();
+    if (!ventana) return emptyOverview({ from, to, banks: BANKS });
+
+    const earliest = ventana.from;
+    // Fin de la ventana: el día SIGUIENTE al último del rango (o el primero del
+    // mes siguiente al último del gráfico). Se compara con `<` para que el
+    // "hasta" incluya su propio día, y se escribe en la consulta en vez de
+    // dejar que el grid descarte lo que no entra, que es lo que escondía el
+    // problema del saldo recortado.
+    const afterLast = ventana.before;
+    /*
+     * ¿Hay recorte de período? De esto cuelga la única diferencia real entre
+     * las dos lecturas: con rango, los totales y el conteo cuentan la ventana;
+     * sin rango, todo el histórico confirmado, que es como venía siendo.
+     */
+    const recortado = Boolean(porRango);
+    /** Aplica la ventana de fechas a una consulta, solo si hay recorte pedido. */
+    const enPeriodo = (query, columna) => (recortado
+      ? query.where(columna, '>=', earliest).where(columna, '<', afterLast)
+      : query);
 
     const incomeRows = await db('finance_income')
       .select('banco')
@@ -1192,23 +1338,25 @@ export class FinanceLedgerService {
      * evolución mensual aunque sí en el total.
      */
     const commissionRows = await db('sales_commissions')
+      .select('banco')
       .select(db.raw("DATE_FORMAT(paid_at, '%Y-%m') as month"))
       .select(db.raw('SUM(ABS(monto)) as egreso'))
       .where('estado', 'pagado')
       .whereNotNull('paid_at')
       .where('paid_at', '>=', earliest)
       .where('paid_at', '<', afterLast)
-      .groupBy('month');
+      .groupBy('banco', 'month');
 
     /*
-     * Una comisión no tiene cuenta bancaria y un salario puede no tenerla, y
-     * la grilla mensual está indexada por cuenta: sin este cajón, ese dinero
-     * se caía del gráfico en silencio (es la misma razón por la que el TOTAL
+     * Un salario o una comisión pueden no tener cuenta —el campo es opcional en
+     * los dos, y las comisiones de antes del 31/10/2026 nacieron sin él—, y la
+     * grilla mensual está indexada por cuenta: sin este cajón, ese dinero se
+     * caía del gráfico en silencio (es la misma razón por la que el TOTAL
      * cuenta lo que no tiene banco asignado). No entra en `banks` ni en las
      * tarjetas por cuenta, que reparten solo lo que sí cayó en una conocida.
      */
     const SIN_CUENTA = 'Sin cuenta';
-    const seriesKeys = [...BANCOS, SIN_CUENTA];
+    const seriesKeys = [...BANKS, SIN_CUENTA];
     const emptyGrid = () => Object.fromEntries(
       seriesKeys.map((b) => [b, Object.fromEntries(monthKeys.map((m) => [m, 0]))])
     );
@@ -1241,8 +1389,9 @@ export class FinanceLedgerService {
       }
     }
     for (const r of commissionRows) {
-      if (egresos[SIN_CUENTA]?.[r.month] !== undefined) {
-        egresos[SIN_CUENTA][r.month] += Number(r.egreso) || 0;
+      const cuenta = cuentaDe(r.banco);
+      if (egresos[cuenta]?.[r.month] !== undefined) {
+        egresos[cuenta][r.month] += Number(r.egreso) || 0;
       }
     }
 
@@ -1268,30 +1417,6 @@ export class FinanceLedgerService {
       .where('estado', 'pagado')
       .groupBy('banco');
 
-    const saldos = Object.fromEntries(BANCOS.map((b) => [b, { ingresos: 0, egresos: 0 }]));
-    let sumaIngresos = 0;
-    let sumaEgresos = 0;
-    // El total suma TODO lo confirmado —incluido lo que no tiene banco asignado,
-    // que es dinero igual y así lo cuenta la pestaña INGRESOS—; el desglose por
-    // cuenta solo reparte lo que sí cayó en una de las cuentas conocidas.
-    const acumular = (banco, ingreso, egreso) => {
-      sumaIngresos += ingreso;
-      sumaEgresos += egreso;
-      if (saldos[banco]) {
-        saldos[banco].ingresos += ingreso;
-        saldos[banco].egresos += egreso;
-      }
-    };
-    for (const r of incomeByBank) acumular(r.banco, Number(r.total) || 0, 0);
-    for (const r of journalByBank) {
-      acumular(r.banco, Number(r.ingreso) || 0, Number(r.egreso) || 0);
-    }
-
-    // El egreso del libro, apartado antes de sumarle la planilla y las
-    // comisiones: el desglose de la tarjeta de Egresos sale de acá, y sin
-    // separarlo no habría forma de ver de dónde viene cada parte del total.
-    const egresoLibro = sumaEgresos;
-
     // Un salario pagado desde BCP es plata que salió de BCP: resta también en
     // la tarjeta de esa cuenta, no solo en el total.
     const salaryByBank = await db('finance_salaries')
@@ -1301,35 +1426,98 @@ export class FinanceLedgerService {
       .where('estado', 'pagado')
       .where('kind', 'pago')
       .groupBy('banco');
-    for (const r of salaryByBank) acumular(r.banco, 0, Number(r.egreso) || 0);
-    const egresoSalarios = sumaEgresos - egresoLibro;
 
-    // Las comisiones no tienen cuenta: restan del total, no de una tarjeta.
-    const comisionesPagadas = await db('sales_commissions')
+    // Una comisión pagada desde BCP es plata que salió de BCP: resta en la
+    // tarjeta de esa cuenta igual que un salario. Va agrupada por banco y no
+    // como un total suelto para que el saldo y el total del período sigan
+    // saliendo de la MISMA consulta (ver `fuente`): dos consultas sobre el
+    // mismo universo terminan contando universos distintos.
+    const commissionByBank = await db('sales_commissions')
+      .select('banco')
       .select(db.raw('SUM(ABS(monto)) as egreso'))
       .where('estado', 'pagado')
-      .first();
-    const egresoComisiones = Number(comisionesPagadas?.egreso) || 0;
-    acumular(null, 0, egresoComisiones);
+      .groupBy('banco');
 
     /*
+     * El saldo de cada cuenta: TODO el dinero confirmado, sin ventana ni
+     * recorte de fechas, por la razón de la cabecera (un saldo recortado no es
+     * un saldo). Solo reparte lo que cayó en una de las cuentas conocidas; lo
+     * que no tiene banco asignado es dinero igual y entra en los totales, pero
+     * no hay tarjeta a la que sumarlo.
+     */
+    const saldos = Object.fromEntries(BANKS.map((b) => [b, { ingresos: 0, egresos: 0 }]));
+    const acumularSaldo = (banco, ingreso, egreso) => {
+      if (!saldos[banco]) return;
+      saldos[banco].ingresos += ingreso;
+      saldos[banco].egresos += egreso;
+    };
+    for (const r of incomeByBank) {
+      // El ITF de esa transferencia no llegó nunca a la cuenta: se lo quedó el
+      // banco, y lo descuenta de ESA cuenta y no de un fondo común.
+      acumularSaldo(r.banco, Number(r.total) || 0, Number(r.itf) || 0);
+    }
+    for (const r of journalByBank) {
+      acumularSaldo(r.banco, Number(r.ingreso) || 0, (Number(r.egreso) || 0) + (Number(r.itf) || 0));
+    }
+    for (const r of salaryByBank) acumularSaldo(r.banco, 0, Number(r.egreso) || 0);
+    for (const r of commissionByBank) acumularSaldo(r.banco, 0, Number(r.egreso) || 0);
+
+    /*
+     * De dónde salen los totales del período. Sin recorte de fechas son las
+     * MISMAS filas agrupadas por cuenta que alimentan el saldo —todo el
+     * histórico confirmado, que es lo que esta pantalla decía antes de que
+     * existiera el filtro—; con recorte, las que ya trajo la grilla mensual,
+     * que cubren exactamente la ventana pedida. Reusarlas en vez de repetir las
+     * cuatro consultas con un `where` más no es solo ahorro: dos consultas
+     * distintas sobre el mismo universo terminan contando universos distintos,
+     * y entonces la curva del gráfico y la tarjeta de arriba discrepan.
+     *
+     * Las comisiones son el único caso en que los dos caminos no cuentan lo
+     * mismo, y es correcto: la grilla exige `paid_at` porque sin esa fecha no
+     * hay mes (ni período) al que asignar el egreso, mientras que el total
+     * histórico las cuenta igual.
+     */
+    const fuente = recortado
+      ? { income: incomeRows, journal: journalRows, salary: salaryRows, commission: commissionRows }
+      : {
+        income: incomeByBank,
+        journal: journalByBank,
+        salary: salaryByBank,
+        commission: commissionByBank
+      };
+
+    let sumaIngresos = 0;
+    // El egreso del libro, apartado del resto: el desglose de la tarjeta de
+    // Egresos sale de acá, y sin separarlo no habría forma de ver de dónde
+    // viene cada parte del total.
+    let egresoLibro = 0;
+    let egresoSalarios = 0;
+    let egresoComisiones = 0;
+    /*
      * El ITF: la comisión que el banco cobra por cada transferencia. Es dinero
-     * que nunca llegó a la cuenta (o que salió de ella) y hasta ahora se
-     * mostraba como una cifra suelta en cada pestaña sin restar en ningún
-     * lado, así que el Balance Neto en Caja daba de más.
+     * que nunca llegó a la cuenta (o que salió de ella) y antes se mostraba
+     * como una cifra suelta en cada pestaña sin restar en ningún lado, así que
+     * el Balance Neto en Caja daba de más.
      *
      * Cuenta el MISMO universo que el resto del resumen —ingresos verificados
      * y asientos pagados en soles—: el ITF de una cuota que todavía no se
-     * verificó no se cobró todavía. Va a la cuenta de su propia fila, porque
-     * el banco lo descuenta de esa cuenta y no de un fondo común.
+     * verificó no se cobró todavía.
      */
     let egresoItf = 0;
-    for (const r of [...incomeByBank, ...journalByBank]) {
-      const itf = Number(r.itf) || 0;
-      if (!itf) continue;
-      acumular(r.banco, 0, itf);
-      egresoItf += itf;
+
+    for (const r of fuente.income) {
+      sumaIngresos += Number(r.total) || 0;
+      egresoItf += Number(r.itf) || 0;
     }
+    for (const r of fuente.journal) {
+      sumaIngresos += Number(r.ingreso) || 0;
+      egresoLibro += Number(r.egreso) || 0;
+      egresoItf += Number(r.itf) || 0;
+    }
+    for (const r of fuente.salary) egresoSalarios += Number(r.egreso) || 0;
+    for (const r of fuente.commission) egresoComisiones += Number(r.egreso) || 0;
+
+    const sumaEgresos = egresoLibro + egresoSalarios + egresoComisiones + egresoItf;
 
     /*
      * Lo que se debe y todavía no salió. NO toca el balance —esta pantalla
@@ -1363,6 +1551,13 @@ export class FinanceLedgerService {
       return suma + Math.max(0, resto);
     }, 0);
 
+    /*
+     * Lo pendiente NO se recorta con el rango de fechas, igual que el saldo por
+     * cuenta: es el estado de hoy ("¿cuánto se debe?") y no el flujo de un
+     * tramo. Mirar "el mes pasado" no vuelve cero una planilla que sigue sin
+     * pagarse, y esta banda está justo para que un balance en verde no se lea
+     * solo.
+     */
     const salariosPendientes = { total: (Number(pagosPendientes?.total) || 0) + sinRepartir };
     const comisionesPendientes = await db('sales_commissions')
       .select(db.raw('SUM(ABS(monto)) as total'))
@@ -1375,30 +1570,37 @@ export class FinanceLedgerService {
     const pendienteSalarios = redondear(Number(salariosPendientes?.total) || 0);
     const pendienteComisiones = redondear(Number(comisionesPendientes?.total) || 0);
 
-    // Se cuenta el mismo universo que suman los totales (todo lo confirmado):
-    // un conteo con otra ventana es justo la clase de cifra que no cuadra con
-    // nada de lo que tiene al lado.
-    const [incomeCount] = await db('finance_income')
-      .where('estado', 'verificado')
+    // Se cuenta el mismo universo que suman los totales —con el mismo recorte
+    // de fechas si lo hay—: un conteo con otra ventana es justo la clase de
+    // cifra que no cuadra con nada de lo que tiene al lado.
+    const [incomeCount] = await enPeriodo(db('finance_income')
+      .where('estado', 'verificado'), 'fecha')
       .count('id as cnt');
-    const [journalCount] = await db('finance_journal')
+    const [journalCount] = await enPeriodo(db('finance_journal')
+      .where('moneda', 'soles')
+      .where('estado', 'pagado'), 'fecha')
+      .count('id as cnt');
+    const [salaryCount] = await enPeriodo(db('finance_salaries')
       .where('moneda', 'soles')
       .where('estado', 'pagado')
+      .where('kind', 'pago'), 'fecha')
       .count('id as cnt');
-    const [salaryCount] = await db('finance_salaries')
-      .where('moneda', 'soles')
-      .where('estado', 'pagado')
-      .where('kind', 'pago')
-      .count('id as cnt');
-    const [commissionCount] = await db('sales_commissions')
-      .where('estado', 'pagado')
+    // La comisión se fecha por `paid_at` (el día en que salió) y no por el
+    // devengo, igual que en la grilla mensual; sin esa fecha no cae en ningún
+    // período, así que con recorte se la exige.
+    const [commissionCount] = await enPeriodo(recortado
+      ? db('sales_commissions').where('estado', 'pagado').whereNotNull('paid_at')
+      : db('sales_commissions').where('estado', 'pagado'), 'paid_at')
       .count('id as cnt');
     const totalTransactions = (Number(incomeCount?.cnt) || 0)
       + (Number(journalCount?.cnt) || 0)
       + (Number(salaryCount?.cnt) || 0)
       + (Number(commissionCount?.cnt) || 0);
 
-    const recentIncome = await db('finance_income')
+    // "Últimos movimientos" es del período que se está mirando: con un rango
+    // puesto, los ocho de siempre serían de otro mes y contradirían las cifras
+    // de arriba.
+    const recentIncome = await enPeriodo(db('finance_income')
       .leftJoin('leads', 'leads.id', 'finance_income.lead_id')
       .select(
         'finance_income.id',
@@ -1409,15 +1611,15 @@ export class FinanceLedgerService {
         'finance_income.cuota',
         db.raw("COALESCE(NULLIF(leads.full_name, ''), leads.topic, 'Cliente') as client_name")
       )
-      .where('finance_income.estado', 'verificado')
+      .where('finance_income.estado', 'verificado'), 'finance_income.fecha')
       .orderBy('finance_income.fecha', 'desc')
       .orderBy('finance_income.id', 'desc')
       .limit(8);
 
-    const recentJournal = await db('finance_journal')
+    const recentJournal = await enPeriodo(db('finance_journal')
       .select('id', 'code', 'fecha', 'monto', 'banco', 'detalle', 'area')
       .where('moneda', 'soles')
-      .where('estado', 'pagado')
+      .where('estado', 'pagado'), 'fecha')
       .orderBy('fecha', 'desc')
       .orderBy('id', 'desc')
       .limit(8);
@@ -1425,19 +1627,19 @@ export class FinanceLedgerService {
     // Los dos entran también en "últimos movimientos": un egreso que mueve el
     // balance y no aparece en la lista de al lado obliga a buscarlo de pestaña
     // en pestaña para entender por qué bajó el saldo.
-    const recentSalaries = await db('finance_salaries')
+    const recentSalaries = await enPeriodo(db('finance_salaries')
       .select('id', 'persona', 'cargo', 'fecha', 'monto', 'banco', 'periodo')
       .where('moneda', 'soles')
       .where('estado', 'pagado')
-      .where('kind', 'pago')
+      .where('kind', 'pago'), 'fecha')
       .orderBy('fecha', 'desc')
       .orderBy('id', 'desc')
       .limit(8);
 
-    const recentCommissions = await db('sales_commissions')
-      .select('id', 'beneficiary_name', 'paid_at', 'monto', 'role', 'percent')
+    const recentCommissions = await enPeriodo(db('sales_commissions')
+      .select('id', 'beneficiary_name', 'paid_at', 'monto', 'role', 'percent', 'banco')
       .where('estado', 'pagado')
-      .whereNotNull('paid_at')
+      .whereNotNull('paid_at'), 'paid_at')
       .orderBy('paid_at', 'desc')
       .orderBy('id', 'desc')
       .limit(8);
@@ -1485,7 +1687,7 @@ export class FinanceLedgerService {
         fecha: r.paid_at,
         title: r.beneficiary_name,
         subtitle: `Comisión ${r.role} (${Number(r.percent) || 0}%)`,
-        banco: null,
+        banco: r.banco,
         amount: Math.abs(Number(r.monto) || 0),
         type: 'out',
         source: 'commission'
@@ -1496,7 +1698,21 @@ export class FinanceLedgerService {
 
     return {
       months: monthKeys,
-      banks: BANCOS,
+      banks: BANKS,
+      /*
+       * El rango que de verdad se aplicó, para que la pantalla pueda rotular
+       * cada cifra ("del período" o "histórico") en vez de que haya que
+       * adivinarlo. `recortado` es lo único de lo que cuelga esa diferencia,
+       * así que viaja dicho y no deducido de que `desde`/`hasta` vengan vacíos.
+       */
+      rango: {
+        // El rango EFECTIVO, con el extremo abierto ya cerrado: la pantalla
+        // escribe la frase del recorte con esto, así que tiene que decir el
+        // tramo que se contó y no el que se pidió.
+        desde: porRango?.desde || '',
+        hasta: porRango?.hasta || '',
+        recortado
+      },
       ingresos: toSeries(ingresos),
       egresos: toSeries(egresos),
       totals: {
@@ -1521,7 +1737,7 @@ export class FinanceLedgerService {
           total: redondear(pendienteSalarios + pendienteComisiones)
         },
         totalTransactions,
-        byBank: BANCOS.map((banco) => ({
+        byBank: BANKS.map((banco) => ({
           banco,
           ingresos: redondear(saldos[banco].ingresos),
           egresos: redondear(saldos[banco].egresos)

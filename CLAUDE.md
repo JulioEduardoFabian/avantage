@@ -40,6 +40,26 @@ npm test                  # suite de pruebas (node --test sobre backend/**/*.tes
 
 No hay linter configurado en `package.json`.
 
+### App de notificaciones (`mobile/`)
+
+App Flutter multiplataforma que recibe las notificaciones del panel en el dispositivo.
+Vive en `mobile/` y tiene su propio `README.md` con la configuración de Firebase.
+
+```bash
+cd mobile
+flutter pub get
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:3000   # emulador Android
+flutter analyze           # sin avisos
+flutter test              # pruebas de los modelos
+flutter build apk --debug # Android
+flutter build web --release
+```
+
+`API_BASE_URL` por defecto es `http://10.0.2.2:3000`, que es cómo el emulador de Android ve
+el `localhost` de la máquina anfitriona. En un teléfono de verdad va la IP de la máquina en la
+red local. **Windows pide activar el «Modo de desarrollador»** para compilar (Flutter necesita
+enlaces simbólicos para los plugins).
+
 ## Arquitectura
 
 Full-stack monolítico: **Express (backend/) sirve tanto la API REST como el build estático de
@@ -69,6 +89,29 @@ antes de tocar el arranque de producción.
   despliegues).
 - **`db/connection.js`** exporta una única instancia de Knex (`db`) reutilizada por todos los
   servicios — no crear conexiones nuevas por request.
+- **Dos reglas de las migraciones**, las dos salidas del mismo fallo en producción (01/11/2026) y
+  comprobadas por `__tests__/migrationHygiene.test.js`:
+  (1) **Una migración puede importar funciones puras pero NUNCA una lista de columnas.** La
+  migración de atribución hacía su backfill con `.select('id', ...LEAD_ORIGIN_COLUMNS)` para no
+  repetir la lista; después se le agregaron a esa constante las columnas de Smart+, que las crea
+  una migración **posterior**, así que la de atribución empezó a pedirle a MySQL columnas que
+  todavía no existían y murió con «Unknown column». La función es la lógica y conviene que sea una
+  sola —una copia en la migración dice lo viejo el día que alguien corrija la original—, pero una
+  lista de columnas es una **foto del esquema en ese punto de la historia** y no puede venir de un
+  archivo que sigue creciendo. Se congela en el propio archivo.
+  (2) **En MySQL el DDL no es transaccional**, así que toda migración tiene que poder
+  **reintentarse**: `hasColumn()` antes de agregar una columna, `hasTable()` antes de crear una
+  tabla, y una consulta a `information_schema.STATISTICS` antes de crear un índice (knex no tiene
+  `hasIndex`). Cuando aquella murió en el backfill, sus cuatro columnas ya estaban agregadas y
+  knex no pudo deshacerlas ni registró la migración: el reintento chocó contra «Duplicate column
+  name» y quedó trabado sin forma de avanzar ni de volver atrás. El `down()` se escribe simétrico
+  por lo mismo — uno que asume el estado completo no se puede correr después de un `up()` que
+  murió a la mitad, que es lo único para lo que existe. El ayudante de índices se **repite** en
+  cada migración en vez de vivir en un módulo compartido: lo que una migración importa de afuera
+  tiene que poder cambiar sin cambiarla.
+  Las migraciones **ya aplicadas no se reescriben** para cumplir esto: cambiar una que corrió en
+  producción es la otra forma de dejar la base y el código diciendo cosas distintas. El test las
+  exige desde `20261125000000`.
 - **`db/migrations/`**: una migración por cambio de esquema, nombradas por timestamp
   (`YYYYMMDDHHMMSS_descripcion.js`), cada una con `up()`/`down()`. Ver `backend/db/README.md` para
   el propósito de cada tabla y las relaciones entre ellas (leads → projects → tasks/quotes,
@@ -155,6 +198,21 @@ antes de tocar el arranque de producción.
   del `PUT /api/contracts/:id`, que imprime la tabla con el marcador `{{cronograma_pagos}}`) y desde
   Finanzas — `financeLedgerService.replaceScheduleForLead()` es el único camino, y rechaza quitar o
   cambiar el monto de una cuota ya cobrada, o pasarse de `leads.total_amount`.
+  El editor que comparten esas dos pantallas (`PaymentScheduleEditor.vue`, con la aritmética en
+  `src/paymentSchedulePlan.js`) **propone el plan completo y no cuota por cuota**: la primera vence
+  **hoy** (es la que se cobra al firmar; proponerla para el mes siguiente obligaba a corregir la
+  fecha en todos los cierres) y el precio total se **divide en partes iguales** entre las cuotas que
+  el editor propuso — 1500 en una da 1500, en dos 750 y 750, en tres 500/500/500. Lo bloqueado (ya
+  cobrado) y lo que alguien escribió a mano se descuenta primero y no se toca: sin esa distinción,
+  agregar la última cuota le borraría al vendedor el monto que acaba de pactar. Las cuotas que
+  llegan de afuera —un contrato ya guardado— nacen marcadas como escritas a mano, así que cambiar
+  el precio total nunca reescribe un cronograma que ya está en Finanzas. La diferencia del
+  redondeo va a la **última** cuota (1000 en tres es 333.33 · 333.33 · 333.34): un céntimo de menos
+  y el cronograma nunca dice "completo ✓"; uno de más y `replaceScheduleForLead()` lo rechaza por
+  pasarse del precio. Las fechas se corren con aritmética en UTC y el "hoy" sale de `limaDay()`:
+  con el reloj del navegador en otra zona, un `new Date()` a las 20:00 de Lima ya es mañana.
+  `offset > 0` (el modal de cierre, donde el primer pago se registra arriba) significa que lo de
+  acá es la cola del cronograma y no la primera cuota, así que esa empieza el mes siguiente.
   Una venta firmada que **no llega a concretarse** (el cliente se retracta) se marca desde su propia
   fila en INGRESOS: `leads.deal_cancelled_at` / `_by` / `_reason`,
   `PATCH /api/finance/leads/:id/deal-cancelled` → `setDealCancelled()`. Se marca el **cierre** y no
@@ -170,6 +228,40 @@ antes de tocar el arranque de producción.
   resta vive en `src/views/finance/dealCancellation.js` y no copiada en la tira de totales y en la
   banda de la fila, que son los dos sitios que la dicen. El `getOverview()` de Finanzas no cambia:
   ya contaba solo lo `verificado`.
+  Desde el 16/11/2026 esos cierres **no se listan** en INGRESOS salvo que se pidan con el
+  interruptor «🚫 Ver no concretados (N)» de la barra (`showCancelled` + `groupFilter` de
+  `useLedgerTable`, que va aparte de los filtros de fila porque la marca es del CIERRE entero y
+  porque no cuenta como «la tabla está filtrada», de lo que depende que los cierres se abran
+  solos). Arranca apagado y **no se recuerda entre visitas**, al revés que la vista elegida de
+  Entregables o del Setter Funnel: aquellas son dos maneras de mirar lo mismo, esto esconde filas,
+  y un recorte que sobrevive a la recarga esconde sin que nadie lo haya pedido ese día.
+  Y con eso **las cifras de arriba cuentan dos universos y no uno** (`summariseDeals()`, en el
+  mismo archivo y con test): las del trato —precio total, registrado, verificado, por verificar,
+  ITF, y el conteo de «Cierres»— cuentan solo lo que se está listando, porque sumaban también los
+  caídos y entonces «Precio total» decía una cifra que no se podía comprobar sumando lo que había
+  en pantalla (S/ 88.500 con S/ 26.900 de tratos que ya nadie espera); «No concretado» cuenta
+  **siempre** los caídos, se vean o no, porque esconderlos es sacarlos de la lista de a quién
+  cobrar y no olvidarse de que existieron — un recuadro que desaparece al esconder las filas
+  convierte el dato en algo que solo se encuentra sabiendo que hay que buscarlo, de ahí que lleve
+  el conteo de cierres y diga «fuera de la tabla». `porCobrar` se calcula **cierre por cierre** y
+  por eso vale lo mismo con los caídos a la vista o escondidos (uno caído aporta cero): es lo que
+  permite esconderlos sin mover la única cifra que de verdad se mira.
+  Desde el 18/11/2026 INGRESOS tampoco lista los **tratos sin ganar** salvo que se pidan
+  («📝 Ver sin ganar (N)», `showUnwon`): el contrato escribe su cronograma en `finance_income` en
+  cuanto se guarda, y se guarda ANTES de cerrar, así que un lead en cotización aparecía como un
+  cierre más con su «venció hace 6 días» (Alvaro P. y Rodrigo Medina). No se dejó de escribir las
+  cuotas —el cierre de venta las adopta—: `listIncome()` deriva `lead_deal_closed` en cada lectura
+  con `isClosedDeal()` (`backend/services/dealClosure.js`: etapa ganadora, proyecto abierto o una
+  cuota que ya no está `pendiente`), y un trato sin ganar no avisa vencimientos. Cobranzas aplica la
+  misma regla (`soloVentasCerradas()` en `collectionService.js`, sin interruptor: ahí no hay a quién
+  cobrarle una venta que no se cerró).
+  **Marcar un cierre como no concretado no es un movimiento del funnel**: no toca `leads.status`
+  ni deja rastro en `lead_stage_changes`, así que Ventas no lo ve pasar — es una decisión sobre el
+  cobro, se toma desde Finanzas con `finance.view` y casi siempre la toma otra persona. Eso es lo
+  que hay detrás de «nosotros no los movimos» (reporte del 16/11/2026); quién marcó cada uno lo
+  contesta `backend/scripts/diagnosticarCierresNoConcretados.js` (solo lee), que además separa el
+  caso que SÍ sería un fallo: un `deal_cancelled_by` en NULL, porque la ruta siempre escribe el id
+  de quien aprieta el botón.
   Como el dinero puede nacer por cualquiera de esos tres caminos, **el cierre de venta no da por
   hecho que la plata empieza en él**: el modal lee primero lo ya asentado
   (`getLeadSettlement()`, `GET /api/leads/:id/win-preview`), lo muestra cuota por cuota y propone
@@ -182,6 +274,26 @@ antes de tocar el arranque de producción.
   `backend/services/winDeal.js` (`planWinDeal()`) y corren **antes** de mover nada: puestas después,
   como estaban, un monto que no cuadraba dejaba el lead ya ganado y su proyecto abierto pero sin
   ingreso, y el vendedor solo veía el error.
+- **Una cuota pendiente avisa tres días antes de su fecha pactada**
+  (`src/views/finance/dueSoon.js`: `DUE_SOON_DAYS`, `dueState()`, `nextDueState()`, con prueba
+  propia). El cronograma guardaba `due_date` y la pantalla solo la escribía, así que una cuota que
+  vencía pasado mañana se veía igual que una de marzo y había que abrir los cierres uno por uno
+  para saber a quién llamar esta semana. Tres decisiones: **solo las `pendiente`** —una `pagado` es
+  plata que el cliente ya mandó y está esperando el visto bueno, y pintarla de rojo manda a llamar
+  a alguien que ya pagó—; la **vencida sigue roja y con el mismo rojo**, porque pasarse de la fecha
+  no es salir del aviso sino la forma más grave de estar dentro, y lo que cambia es la frase
+  («vence mañana», «venció hace 6 días»), que es de lo que depende cómo se encara la llamada; y la
+  cuenta va en **días de calendario de Lima** (`limaToday()`) y no en horas, porque la fecha
+  pactada es un día y no un instante — con el reloj del navegador en otra zona la cuota se pondría
+  roja un día antes. El **color nunca va solo**: cada aviso lleva su plazo escrito al lado, porque
+  el rojo y el ámbar son el mismo color con deuteranopía y de esta marca depende a quién se llama
+  hoy. Se ve en los tres sitios que hablan de la misma cuota —la pastilla de estado, la fecha
+  pactada del renglón y una insignia en la **cabecera del cierre**—, y lo tercero no es un adorno:
+  los cierres están plegados de fábrica, así que un aviso que solo existe dentro de la fila solo lo
+  encuentra quien ya fue a buscarlo. El de la cabecera sale del plan **completo** del lead
+  (`plansByLead`) y no de las cuotas que pasaron los filtros, para que un recorte de fechas no
+  esconda justo la que está por vencer, y un **cierre dado por caído no avisa**: perseguir ese
+  cobro es lo que se dio por terminado.
 - Un hito de la línea de tiempo puede atarse a una cuota (`project_updates.income_id`): el cliente
   lo ve en su portal con el adjunto **bloqueado** hasta que Finanzas verifique ese pago. Como
   `projects.is_locked`, el `is_locked` del hito se deriva del estado del ingreso en cada lectura —
@@ -262,6 +374,58 @@ antes de tocar el arranque de producción.
   día abierto: el nombre de una entrega no entra en una celda de 50 px, y apretarlo para que entre
   deja texto cortado que no dice nada. La vista elegida se recuerda en `localStorage`
   (`entregables.view`), entre `try` porque en una ventana privada el acceso lanza.
+- El **calendario de Entregables se cruza con una cuenta de Google**
+  (`deliverableCalendarService.js`, `/api/deliverable-calendar*`, botón en la pestaña Calendario de
+  `DeliverablesView.vue`, tabla `deliverable_calendar_connection` + tres columnas en
+  `deliverables`). Son **dos sentidos y hacen cosas distintas**: **de ida** (el botón) las entregas
+  del panel se escriben como eventos, y **de vuelta** (solo al abrir el mes) los eventos que el
+  equipo ya tiene en ese calendario —los «Fecha Tentativa», los «PRE-AVISO», las reuniones— se
+  **muestran** en la cuadrícula del panel. La vuelta **no importa ni guarda nada**: son de Google,
+  y una copia en la base se desactualizaría sola y haría creer que el panel es dueño de eventos que
+  no son suyos. La ida solo toca los eventos que creó él, así que apretar el botón no puede
+  estropear el calendario de nadie — por eso puede ser un botón y no un proceso supervisado.
+  Los eventos traídos **no son entregables**: van en `cell.events` y no en `cell.items`, en gris y
+  sin estado, no cuentan en los recuadros de arriba ni en el resumen del mes, y no se pueden marcar
+  como entregados. Mezclarlos haría que los totales dijeran una cosa y la lista otra. Para no verlos
+  dos veces, lo que escribe el panel va marcado con `extendedProperties.private.avantage_entregables`
+  y se filtra al leer: la marca viaja con el evento, así que lo reconoce aunque de este lado ya no
+  quede rastro (una entrega borrada se lleva su id), y la lista de ids guardados cubre al revés los
+  eventos creados antes de que la marca existiera. Un fallo de lectura **no rompe la pantalla**:
+  vuelve con la lista vacía y el motivo adentro, porque las entregas son lo que esta vista tiene
+  que mostrar sí o sí y los eventos de Google son una capa encima. Los días que ocupa cada evento
+  los calcula `daysCoveredBy()`: el `end.date` de Google es **exclusivo** (sin restarle un día,
+  cada evento de un día se dibuja en dos) y los que tienen hora se ubican por su día **en Lima**,
+  que no es el del servidor.
+  La cuenta es **una sola, de la empresa**, y no la de cada quien: el calendario de las entregas es
+  uno —el que el equipo mira para saber qué toca esta semana— y con una conexión por usuario
+  cambiaría según quién sincronizó último y nadie sabría en cuál mirar. Es el mismo patrón y las
+  mismas razones que `deliverable_settings.notice_email`. Por eso vive en tabla propia y no en
+  `google_calendar_connections`, que es la de cada asesor (`user_id` único, con su Meet y su
+  disponibilidad colgando). El callback de OAuth es **uno solo** para las dos conexiones y cuál es
+  cuál lo dice el `target` **firmado dentro del `state`** (`signGoogleOAuthState(userId, target)`):
+  de él depende en qué tabla se guarda el token, así que no puede venir de algo que se pueda
+  escribir a mano en la URL.
+  Van **todas las entregas con fecha pactada**, las entregadas incluidas y marcadas con ✅: el
+  calendario es el plan, y ver cumplido el día que se prometió es justo lo que se revisa — la misma
+  regla por la que el calendario del panel ubica una entrega en su `due_date` aunque ya esté
+  entregada. Son eventos de **día completo** (una entrega tiene día y no hora; ponerle una de las
+  9:00 inventa una precisión que nadie acordó) y `end.date` es el día siguiente, porque en Google
+  el fin de un evento de día completo es exclusivo y con el mismo día no se dibuja. Sin
+  recordatorios ni invitados: son decenas de entregas y el calendario se mira, no notifica. Y
+  **sin importes**, como todo el módulo: la cuota se nombra por su código.
+  `deliverables.google_event_id` es lo que hace que sincronizar dos veces **actualice** en vez de
+  duplicar, y `google_signature` —una foto de título, cliente, fecha y estado— lo que evita gastar
+  una llamada por entrega que no cambió; de ahí que el botón apretado dos veces seguidas conteste
+  "no hubo nada que cambiar" en vez de no decir nada. Un evento borrado a mano en Google **no es un
+  error**: se vuelve a crear, que es lo que el panel afirma. Lo que sí se hace en el momento es
+  quitar el evento de una entrega que se **borra** (`deliverableService.remove()`): el id vive en la
+  fila, así que borrada la fila no hay forma de saber cuál era y en Google quedaría una entrega
+  fantasma que ninguna sincronización va a limpiar — el barrido solo mira las filas que existen.
+  Desconectar la cuenta **no borra los eventos** (lo que ya está en el calendario de la empresa es
+  información que alguien puede seguir mirando; un botón que vacía un calendario ajeno es un botón
+  que nadie aprieta), pero sí olvida los ids: sin cuenta no hay nada que actualizar. Cambiar de
+  cuenta los olvida por lo mismo — los eventos viejos viven en el calendario anterior y sus ids no
+  sirven en la nueva.
 - El **gráfico de Flujo de Fondos** del Resumen (`OverviewTab.vue`, geometría en
   `src/views/finance/chartGeometry.js`) tiene tres reglas que vinieron de arreglarlo y no conviene
   deshacer: (1) la curva es **monótona** (Fritsch–Carlson) y no una spline Catmull-Rom — aquella se
@@ -319,6 +483,36 @@ antes de tocar el arranque de producción.
   **solo** el cursor y el realce: el color, el borde y la tipografía los sigue poniendo `.pill-*`,
   que es lo que la mantiene indistinguible de una píldora de solo lectura. La misma pareja la usa
   la pestaña de Salarios.
+- Las **áreas de la empresa** del Libro Diario y las **cuentas** (bancos) de Finanzas se amplían
+  desde el «＋ Agregar» del formulario del Libro Diario (`FinanceOptionAdder.vue`,
+  `financeOptionService.js`, `/api/finance/options`). Las de fábrica siguen en el código
+  (`BANCOS`, `DEFAULT_AREAS`) y no se pueden quitar; `finance_options` guarda solo las agregadas.
+  Una cuenta nueva vale en **todo** el módulo —la validación de ingresos y asientos y el Resumen
+  usan `loadBanks()`, y las pestañas leen el ref `bancos` de `incomeOptions.js`—: si la
+  validación la aceptara y el Resumen no la conociera, su dinero contaría en el total y en ninguna
+  tarjeta. Una cuenta con movimientos no se puede quitar (409); un área sí, porque es texto en cada
+  asiento.
+  Las tres rutas **sobreviven a que la migración no haya corrido** en ese entorno
+  (`missingTable()`): el `GET` devuelve las listas de fábrica —la pantalla de Finanzas no se cae
+  por una tabla que falta— y el alta y el borrado contestan 503 diciendo que falta `npm run
+  migrate`, en vez de devolverle a la pantalla el SQL crudo («Table 'x.finance_options' doesn't
+  exist»), que es lo que le llegó al equipo el 06/11/2026 y no le dice a nadie qué hacer.
+- El **asiento del Libro Diario se carga en un modal** (`JournalTab.vue`): desplegado bajo la
+  barra empujaba la tabla media pantalla hacia abajo —así que al guardar nadie veía la fila recién
+  creada— y el botón de guardar quedaba al final de once campos, fuera de la vista; ahora vive en
+  un pie fijo. Los campos van agrupados (movimiento · cuenta y estado · clasificación · detalle y
+  respaldo) y **no se cierra al hacer clic afuera**, por la misma razón que la ficha del lead:
+  adentro hay un asiento a medio escribir con sus comprobantes ya elegidos. Se cierra con la ✕,
+  con «Cancelar» o con Esc —menos dentro del «＋ Agregar», donde Esc cierra solo ese panelito— y
+  pregunta si hay algo escrito, comparando contra la foto que se toma del formulario **en el tick
+  siguiente** al abrirlo: tomada antes, el `watch` que hace seguir el ITF al monto la deja
+  desactualizada y un formulario recién abierto ya se considera tocado.
+  **El signo del monto se elige y no se teclea**: la pantalla pide un importe en positivo y un
+  «↑ Ingreso / ↓ Egreso» que decide el signo con el que se guarda en `finance_journal.monto`
+  (que sigue siendo firmado, no cambió nada del esquema ni de la API). Un egreso anotado sin el
+  menos entraba al libro como ingreso y desbalanceaba el neto sin que nada fallara a la vista.
+  Debajo del campo se lee cómo va a quedar escrito, y al editar una fila el signo guardado es el
+  que elige el selector.
 - La pestaña **Salarios** de Finanzas (`finance_salaries`, `financeSalaryService.js`) es un
   registro de pagos al personal **sin llaves hacia la contabilidad**: no se relaciona con
   `finance_income` ni con `finance_journal`. Guarda la persona como texto libre (se paga a
@@ -363,6 +557,28 @@ antes de tocar el arranque de producción.
   puro porque el hosting compartido no corre un navegador headless): es la que se adjunta al correo
   del cliente y la que muestra la vista previa antes de enviarlo, así que lo que se ve es
   exactamente lo que se manda.
+  Los datos de la empresa viven en `COMPANY` (en `quotationDocument.js`) y tiene **tres campos de
+  domicilio y teléfono que no son intercambiables**: `address`/`addressCity` es el **domicilio
+  legal** —el que firma el contrato (`domicilio_empresa`), el que da el bot y el que figura en la
+  ficha RUC—, `offices` son las **sedes de atención** que se imprimen al pie de la cotización (LIMA
+  y HUANCAYO), y `contactPhones` son los números que van en el encabezado del **contrato**, el
+  documento que el cliente se queda y al que recurre para reclamar. Abrir una sede comercial no
+  cambia el domicilio inscrito, así que pisar `address` con la dirección de Lima haría que el
+  contrato dijera una dirección que no es la de SUNAT. El **RUC va en el encabezado** de la
+  cotización y no solo al pie: es el dato con el que el cliente comprueba que la empresa existe, y
+  al pie llega recén después de haber leído el precio. Los cuatro los guarda
+  `__tests__/documentBrandData.test.js`, porque están escritos en el HTML y no en una tabla.
+- La **celda de comprobantes del libro de Finanzas** es `ReceiptCell.vue`, compartida por INGRESOS,
+  el Libro Diario, las dos filas de Salarios (el acuerdo y sus pagos) y Comisiones. Estaba copiada
+  **cuatro veces**, idéntica hasta el último atributo, así que arreglar la miniatura en una dejaba
+  las otras tres mostrando un pedazo del comprobante — y por eso la quinta pantalla que necesitó
+  comprobantes no tuvo que escribir nada. Dos decisiones: la miniatura es **vertical** (46×60) y
+  con `object-fit: contain`, porque un comprobante es la captura de un Yape o de una transferencia
+  —siempre más alta que ancha— y en un cuadrado recortado al centro lo que se veía era una tira del
+  medio, sin el monto ni la fecha ni a quién se le pagó (lo que el equipo reportó como «se ve
+  cortado» en los pagos hijos); y el clic **abre un visor** teleportado al `body` en vez de una
+  pestaña nueva, porque un comprobante se mira para comprobar un dato y después se vuelve a la
+  fila. El enlace a la pestaña queda dentro del visor para quien lo quiera.
 - El **catálogo de carreras** (`career_groups` + `careers`, `careerCatalogService.js`) es lo que
   alimenta todos los desplegables de "Carrera", incluido el evaluador público. Se administra en
   `/admin/carreras` (`CareersView.vue`, permiso `careers.manage`) y se lee en `GET /api/careers`,
@@ -413,6 +629,21 @@ antes de tocar el arranque de producción.
   un borrado que sale bien con una reasignación que falla deja leads con un `status` que ya no es
   columna de nadie), y la clave de una etapa nueva la genera el **servidor**: dos personas creándola
   a la vez en dos máquinas es justo lo que esto vino a arreglar.
+- El **Setter Funnel tiene dos vistas sobre los mismos leads** (conmutador en la cabecera,
+  `viewMode` en `SetterFunnelView.vue`): el **tablero** por etapas, que contesta cómo va el funnel,
+  y la **tabla**, que contesta a quién hay que llamar — la otra mitad del trabajo, que en el tablero
+  obliga a recorrer columna por columna. Es el mismo recurso y las mismas razones que las dos
+  pestañas de Entregables: la tabla **no pide otra ruta ni vuelve a filtrar por su cuenta**, se arma
+  sobre `filteredLeadsByColumn`, así que la búsqueda, el canal, la viabilidad, el responsable y el
+  rango de fechas de la barra filtran las dos por igual — dos listas con criterios propios es como
+  se llega a que cada pantalla diga un número distinto. Cada fila recuerda la **columna en la que el
+  tablero la ubica** y no el `status` crudo: un estado que no es ninguna columna cae en la primera
+  (misma regla que el tablero) y el desplegable de etapa tiene que decir dónde está de verdad en vez
+  de quedarse en blanco. Ese desplegable escribe por el mismo camino que arrastrar una tarjeta
+  (`updateLeadStatusFromSelect`) y existe porque en una tabla no se puede arrastrar. La vista
+  elegida se recuerda en `localStorage` (`setterFunnel.view`), entre `try` porque en una ventana
+  privada el acceso lanza, y en el celular la tabla se vuelve tarjetas con los rótulos adentro
+  (`data-label`), igual que Cobranzas.
 - Los dos tableros de leads leen la **misma** columna `leads.status`, pero "¿este lead ya es del
   closer?" **no** se deduce de ese texto: se sella en `leads.sales_funnel_at` al entrar al funnel
   comercial. La deducción por status dejaba de reconocer al lead en cuanto el equipo borraba o
@@ -468,6 +699,43 @@ antes de tocar el arranque de producción.
   movimientos de esa página en UNA consulta, `listForLeads()`): filtrar en el navegador sobre lo
   cargado es "busca entre los primeros 25", y el movimiento que se viene a investigar es el que no
   está a mano.
+  El reporte filtra además por **origen** —plataforma (Meta · TikTok · Orgánico · Referido · Otro)
+  o canal (Formulario · WhatsApp · Mensaje directo), en un solo desplegable con las dos listas— y
+  lo escribe en cada fila: un filtro cuyo resultado no se puede comprobar al lado no sirve para
+  investigar nada. La respuesta sale de `leadOrigin()` y **no de un `where`**: de dónde salió un
+  lead se contesta en un solo sitio, y escrita como SQL sería una segunda versión de esas reglas
+  —el sello manda, el bloque más antiguo gana, el texto de `source` es el último recurso— que el
+  día que se separen haría que el reporte dijera una plataforma y el exportable de Campañas otra.
+  Por eso `#originIds()` resuelve el origen en JavaScript sobre el MISMO conjunto que los demás
+  filtros ya eligieron y entra en la consulta como una lista de ids: así el total, la página y el
+  resumen siguen mirando lo mismo. Es una pasada extra sobre los leads visibles y solo la paga
+  quien usa el filtro. Los códigos del desplegable son las claves (`platform:meta`,
+  `channel:whatsapp`) y no las etiquetas, porque viajan en la URL y un acento mal codificado
+  dejaría el filtro sin coincidencias sin que nada falle a la vista; lo que no es uno de ellos
+  vuelve como "sin filtro", igual que en `parseActor()`.
+  Desde cada fila se abre también la **conversación de WhatsApp** del lead (`LeadConversation.vue`,
+  el mismo componente de los dos tableros, en un modal): la bitácora dice que el bot lo congeló,
+  pero no qué le escribieron, y hasta ahora eso obligaba a salir a buscarlo en otra pantalla. El
+  botón sale siempre, incluso para un lead que no entró por WhatsApp —saber que nunca hubo
+  conversación también es una respuesta, y averiguarlo antes costaría una consulta por fila—.
+  **Leer** el hilo y sus adjuntos admite `leads.report` (se agregó al `requireAnyPermission` de los
+  dos GET), y **escribir** no: responder y devolverle el chat a Avan siguen pidiendo los permisos
+  de los tableros, porque supervisar no es trabajar el lead. No es una puerta de atrás —
+  `requireLeadVisible` sigue decidiendo cuál se puede abrir—, y quien solo supervisa lo ve en modo
+  lectura (`readonly`, sin cuadro de respuesta) en vez de recibir un 403 al apretar enviar.
+  Y cada fila enlaza a **la ficha en su tablero** (`src/leadDeepLink.js`): el reporte mira los dos
+  funnels a la vez, así que el destino lo decide `lead.stage.board` —el mismo dato con el que la
+  fila escribe "Funnel de Ventas" o "Setter Funnel"—, y el enlace sale solo si esa persona tiene
+  el permiso de ese tablero (`leads.view` / `setter.view`): sin él, el guard del router la mandaría
+  al Dashboard sin decirle por qué. Las dos puntas del enlace viven en el MISMO módulo —armarlo
+  acá y consumirlo allá— porque repartidas en dos pantallas, el día que cambie el nombre del
+  parámetro el enlace sigue existiendo y simplemente deja de abrir nada, que es un fallo que nadie
+  reporta. El `?lead=666` de los dos tableros es una **orden de una vez** y no el estado de la
+  pantalla: se consume al cargar (`consumeLeadParam()`, después de `fetchAll()`) y se borra de la
+  URL, porque dejándolo, cerrar la ficha y recargar la volvería a abrir y cualquier enlace que
+  alguien copie después arrastraría un lead que ya no estaba mirando. Si ese lead no está en el
+  tablero —cambió de etapa entre la carga del reporte y el clic, o no es de quien mira— el tablero
+  lo dice en vez de no hacer nada.
 - `leadService.findByPhone()` cruza primero la cadena exacta y después los últimos 9 dígitos
   (`phoneMatchKey`): el `wa_id` del bot (`51987654321`) y lo que escribe la persona en el formulario
   de Meta (`+51 987 654 321`) son el mismo contacto, y compararlos tal cual hacía que el bot le
@@ -580,6 +848,29 @@ antes de tocar el arranque de producción.
   misma pregunta de la que cuelgan la creación del proyecto y la comisión de la setter, y se
   contesta en un solo sitio a propósito: tres pantallas con tres listas propias es como se llega a
   que cada una diga un número distinto.
+- **La atribución de Campañas tiene dos caminos y no uno** (`#buildAttribution()` en
+  `campaignService.js`, con las reglas puras en `formContactsFromLeads()` y `dedupeAttribution()`):
+  el `referral` de WhatsApp (el clic en el anuncio que abre una conversación) y los leads de
+  **formulario instantáneo**, atribuidos por el `ad_id` que Meta manda junto al lead
+  (`leads.meta_ad_id`). Hasta el 29/10/2026 era solo el primero, así que el formulario —que es la
+  mayoría de lo que entra— no figuraba en ninguna hoja de Campañas: sus columnas de atribución se
+  guardaban desde el webhook pero **nadie las leía**, y el reporte por anuncio contaba la mitad de
+  los leads y la mitad del dinero de cada anuncio. El formulario entra por el **MISMO** campo
+  `sourceId` —el "ID de origen"— que ya usaba el referral y no por uno nuevo: de `sourceId` cuelgan
+  el mapeo a campaña, el funnel por anuncio, la trazabilidad y el exportable, y un campo paralelo
+  obligaría a enseñarle los dos caminos a cada uno de ellos. El mapeo anuncio → campaña ya
+  funcionaba para esto sin tocarlo: `metaAdsService` registra `String(ad.id)` entre los candidatos.
+  Lo ubica en el tiempo `meta_created_time` —cuándo se envió el formulario en Meta— y no
+  `created_at`: un lead que la conciliación rescató tres días después pertenece al día en que lo
+  llenó, y mezclar las dos fechas es lo que impide que el reporte cierre contra el Administrador de
+  anuncios. La misma persona por los dos caminos es **un** contacto y gana el de WhatsApp: contarla
+  dos veces infla las conversaciones atribuidas y abarata el costo por lead, y así los números que
+  el equipo ya venía mirando no se mueven — lo que esta mitad suma son los leads que no estaban en
+  ninguna parte. Se le busca además su `wa_id` por los últimos 9 dígitos (si después escribió por
+  WhatsApp, esa conversación es la suya) y la reunión se cruza también por `lead_id`, porque a un
+  lead de formulario la cita se le carga desde su ficha y `scheduled_meetings.wa_id` queda en null.
+  Un formulario **sin celular** entra igual, desduplicado por su id: es justo el lead incompleto el
+  que además desaparecía del reporte.
 - Los leads de **Meta Lead Ads** entran por el webhook (`metaWebhookService.importLead()`), que es
   un punto único de falla **silencioso**: `/api/webhooks/meta` responde 200 ANTES de procesar (Meta
   espera una respuesta rápida), así que un fallo posterior no se reintenta y solo deja una línea en
@@ -600,8 +891,422 @@ antes de tocar el arranque de producción.
   ficha. `meta_created_time` es el momento del envío en Meta y **no** `created_at` (cuándo entró
   acá): un lead recuperado hoy pertenece al día en que la persona llenó el formulario, y mezclar las
   dos fechas es lo que impide que el cruce contra el Administrador de anuncios cierre.
+  **Las respuestas del formulario se leen por patrón y no por la clave exacta de Meta**
+  (`metaLeadFields.js` → `extractMetaLeadForm()`, usado por `persistMetaLead()` y por el backfill).
+  En un formulario instantáneo clásico las preguntas prellenadas llegan con la clave canónica
+  (`full_name`, `phone_number`, `email`), pero el formulario que se contesta DENTRO de Messenger o
+  de Instagram arma sus preguntas propias y la clave es el texto de la pregunta convertido a slug
+  (`cual_es_tu_numero_de_celular`). Buscando `fields.phone_number` a secas, de esos leads entraba
+  solo el nombre —lo único que Messenger prellena— y la tarjeta quedaba en «Sin celular» con la
+  universidad y la carrera en su valor por defecto, aunque Meta sí las hubiera mandado (caso real
+  del 25/10/2026). Ahora la clave se normaliza (sin tildes, sin signos, guiones como espacio) y se
+  busca por patrón, con tres cuidados: la universidad se resuelve ANTES que el nombre («¿cuál es el
+  **nombre** de tu **universidad**?» tiene las dos palabras y lo que pide es la universidad), un
+  documento nunca entra como celular aunque su pregunta diga «número» (el DNI peruano tiene 8
+  dígitos), y como última red una respuesta de **9 dígitos o más** que no sea un documento se toma
+  como celular se llame como se llame la pregunta. Lo que no cae en ningún campo de la ficha
+  **tampoco se tira**: va al bloque de respuestas de `additional_notes` con el nombre de su
+  pregunta — el equipo agrega preguntas al formulario sin avisarle al CRM, y una respuesta que no se
+  guarda en ningún lado es una respuesta que la persona contestó para nadie. Un lead de formulario
+  que igual llega sin celular deja un `console.warn` con las preguntas que SÍ vinieron: es lo que
+  permite corregir el formulario (o el extractor) sin reproducir el caso.
+  Para las fichas dadas de alta antes, el backfill (`runMetaLeadgenBackfill()`,
+  `POST /api/leads/backfill-meta-fields`, botón «Completar datos del formulario» en el modal de
+  Conciliación) vuelve a pedirle el `field_data` a Meta y rellena solo lo que falta. Un celular
+  rescatado que ya pertenece a otra ficha **no se escribe**: se informa como conflicto, porque
+  escribirlo deja dos leads con el mismo número — justo lo que `findByPhone()` existe para evitar.
   El token tiene que ser de **página**: uno de usuario de sistema pasa el `debug_token` como válido
   y con todos los permisos, pero falla toda llamada de alcance de página (ver `.env.example`).
+  La conciliación contesta además las otras dos mitades de "¿llegaron todos?". **(1) Si Meta está
+  avisando**: `checkSubscription()` → `subscriptionState()` lee `/{page_id}/subscribed_apps` y dice
+  `conectado | sin_leadgen | sin_apps | desconocido`, porque las cuatro se arreglan distinto. Es la
+  causa más silenciosa de leads perdidos: sin el campo `leadgen` suscrito Meta no llama al webhook,
+  no hay error en ningún log y el CRM se ve igual que un día sin campañas, así que con eso roto
+  "faltan 37" no es un fallo del webhook sino que el webhook nunca se llamó. La suscripción es de la
+  app a la **Página** y no por formulario, así que cubre los formularios que existen y los que se
+  creen después — esa pregunta se contesta una vez; lo que sí se revisa de a uno es si cada
+  formulario activo entregó sus leads. Una app ajena suscrita a `leadgen` **no** cuenta como nuestra
+  (los leads le llegan a SU webhook) y una respuesta sin `subscribed_fields` no se lee como
+  suscrita: dar por bueno lo que no se comprobó es el peor diagnóstico posible. Leerla exige
+  `pages_manage_metadata`, que el token puede no tener, así que el fallo viaja como dato y no
+  tumba la conciliación — recuperar los leads perdidos no necesita ese permiso.
+  **(2) Si cada lead entró con su anuncio**: `totals.sin_anuncio` cuenta los que están en el CRM sin
+  `meta_ad_id` (`getMetaLeadgenIdsWithAd()`), que son las fichas anteriores a la columna de
+  atribución — están en el CRM pero no figuran en Campañas, así que contarlas solo en `en_crm`
+  daría por cerrada una comparación que no cerró. Se arreglan con el botón de completar datos del
+  formulario, no volviendo a importar; lo que la conciliación acaba de traer no se reporta como
+  incompleto porque la Graph API manda el `ad_id` junto al lead. Y los **formularios activos sin un
+  solo lead** se listan aparte (`formularios_activos_sin_leads`): en una lista de treinta
+  formularios, la mayoría viejos y vacíos, el que hay que ir a revisar se pierde entre los demás.
+- Los leads de **formulario instantáneo de TikTok** (TikTok Lead Generation) se traen a mano con el
+  botón «📥 Leads de TikTok» de Campañas (`tiktokLeadsService.js`, `GET`/`POST
+  /api/campaigns/tiktok/leads` bajo `campaigns.view` o `leads.view`). Es la conciliación de Meta
+  vista desde el otro lado: allá el webhook perdía leads en silencio y había que ir a buscarlos,
+  acá **no hay webhook en absoluto** —TikTok no llama a nadie—, así que los leads se quedaban en el
+  Centro de clientes potenciales de TikTok y el CRM nunca se enteraba de que existían. El síntoma
+  (30/10/2026): la campaña «TT | WA | Asesor | 27Oct» marcaba 21 conversiones en el Ads Manager y
+  su trazabilidad decía «todavía no hay contactos atribuidos a esta campaña».
+  **Las respuestas las lee el MISMO extractor que las de Meta** (`extractMetaLeadForm` en
+  `metaLeadFields.js`): las dos plataformas tienen idéntico problema —el nombre de cada pregunta no
+  es estable, es el texto que escribió el equipo convertido a slug— y ahí ya están resueltas las
+  reglas que costaron casos reales (la universidad antes que el nombre, un documento que nunca
+  entra como celular, los 9 dígitos como última red). Copiarlas daría dos extractores que el día
+  que alguien corrija uno dicen cosas distintas según de qué plataforma venga el lead. Por eso
+  `leadFromRow()` entrega las respuestas con la forma del `field_data` de Meta (`{name, values}`):
+  el adaptador va del lado de TikTok, no en el extractor.
+  Las columnas de atribución son **propias** (`tiktok_lead_id`, `tiktok_page_id`, `tiktok_ad_id`,
+  `tiktok_adgroup_id`, `tiktok_campaign_id`, `tiktok_created_time`) y no las `meta_*`: de
+  `meta_leadgen_id` cuelgan la conciliación de Meta y el backfill, que le preguntan a la **Graph
+  API** por cada id que encuentran, así que un id de TikTok ahí se reportaría para siempre como
+  "falta en el CRM" y gastaría una llamada por lead contra la API equivocada.
+  `persistTikTokLead()` es el **camino único** de alta (como `persistMetaLead`) y cruza por
+  teléfono con `findByPhone()` antes de crear nada: acá pesa más que en Meta, porque estas campañas
+  corren a la vez que las de Meta sobre el mismo público y el contacto que ya escribió por WhatsApp
+  y además llenó el formulario de TikTok es el caso normal. Un lead ya importado no se vuelve a dar
+  de alta (`getKnownTikTokLeadIds()` mira la columna **y** el marcador `[TikTok lead_id=...]` de
+  las notas, que es el único rastro que queda cuando la ficha se colgó de otra), así que correr la
+  importación dos veces no duplica a nadie. El `GET` solo compara y el `POST` importa, por la misma
+  razón que en Meta: traer leads agrega gente al funnel que el equipo va a trabajar y a repartir.
+  TikTok **no entrega los leads de una**: hay que pedir una tarea de descarga, esperar a que la
+  prepare y bajar el archivo (CSV, con el JSON admitido por si la cuenta lo devuelve así). De ahí
+  que el botón tarde unos segundos y que el CSV se parsee **de verdad** y no con `split(',')`: una
+  respuesta de texto libre trae comas y comillas, y partir por coma rompe justo en el lead cuya
+  respuesta era interesante. El permiso de **Lead Generation va aparte de Ads Management**: un
+  token sin él sincroniza las campañas perfecto y no lee un solo lead, sin que nada falle a la
+  vista — es el fallo más probable y el único que se arregla reautorizando.
+  `backend/scripts/diagnosticarTiktokLeads.js` (solo lee) lo comprueba antes de tocar nada.
+  Como consecuencia de que ahora SÍ hay algo que atribuir, `tiktokAdsService` **escribe
+  `campaign_ads`**, cosa que antes no hacía a propósito. El `ad_source_id` va prefijado con `tt:`
+  (igual que el `external_id` de la campaña) porque esa columna es ÚNICA y la comparten las dos
+  plataformas, y los ids de anuncio de las dos son numéricos: sin el prefijo un anuncio de TikTok
+  podría quedarse con la fila de uno de Meta y mandarle sus leads a la campaña equivocada. Por lo
+  mismo `#resolveContactAd()` le quita el prefijo para buscar en las MÉTRICAS, que se guardan con
+  el id pelado. La atribución entra por `#attributionFromTikTokForms()` con el mismo `sourceId` y
+  la misma forma que los dos caminos de Meta (`TIKTOK_FORM_SPEC`), y la misma persona por varios
+  caminos se cuenta UNA vez (`dedupeAttribution`): alguien que hizo clic en un anuncio de Meta y
+  además llenó el formulario de TikTok es un contacto, y contarlo dos veces infla las
+  conversaciones atribuidas y abarata el costo por lead de las dos campañas a la vez. El lead se
+  ubica en `tiktok_created_time` —cuándo lo llenó en TikTok— y no en `created_at`: uno del 27 de
+  octubre rescatado el 30 pertenece al 27, o el reporte no cierra contra el Ads Manager.
+- **De dónde salió un lead se contesta en un solo sitio**, `backend/services/leadOrigin.js`
+  (`leadOrigin(lead)`): plataforma (`Meta` · `TikTok` · `Orgánico` · `Referido` · `Otro`), canal
+  (`Formulario` · `WhatsApp` · `Mensaje directo`), campaña, conjunto, anuncio, el id del lead en la
+  plataforma y la fecha de ingreso. La respuesta vive repartida en tres juegos de columnas que
+  escriben tres caminos distintos (`meta_*`, `tiktok_*`, `ctwa_*`) más el texto libre de
+  `leads.source`, y cada pantalla que lo resolvía por su cuenta llegaba a una respuesta distinta:
+  así la exportación de marketing terminó marcando como "Meta" hasta los leads de TikTok, con la
+  venta de S/ 8.500 del 27/10/2026 acreditada a la plataforma equivocada. **"Meta" no es el valor
+  por defecto de nada**: lo que no se reconoce es `Otro`, porque un origen que no se sabe tiene que
+  poder contarse como tal en vez de abultar el de una plataforma que quizá no lo trajo.
+  Tres reglas que vinieron de arreglarlo: (1) **los NOMBRES se copian de la API al entrar el lead**
+  (`meta_ad_name`, `tiktok_campaign_name`, …) y no se resuelven después contra las métricas
+  sincronizadas de la campaña, donde solo están los anuncios que siguen entregando — un anuncio
+  pausado o borrado dejaba al lead como "Sin campaña asignada" teniendo su `ad_id` guardado; el
+  enlace sigue siendo por **id**, así que un nombre que cambie en la plataforma no rompe nada y el
+  guardado es el que ese lead tuvo. (2) **La atribución de un Click-to-WhatsApp vive en el lead**
+  (`ctwa_ad_id`, `ctwa_clid`, `ctwa_source_type`, `ctwa_headline`) y no solo en el `referral` del
+  primer mensaje: el webhook responde 200 ANTES de procesar, así que un primer mensaje que no se
+  guardó se llevaba el único rastro del anuncio y el contacto pasaba por orgánico — de ahí
+  `CTWA_LEAD_SPEC` en `campaignService`, que recupera a esos contactos desde su propia ficha y va
+  último en el desduplicado (cuando el mensaje sí está, gana la fila de `whatsapp_messages`, que
+  trae además el titular y la conversación). (3) Los ids viajan como **texto**: son números de 15 a
+  17 dígitos y cualquier paso por `Number` les cambia los últimos o los pasa a notación científica.
+  El prefijo `tt:` es interno del CRM (`campaign_ads.ad_source_id` es única y la comparten las dos
+  plataformas) y `bareSourceId()` lo quita antes de publicar el "ID de origen", que es lo que se
+  compara dígito por dígito contra el Ads Manager.
+  La atribución **no se edita desde ninguna pantalla**: `updateLead()` tiene lista blanca y esas
+  columnas no están en ella. Un id de anuncio corregido a mano es un lead acreditado a una campaña
+  que no lo trajo, y de esos números cuelga el presupuesto. Lo que sí es libre es `source`, el canal
+  escrito a mano de un lead que no vino de un anuncio.
+- **Coincidir no es identificar.** El origen de un lead es un **sello**
+  (`leads.origin_platform`), escrito una vez al nacer la ficha y nunca reescrito, y queda asentado
+  con qué evidencia se lo supo (`attribution_method`, `attribution_confidence`,
+  `attribution_reconciled_at`). La regla vive en `backend/services/attributionEvidence.js`
+  (`resolveMatch()`, `writesAttribution()`, `demoteLaunderedMarker()`).
+  Vino de un error que corría solo: la importación de TikTok, cuando no encontraba la ficha por el
+  `lead_id` del envío, la buscaba por los **últimos 9 dígitos del teléfono** y con eso le escribía
+  campaña, grupo y anuncio. Como `leadOrigin()` preguntaba por las columnas `tiktok_*` **antes** que
+  por las demás, esa ficha pasaba a ser "TikTok" en todas las hojas de marketing y tapaba su origen
+  real; y la conciliación diaria corre con `apply: true`, así que eso se escribía sin que nadie lo
+  mirara. Que TikTok reporte 21 leads y el CRM tenga 21 fichas del mismo corte **no empareja ninguna
+  de las 21 con ninguna de las otras**.
+  Solo la evidencia **independiente** habilita escribir la atribución: el id que la plataforma
+  emitió para ESE envío (`tiktok_lead_id`, `meta_leadgen_id`), su marcador en las notas, o la
+  recepción del webhook. El teléfono sigue sirviendo para **no duplicar a una persona**, que es otro
+  problema: dos fichas de la misma persona son un estorbo, una ficha con la plataforma equivocada es
+  un presupuesto mal repartido. Con el teléfono como única evidencia el envío se cuelga de la ficha
+  —el marcador en las notas, que es lo que impide volver a darlo de alta en cada pasada— y la
+  atribución **no se escribe**. El `tiktok_lead_id` está gateado como el resto a propósito: de esa
+  columna cuelga el bloque de TikTok de `leadOrigin()`, así que escribirla ES atribuir.
+  `demoteLaunderedMarker()` cierra el camino que lavaba la evidencia débil: un envío colgado por
+  teléfono deja igual su marcador, y en la corrida siguiente ese marcador se encontraría como
+  evidencia ALTA — el teléfono habría atribuido el lead dos días después y por la puerta de atrás.
+  La ficha recuerda con qué se la emparejó y una confianza baja no se asciende sola.
+  **Las coincidencias ambiguas no se asignan: se anotan.** `findAllByPhone()` devuelve TODAS las
+  candidatas (y no la que gana el `ORDER BY`, que entre dos personas con el mismo sufijo es una
+  moneda al aire); con más de una no se toca ninguna ficha y el caso va a `attribution_conflicts`
+  (`attributionConflictService.js`, `GET /api/attribution/conflicts`,
+  `PATCH /api/attribution/conflicts/:id/resolve`) con las candidatas, el motivo
+  (`multiple_phone_match` · `phone_only_match` · `origin_conflict`) y el **payload** del envío —la
+  atribución y las respuestas del formulario—, porque TikTok conserva los leads de un formulario
+  solo 90 días y después ya no hay a quién volvérselos a pedir. Tampoco se abre una tercera ficha:
+  la persona ya está en el funnel (por eso hay fichas que coinciden) y lo único pendiente es de qué
+  anuncio salió. El registro es **idempotente** por (plataforma, id del envío) y no reabre un caso
+  ya resuelto: la conciliación diaria vuelve a encontrarlo en cada corrida mientras nadie lo
+  resuelva, y una fila por día es la forma más común de que una lista de pendientes deje de mirarse.
+  Resolver **no escribe la atribución** —eso se hace sobre el lead, con método `manual`—: asienta que
+  alguien lo decidió y quién.
+  Los pendientes se cuentan **aparte de los fallidos** en el reporte de la importación y en el
+  resumen del barrido diario (`totals.pendientes`): no falló nada, falta decidir, y mezclarlos hace
+  que un pendiente se lea como un error del que no hay que hacer nada.
+  `leadOrigin()` cambia en consecuencia: lo que llegó después del sello se informa en `secondary` y
+  la ficha queda marcada con `conflict: true` en vez de que la columna nueva reescriba la historia.
+  Sin sello —las fichas anteriores a la migración, que el backfill sella con el MISMO
+  `leadOrigin()` y no con una copia de sus reglas— gana la evidencia **más antigua**, que es lo más
+  cerca de "cuál fue primero" a lo que se puede llegar sin preguntarle nada a nadie.
+- La hoja **"Ruta de leads"** del exportable de Campañas es un **contrato con marketing**: su
+  importador busca las columnas por el **nombre del encabezado** (sin distinguir mayúsculas ni
+  tildes), así que renombrar una la deja fuera del reporte sin que nada falle a la vista. Lleva una
+  fila por lead —**atribuido o no**: la pregunta que contesta es de dónde salió cada lead, y con
+  solo los de campaña no se puede comprobar que ninguno se haya quedado sin plataforma—. Los leads
+  no atribuidos se enriquecen por el MISMO camino que los atribuidos (`#nonAttributedContacts()` +
+  `#enrichContacts()`), así que su etapa, su cita y su dinero se calculan con las mismas reglas:
+  dos criterios para lo mismo es como se llega a que cada mitad de la hoja diga otra cosa. Dos
+  reglas de redacción, y la diferencia importa: **`-` es "acá no hay nada que poner"** (un lead
+  orgánico no tiene anuncio) y **`sin dato` es "esto vino de un anuncio y el dato falta"**, que es
+  lo que marketing va a buscar y nunca trata como cero.
+  La hoja publica además **con qué evidencia** se supo cada origen —«Fuente de atribución»,
+  «Confianza de atribución», «Conciliado» y «Plataforma secundaria»— y la **versión del esquema**
+  (`LEAD_TRAIL_SCHEMA_VERSION`, hoy 3), por fila y no en una celda al margen: una fila copiada a
+  otra herramienta tiene que poder decir sola con qué esquema se generó, y sin la fuente la hoja
+  afirma una plataforma sin dejar comprobar cómo se llegó a ella.
+  Y hay una tercera convención, que es de dinero: **`0` es "no entró nada" y `sin dato` es "no se
+  puede saber"**. Un contacto sin ficha en el CRM no tiene cobros que consultar, y escribir «S/ 0»
+  de él afirma que no pagó nada cuando lo que pasa es que no lo sabemos — con eso se apaga un
+  anuncio que sí vendía. En el agregado por anuncio la diferencia viaja como `sinFicha`, el conteo
+  de contactos cuyo dinero no se puede sumar: una suma no puede sumar un desconocido, y sin el
+  conteo el total se lee como completo cuando puede no estarlo. La clave de agrupación por anuncio
+  lleva la **plataforma** adelante, porque los ids de Meta y de TikTok son los dos numéricos.
+- La **calificación comercial** es un dato propio en TRES estados (`leads.qualified`, vacío por
+  defecto; `PATCH /api/leads/:id/qualified`, `LeadQualification.vue` en la ficha de los dos
+  tableros). Antes se **derivaba** de que el lead hubiera salido de `nuevo`, con lo que decía "Sí"
+  en 403 de 403 leads y no servía para medir la calidad de ningún anuncio, que es justo para lo que
+  se la mira. El vacío es información —separa al lead que nadie revisó del revisado y descartado—, y
+  un "No" por defecto haría el mismo daño con el signo cambiado. La pone una **persona** y nunca un
+  automatismo (es un juicio sobre el contacto, no algo que se deduzca de por dónde pasó la
+  tarjeta), queda escrito quién y cuándo, y el **criterio va escrito y a la vista**
+  (`src/leadQualificationCriteria.js`, un solo sitio para las dos pantallas): de esa marca cuelga la
+  decisión de cortarle el presupuesto a un anuncio, y dos personas calificando con criterios
+  distintos la vuelven tan inútil como cuando decía "Sí" siempre. Va aparte del `PUT /api/leads/:id`
+  del formulario por lo mismo que la píldora de estado del Libro Diario. No toca el funnel.
+- **La etapa de cita avisa si le falta su reunión, pero no frena.** Un lead en `cita_agendada` sin
+  una reunión no cancelada en `scheduled_meetings` es una cita sin fecha ni hora: el closer no la ve
+  en su Calendario, el bot no manda el recordatorio y el embudo cuenta una cita que nadie puede ir a
+  buscar. Entre el 01 y el 02/11/2026 eso se frenó con un 409 y **frenaba de más**: la reunión se
+  carga con "Agendar reunión", que exige `calendar.view`, y el setter puede no tenerlo — con lo que
+  el pase le quedaba cerrado sin nada que pudiera hacer al respecto. Ahora el movimiento se hace
+  siempre y lo que queda es el **rastro**, que es lo que de verdad hacía falta: sin él, "cita con
+  reunión" y "cita sin reunión" se escriben igual en la columna y no hay forma de separarlas después.
+  Son tres piezas y una sola pregunta: `activeMeetingForLead()` (en `scheduledMeetingService.js`) la
+  contesta para todos; `updateLeadStatus()` escribe el motivo en `lead_stage_changes` y devuelve
+  `appointment_without_meeting` **derivado en cada lectura**, nunca guardado —en cuanto alguien
+  cargue la reunión deja de ser cierto, igual que `is_locked` de un hito—; y las pantallas avisan con
+  eso. Al **bot no se le pregunta**: llega ahí después de reservar el bloque, así que para él la
+  reunión existe siempre. Y solo al ENTRAR a la etapa: un lead que ya estaba ahí se mueve a donde sea
+  sin que esto opine. El pase manual al closer del Setter Funnel ("ya coordiné la reunión por mi
+  cuenta") pregunta antes por `GET /api/leads/:id/meeting` y lo advierte en el propio diálogo —si esa
+  consulta falla **no** se avisa, porque un aviso que nombra un problema inexistente enseña a
+  ignorarlo—; arrastrar una tarjeta o usar el desplegable lo dice después, en el aviso de la barra y
+  no en un `alert`: mover tarjetas es trabajo en serie, y un diálogo por tarjeta se aprende a cerrar
+  sin leerlo.
+- **"A este lead ya se le contestó" es una columna** (`leads.first_response_at` / `_by`) y no una
+  consulta sobre la tabla de mensajes. Se escribe sola desde los dos caminos por los que de verdad
+  se contesta (`leadFirstResponse.js`): cualquier saliente de WhatsApp —lo mande Avan, una persona
+  desde el panel o un asesor desde la app de WhatsApp Business vía el eco— y la **primera nota de la
+  ficha**, que es el único registro que deja una llamada (el teléfono no pasa por el sistema). El
+  cálculo anterior vivía solo en el exportable y miraba el primer saliente de la conversación, así
+  que dejaba fuera a los leads que son el problema: el de formulario que nunca escribió por WhatsApp
+  no tiene conversación, y no se podía distinguir "no se le contactó" de "se le llamó y nadie lo
+  registró" (12 de los 22 leads de "FORM | contrato | 25Oct", 31/10/2026). Nunca pisa la marca
+  existente —interesa la PRIMERA— y nunca puede tumbar un envío. Pasadas 24 h sin respuesta la
+  tarjeta de los dos tableros muestra un reloj (`src/leadFirstResponse.js`,
+  `needsFirstResponse()`): va como marca en el renglón del nombre y no como línea propia porque la
+  tarjeta tiene alto fijo, y un lead con proyecto abierto no avisa — el aviso sirve para perseguir
+  lo que falta, no para auditar el pasado.
+- En el reporte de Campañas, **"Cobrado" es lo `verificado`** y no lo `pagado`: de los tres estados
+  de una cuota, `verificado` es el único que suma en los libros de Finanzas (`ESTADOS_INGRESO`) —
+  `pagado` es "el cliente dice que pagó y Finanzas todavía no dio el visto bueno". Contando `pagado`
+  el reporte sumaba dinero que podía no haber llegado y dejaba FUERA el confirmado, así que el
+  ingreso y el ROAS por anuncio no coincidían con el Resumen Financiero. Por lo mismo `isWonLead()`
+  tiene un **tercer camino**: un lead con una cuota verificada es una venta cerrada aunque su
+  tarjeta se haya quedado sin mover (la plata es el hecho más difícil de discutir de los tres), y
+  sin él la hoja mostraba dinero cobrado en una fila cuya etapa decía "cotización" — S/ 2.300 en
+  "Acompañamiento 17 Sep" con cero leads en Ganado. El lead que todavía no se ganó y YA tiene
+  cronograma registrado se nombra **"Cuota pactada"** en la hoja: el precio está acordado y el
+  dinero no entró, y sin ese nombre se confundía con una cotización. Esa etiqueta es solo de la
+  hoja: los cuatro cajones de `crmStage` con los que se cuentan los leads por anuncio siguen siendo
+  cuatro, porque su suma tiene que ser el total de leads del anuncio.
+- **La conversación de WhatsApp que se quedó sin ficha se recupera sola, cada diez minutos**
+  (`orphanConversationService.js` + la tercera pata de `leadReconciliationSweep.tick()`). Guardar el
+  mensaje entrante y abrir la ficha son **dos escrituras del mismo webhook**, que ya respondió 200:
+  si la segunda falla no se reintenta nunca y lo que queda es una persona que escribió, a la que el
+  bot hasta le contestó, y que no figura en ningún tablero — un contacto perdido no falla,
+  simplemente no está. El servicio y los dos scripts existían desde el 02/11/2026 (ocho
+  conversaciones así) y dependían de que **alguien los corriera**, o sea el mismo botón de las otras
+  dos conciliaciones: el 09/11/2026 apareció otra, y se descubrió igual que la primera vez, porque
+  alguien buscó a mano a UN contacto que no encontraba. Corre en **cada vuelta** del temporizador y
+  no a las 07:00 como las de anuncios —a un contacto sin ficha no lo ve el setter, así que esperar
+  al día siguiente es perderle el día en que escribió—, y puede hacerlo porque no le pregunta nada a
+  ninguna API de afuera y porque adoptar es idempotente (`findOrCreateFromWhatsApp()` cruza por
+  teléfono antes de crear). La corrida diaria repite el repaso con la ventana de **30 días**, que es
+  la red para lo que quedó atrás con el proceso caído; la frecuente mira **2 días**, y al **arrancar** el proceso se hace el repaso del mes una vez
+  (`catchUpOnStart()`): la primera vuelta del temporizador llega recién a los diez minutos y mira
+  dos días, así que sin eso un despliegue hecho para recuperar un contacto no recupera nada — y es
+  en ese rato cuando se lo juzga. Es el mismo sondeo inicial que ya hacía `pageFollowerService`.
+  Adoptar usa el
+  MISMO camino del webhook y no un `insert` propio: de ahí cuelgan el sello de origen, la evidencia
+  y el reparto, y si ese camino está roto —la causa más probable de que haya huérfanas— el error se
+  ve tal cual, que es lo que hace falta ver.
+- **Una ficha borrada a mano no vuelve sola** (`lead_deletions`, `wasDeletedOnPurpose()`). Es la otra
+  cara de lo anterior: desde que el barrido adopta solo, "la ficha nunca se abrió" y "alguien la
+  sacó a propósito" se ven **igual** —conversación sí, ficha no— y se resuelven al revés, así que
+  sin distinguirlas borrar un lead cuya conversación sigue en la bandeja lo haría reaparecer a los
+  diez minutos. Lo que las separa es la **fecha**: el borrado tapa lo anterior a él y nunca lo
+  posterior, de modo que un contacto que vuelve a escribir después recupera su ficha igual — eso es
+  actividad nueva, y es lo mismo que haría el webhook con ese mensaje. `deleteLead()` escribe el
+  rastro **leyendo la ficha antes de borrarla**, que es el único momento en que se puede (sus notas,
+  su historial de etapas y sus comisiones están en CASCADE), y nunca puede tumbar el borrado: si la
+  tabla no existe todavía en ese entorno, el lead se borró igual y queda dicho en el log. La tabla
+  es además lo único que queda de un lead borrado —misma idea y misma forma que
+  `whatsapp_conversation_deletions`—, no una papelera: guarda con qué se lo reconoce y quién lo
+  borró, no la ficha entera. Las conversaciones salteadas por este motivo se **cuentan aparte**
+  (`borradas`) en el barrido y en los dos scripts: "no había nada que recuperar" y "había tres y las
+  habían borrado" son dos respuestas distintas.
+- **En el Reporte de Leads, un número se busca por sus dígitos** (`applySearch()` +
+  `PHONE_DIGITS_SQL`). El filtro hacía `LIKE '%982768859%'` sobre la columna cruda y no encontraba al
+  lead guardado como "+51 982 768 859" —el formato con el que entra el formulario de Meta, o sea la
+  mayoría—: los espacios caen justo en medio de lo que se buscó. Los dos tableros ya buscaban por
+  dígitos (`src/leadSearch.js`), así que el mismo número aparecía ahí y no acá, y de las dos
+  respuestas la del reporte es la que manda a revisar el webhook por un lead que estaba todo el
+  tiempo. Una consulta de puros dígitos mira **solo** id, teléfono y documento —los dos últimos sin
+  separadores—, que es la regla que ya tenían los tableros; la búsqueda por texto no cambió.
+  `PHONE_DIGITS_SQL` está aparte de `PHONE_MATCH_KEY_SQL` porque son dos preguntas distintas sobre
+  el mismo teléfono: "¿es la misma persona?" se contesta con los últimos 9 dígitos, "¿contiene lo
+  que escribí?" no — quien busca teclea un pedazo, y recortar a nueve antes de comparar deja fuera
+  la mitad de los casos.
+- **Las dos conciliaciones corren solas una vez al día** (`leadReconciliationSweep.js`, colgado del
+  barrido de diez minutos que ya existía; `LEAD_RECONCILIATION_HOUR`, 07:00 de Lima por defecto).
+  Recuperar leads dependía de que alguien apretara un botón, y así se perdió el 39% de los leads de
+  formulario de Meta de septiembre de 2026 (95 en el Administrador de anuncios contra 58 en la base)
+  sin que nada fallara a la vista: un lead perdido no falla, simplemente no está — y Meta solo
+  conserva los de un formulario **90 días**. Tres decisiones: **importa y no solo reporta** (un
+  informe que nadie mira es el mismo botón con otra forma, y las dos importaciones son idempotentes
+  porque cruzan por el id del lead en la plataforma y por teléfono antes de crear nada); mira una
+  **ventana de tres días** y no solo el día de ayer, así el día que falle lo cubre el siguiente; y el
+  fallo de una plataforma **no detiene a la otra** (son dos APIs con dos tokens, y el permiso de Lead
+  Generation de TikTok se cae solo). El día se marca como corrido ANTES de empezar, para que un
+  token rechazado no deje el barrido reintentando cada diez minutos. Los botones de cada
+  conciliación siguen existiendo para cuando hay que mirar el detalle ahora mismo.
+  La importación de TikTok, además, **completa las fichas que ya están en el CRM** a las que les
+  falta atribución (`#completeAttribution()`, cuenta `completados`): los 21 leads del 27 al 31/10
+  entraron con los ids y sin los nombres, y traer solo lo que falta por entero dejaría a medio
+  arreglar justo lo que se vino a arreglar. Solo escribe los huecos. El backfill de Meta
+  (`runMetaLeadgenBackfill()`) hace lo mismo con la atribución histórica preguntándole a la Graph
+  API; lo que Meta ya no devuelve queda en "sin dato" y no se inventa.
+- **Una conciliación tiene cinco cajones, no dos** (`backend/services/reconciliationBuckets.js`,
+  compartido por las conciliaciones de Meta y de TikTok). Las dos reportaban «en la plataforma»,
+  «en el CRM», «faltantes» y «fallidos», y con eso una diferencia nunca se terminaba de explicar:
+  «faltan 37» podía ser 37 leads perdidos, o 12 **duplicados** que la plataforma devuelve dos
+  veces, 9 **reingresos** —personas que ya estaban en el CRM de antes del corte y volvieron a
+  llenar el formulario—, 6 **inválidos** sin un dato con el que llamar a nadie y 10 **retrasados**
+  entregados fuera de su propio corte. Cada uno se arregla distinto y tres de los cinco **no se
+  arreglan: están bien así**. Mezclados, la conciliación produce una alarma que nadie puede cerrar
+  — y una alarma que nadie puede cerrar se deja de mirar.
+  Los cajones son **excluyentes y ordenados por prioridad**, y eso es una propiedad y no un
+  detalle: su suma tiene que ser el total de envíos del corte, que es lo único que permite afirmar
+  que la comparación cerró. El duplicado va primero (si no, un envío repetido y sin teléfono se
+  contaría dos veces), el retraso antes que el reingreso (lo que define al retraso es CUÁNDO se
+  envió, no si la persona ya estaba), y una ficha creada **dentro** del corte no vuelve reingreso a
+  su propio envío — eso esconderría el alta que sí ocurrió. El módulo es **puro** y repite
+  `phoneKeyOf` en vez de importar `leadService`, con un test que lo compara contra `phoneMatchKey`:
+  el día que se separen, un envío se clasificaría como nuevo y después se emparejaría con una ficha
+  existente. Los dos conjuntos de «ya visto» son de la **corrida** y no del formulario: un mismo
+  envío puede venir en dos formularios. En Meta el envío anterior al corte se **cuenta y recién
+  después se saltea** (antes `inRange` lo descartaba en silencio, así que un formulario entregado
+  tarde no aparecía en ninguna cifra).
+  **Y el reporte dice qué universo cuenta cada cifra** (`COMPARABILIDAD`, en la respuesta y no solo
+  en un comentario): el campo «conversiones» del Administrador de anuncios **no** cuenta envíos de
+  formulario —cuenta el evento de conversión configurado en la campaña, que puede ser un clic, un
+  mensaje iniciado o una compra—, así que exigir que el CRM dé ese mismo número manda a buscar
+  leads que nunca existieron. Para comparar contra el Ads Manager se mira su reporte de clientes
+  potenciales del formulario, no la columna de conversiones de la campaña.
+- **WhatsApp tiene tres niveles y no uno** (`isNewOpportunity()` en `campaignService.js`):
+  «Conversaciones (Meta)» es el **evento atribuido** —cualquier clic que abre el chat, siempre el
+  número más grande—, «Conversaciones atribuidas (CRM)» es la **conversación entrante** que el CRM
+  reconoce, y «Personas nuevas (CRM)» es la que trajo a alguien que **no estaba**: la ficha nació
+  de esa conversación. Sin el tercero, el costo por conversación se lee como costo por persona
+  nueva, y un anuncio de retargeting —que por definición le habla a quien ya está en la base—
+  parece tan eficiente como uno que trae gente nueva. Los tres se publican juntos para que la
+  brecha entre ellos se pueda explicar en vez de discutir. El margen de cinco minutos existe
+  porque las dos marcas de tiempo las escriben caminos distintos (el webhook y el alta), así que
+  comparar por igualdad contaría como «ya estaba» a quien acaba de llegar; un lead de formulario
+  que después escribe por WhatsApp queda del lado correcto, porque entre el formulario y el mensaje
+  pasan minutos u horas.
+- **Un puente de datos se describe a sí mismo** (`backend/services/bridgeContract.js`,
+  `bridgeEnvelope()`, `pageCapNotice()`, `listCapNotice()`). Todos los puentes del CRM tenían el
+  mismo agujero: **recortaban en silencio**. `forms.slice(0, MAX_FORMS)` cortaba a 100 formularios
+  en la importación de TikTok; `listForms()` de Meta corta a `MAX_PAGES` páginas de la Graph API y
+  si quedaba un `paging.next` los formularios que seguían no existían para la comparación;
+  `#getPaged()` de TikTok se detenía en la página 20 aunque `total_page` dijera 35. El daño es peor
+  que un error: la comparación devuelve un resultado que **parece completo**. «Están todos» y
+  «están todos los que miré» se escriben igual en la pantalla, y de esa diferencia cuelga ir a
+  buscar leads perdidos o darlos por recuperados.
+  El sobre lleva `esquema` (nombre y **versión**, que se sube a mano cuando cambia el significado
+  de un campo y no cuando se agrega uno), `total_filas`, `filas`, `offset`, `limites` —publicados
+  siempre, incluso cuando nada se recortó: un límite que solo se descubre al chocarlo es un límite
+  indocumentado— y `recortado` + `avisos`. Los tres últimos juntos y no uno: un total sin
+  `recortado` obliga al consumidor a restar para enterarse, y el que no resta se lleva la mitad de
+  los datos creyendo que son todos. Un `total_filas` en `null` es «no se puede saber» (la Graph API
+  pagina por cursor) y **no** se lee como recorte. El aviso lo agrega `bridgeEnvelope` y no cada
+  llamador: puesto en el llamador, el siguiente puente se olvida de ponerlo. `apiPaged()` de TikTok
+  acepta `onTruncate` —un callback y no un campo en la instancia, para no dejar estado compartido
+  entre corridas—.
+  **El acceso mínimo está escrito** (`MINIMUM_ACCESS`, y viaja en la respuesta de las dos
+  conciliaciones): cada permiso dice para qué es, qué deja de funcionar sin él y cómo se consigue.
+  Va en un solo sitio porque el reflejo ante un 403 de una API de anuncios es pedir todos los
+  permisos y reautorizar la app, y eso amplía el alcance del token a ciegas — un token con más
+  permisos de los que usa es un token que, filtrado, hace más daño.
+- **Smart+ tiene dos niveles, y el que no se sabe se declara desconocido**
+  (`backend/services/smartPlusLevel.js`, columnas `tiktok_parent_ad_id`, `tiktok_creative_id`,
+  `tiktok_video_id`, `tiktok_video_name`, `tiktok_creative_valid_from` / `_to`). Una campaña Smart+
+  no tiene un anuncio y una pieza: tiene un anuncio **padre** y, debajo, piezas creativas que
+  TikTok combina y rota sola. El CRM guardaba un solo `tiktok_ad_id`, así que de un lead de Smart+
+  no se podía decir qué pieza lo trajo **ni se podía decir que no se sabía**: salía como un lead de
+  ese anuncio, igual que uno de una campaña simple.
+  El gasto se reporta al **padre** (`SPEND_LEVEL`), así que el costo por cita y por venta se
+  calculan ahí: con el gasto en el padre y las citas en la pieza, la división no da el costo de
+  nada. Y la pieza queda `desconocida` — **nunca se infiere por descarte**. Si una campaña tiene
+  tres videos y el lead trae solo el id del padre, atribuirlo al que más impresiones tuvo ese día
+  produce un número que parece cierto, que nadie puede auditar, y del que cuelga cortar una pieza
+  que quizá era la que vendía. En una campaña que **no** es Smart+ el anuncio es su propio padre,
+  para que la distinción no le quite la atribución a la mayoría de los leads.
+  **Anuncio, pieza y video son tres identificadores distintos** y van en columnas separadas: el
+  anuncio compra el presupuesto, la pieza es la combinación que armó TikTok y el video es el
+  archivo subido. Un mismo video vive en varias piezas y una pieza puede cambiar de anuncio, así
+  que mezclarlos hace que «el video que mejor convierte» y «el anuncio que mejor convierte»
+  devuelvan respuestas distintas sin que se sepa cuál es cuál; el nombre del **archivo** tampoco es
+  ninguno de los tres. La **vigencia** de la pieza se guarda para no dividir el gasto de un período
+  por leads cuya pieza ni existía entonces, que es la forma más silenciosa de que un costo por lead
+  salga absurdo; `withinValidity()` devuelve `null` —y no `false`— cuando no hay con qué comprobar.
+  La hoja «Ruta de leads» publica «Nivel de atribución», el id del padre, el de la pieza, el del
+  video, su nombre y la vigencia, y el agregado por anuncio cuenta `piezaDesconocida`.
+  Las columnas nacen vacías y **no hay backfill**: TikTok no expone el nivel hijo en esta cuenta
+  hoy, el dato histórico no está en ningún lado, y eso es la respuesta correcta y no una tarea mal
+  hecha. `backend/scripts/diagnosticarSmartPlus.js` (solo lee) contesta las tres preguntas que no
+  se pueden contestar leyendo el código: qué nivel devuelve la descarga de leads, cuál el reporte
+  de gasto, y si los ids de los dos lados son del mismo nivel — dos endpoints de la misma API
+  pueden devolver niveles distintos con el mismo nombre de campo, y ahí el cruce «cierra»
+  emparejando cosas que no son la misma.
 - Lo que Meta nos manda **vuelve a Meta**: `metaConversionsService.js` le devuelve, por la
   **Conversions API**, en qué etapa del funnel terminó cada lead que llegó de un anuncio
   (`/api/meta-capi` bajo `webhooks.view`, pantalla en `MetaConversionsPanel.vue` dentro de
@@ -612,6 +1317,11 @@ antes de tocar el arranque de producción.
   la mayoría, no pasan por YCloud), solo admite dos eventos (`Lead` y `Purchase`) y para saber que
   un lead pasó a "Cotizado" habría que llamarlo igual desde acá — un salto extra para un dato que
   el CRM ya tiene y el proveedor no.
+  El evento de formulario lleva además `custom_data.lead_event_source`, que es el texto con el que
+  el Administrador de eventos identifica el origen de la "Integración de CRM" —hoy **"CRM
+  AVANTAGE"**, `META_CAPI_LEAD_EVENT_SOURCE` para cambiarlo—: es lo único de ese payload que el
+  equipo lee en pantalla, y sin él el evento se acepta igual pero queda sin atribuir a ninguna
+  integración, el mismo fallo silencioso que el conjunto de datos cruzado.
   Un lead se reporta solo si **Meta puede reconocerlo**, y hay dos caminos: su `lead_id`
   (`leads.meta_leadgen_id`, formularios instantáneos → `action_source: 'system_generated'` +
   `custom_data.event_source: 'crm'`) o su `ctwa_clid` (el click id que viaja en el `referral` del
@@ -684,6 +1394,152 @@ antes de tocar el arranque de producción.
   rechaza —acepta el evento y no atribuye nada—, el mismo fallo silencioso que el conjunto de
   datos cruzado. Aparte: v21.0 **expira el 21/01/2027**, así que la versión global hay que subirla
   igual, pero eso toca todas las integraciones y es un cambio con sus propias pruebas.
+- **Una cita agendada no es una cita asistida** (`scheduled_meetings.attendance` / `_at` / `_by`,
+  `ATTENDANCE_VALUES`, `setAttendance()`, `PATCH /api/meetings/:id/attendance`). La tabla sabía si
+  la reunión se había **cancelado** —el evento desapareció del Google Calendar del asesor— pero no
+  si alguien se presentó, así que todo lo que mide el embudo contaba como cita a la que nadie fue:
+  la tasa por anuncio, el reporte de setters, el costo por cita del exportable. Un anuncio que trae
+  gente que agenda y no aparece se leía exactamente igual que uno que trae gente que se presenta, y
+  es la diferencia entre un público bueno y uno que hay que dejar de comprar.
+  **Tres estados**, por la misma razón que `leads.qualified`: el vacío es «nadie lo registró» y no
+  «no vino» — un `false` por defecto mostraría como ausencias todas las reuniones viejas, que son
+  casi todas. Por eso el reporte de setters publica `attendanceUnknown` junto a `attendanceRate`:
+  una tasa de asistencia en cero puede ser un setter que agenda reuniones a las que nadie va o un
+  equipo que no está registrando el desenlace, y a una se le baja el presupuesto y a la otra se le
+  pide que complete el registro. La tasa se calcula sobre las **citas conseguidas** y no sobre los
+  leads: lo que mide es si las reuniones que ese setter agenda de verdad ocurren.
+  Lo marca una **persona** y nunca un automatismo: Google Calendar no sabe quién entró a la sala, y
+  deducirlo de que la reunión ya pasó convertiría esto en lo que `qualified` era antes de
+  arreglarse. En la agenda el control sale solo en la reunión que **ya pasó y no está cancelada**
+  (de una cancelada no se puede decir que alguien no asistió: cancelar es que la reunión no existe
+  más), volver a tocar la marca la borra, y la fila se escribe **en memoria** sin recargar el mes —
+  recargar volvería a pedir la disponibilidad del equipo, el pedido más caro de esa pantalla.
+  `attendance` es texto y no booleano porque esto crece: «reprogramada en el acto» y «asistió
+  tarde» son desenlaces que el equipo distingue al hablar.
+- **Los cinco desenlaces del funnel van separados** en el exportable de Campañas: «Citas
+  agendadas», «Citas asistidas», «Leads en cotización», «Ventas cerradas» y «Leads cobrados»
+  (`appointments`, `attended`, `quotation`, `won`, `collected` en `#breakdownByAd()`). Cerrada no
+  es cobrada: «cobrado» es lo **verificado** en Finanzas, que es el hecho más difícil de discutir
+  del funnel. La hoja «Ruta de leads» lleva además «Cita asistida» con los mismos tres estados.
+  Tres de esas columnas —«Citas agendadas», «Citas asistidas» y «Leads cobrados»— estuvieron
+  **declaradas y sin escribir** hasta el 12/11/2026: `adAttributionRow()` no copiaba el conteo que
+  `#breakdownByAd()` ya calculaba, así que salían en blanco en todas las filas del libro que se
+  reporta, y una columna vacía se lee como un cero — con ella así, ningún anuncio parecía haber
+  traído una sola cita. Lo mismo le pasaba a «Personas nuevas (CRM)» en la hoja de Campañas. Es un
+  fallo que no rompe nada y que solo se ve mirando el archivo, de ahí el test que recorre esas
+  columnas por su valor y no por su encabezado.
+- **El dinero del funnel son CUATRO cifras y no dos** (`#summariseGroup()`, `#breakdownByAd()` y
+  las tres hojas del exportable): lo **cotizado** (el pipeline abierto, lo que se propuso), lo
+  **registrado de ventas ganadas**, la **cuota pactada sin cerrar** (asentada en Finanzas para un
+  lead que todavía no se ganó) y lo **cobrado y verificado**. Vienen de la auditoría comercial del
+  corte del 10/11/2026, donde las dos que había decían cosas que no eran:
+  (1) **lo cotizado solo se llenaba para los leads ganados** (`won && lead ? quoteByLead...`), así
+  que las 63 oportunidades en «Cotización / propuesta» salían las 63 en cero y el valor del
+  pipeline no se podía consultar en ninguna parte — ni cuánto hay en juego, ni qué descuento se
+  ofreció, ni qué tan efectivas son las propuestas, que es lo que se mira para saber si el problema
+  es el anuncio o el cierre. Lo que se cotizó es un hecho con fecha propia y no un atributo de
+  haber ganado.
+  (2) **«Registrado» sumaba las ventas ganadas y los acuerdos sin cerrar en una sola celda**: los
+  S/ 40.600 que el reporte presentaba como contratos eran S/ 14.800 de 7 ventas ganadas y S/ 25.800
+  de 7 leads en «Cuota pactada» sin un solo cobro. El total se sigue publicando —es lo que las
+  hojas venían leyendo— pero con sus dos mitades al lado, para que no haga falta restarlas.
+  El **ROAS se calcula sobre lo cobrado** y no sobre lo cotizado. Antes dividía el valor cotizado
+  de los ganados entre el gasto, lo que ya era discutible; con la cotización abierta ahora incluida
+  sería directamente falso — el anuncio que solo genera propuestas que nunca cierran mostraría el
+  mejor retorno del libro. El cociente sobre lo cotizado se publica aparte y nombrado por lo que es
+  («Cotizado / gasto»), porque de esta cifra cuelga dónde se pone el presupuesto.
+- **La primera respuesta sale de la ficha del lead, y son dos relojes** (`leads.first_response_at`
+  / `_by`, ver `leadFirstResponse.js`). El exportable la calculaba como el primer saliente de la
+  conversación de WhatsApp, que es justo lo que no tiene el lead que importa: el de formulario que
+  nunca escribió por WhatsApp salía con la celda vacía, y «no se le contactó» y «se le llamó y
+  nadie lo registró» se escribían igual (109 de 450 leads en el corte del 10/11/2026). La columna
+  del lead cubre los dos caminos por los que de verdad se contesta —cualquier saliente y la primera
+  nota de la ficha, que es el único registro que deja una llamada—.
+  Los dos relojes son el **acuse** y la **atención humana**, y se publican separados porque se
+  arreglan distinto: la mediana de ~20 segundos del corte era Avan acusando recibo, y debajo de esa
+  cifra había 62 leads atendidos después de 15 minutos y 51 después de una hora. Por eso van juntos
+  la mediana, el **P90** (`percentile()`, con test propio) y la mediana de la respuesta humana: una
+  medida de centro no dice nada de la cola, y la cola es la parte que se arregla; el P90 solo
+  tampoco serviría, porque sin la mediana al lado no se distingue un equipo lento de uno rápido con
+  unos pocos casos olvidados. `first_response_by` nulo se escribe **«Avan o app de WhatsApp»** y
+  no «el bot»: un asesor escribiendo desde WhatsApp Business llega por el mismo camino, y afirmar
+  lo primero haría pasar por automática una respuesta humana.
+- **El tercer estado se escribe con todas las letras.** «Calificado» y «Cita asistida» dejaban la
+  celda **vacía** cuando nadie lo había registrado, y eso era información solo para quien conoce la
+  regla: el importador de marketing la leyó como un «No» y la planilla del corte del 10/11/2026
+  terminó diciendo que los 450 leads estaban descalificados — el mismo error con el signo cambiado
+  que esa columna vino a evitar cuando se derivaba de la etapa y decía «Sí» en 403 de 403 filas.
+  Ahora salen «Sin calificar» y «Sin registrar». **Un valor que no se puede colapsar no se
+  colapsa**: en una hoja que viaja a otra herramienta, la celda vacía es una invitación a
+  rellenarla con lo que le parezca al importador. Por lo mismo se publica «Cita sin reunión
+  registrada» (`appointmentWithoutMeeting`, derivado en cada lectura): es lo que explica que la
+  etapa contara 43 citas y solo 36 tuvieran fecha, y sin esa columna la resta parece un error del
+  reporte en vez de una cita que nadie puede ir a buscar en una agenda.
+- **El libro que se reporta se abre diciendo qué cuenta cada cifra** (hoja «Cómo leer este libro»,
+  `#addReadMeSheet()`). Va primera y es parte del reporte, no un anexo: estas cifras se comparan a
+  diario contra el Administrador de anuncios y contra la planilla de marketing, y las tres fuentes
+  cuentan cosas distintas con los mismos nombres —el campo «conversiones» de Meta no cuenta envíos
+  de formulario sino el evento de conversión configurado en la campaña—, así que exigir que
+  coincidan manda a buscar leads que nunca existieron. Lleva además las **dos marcas de tiempo**,
+  la del CRM y la de la última sincronización con Meta: el gasto viene de una y lo comercial de la
+  otra, de modo que un cero de ventas en los últimos días puede ser que no se vendió o que la
+  sincronización es anterior, y sin la fecha de cada lado las dos se leen igual. El resto de la
+  hoja es el glosario de las cuatro cifras de dinero, los tres estados y las dos convenciones de
+  redacción (`-` = no corresponde, `sin dato` = vino de un anuncio y falta).
+- **La calificación se audita con una muestra, no con una cifra**
+  (`backend/scripts/auditarCalificacion.js`, solo lee). Contesta tres cosas distintas: cobertura
+  (cuántos leads tienen la marca), sesgo (cómo se reparten los Sí y los No) y quién califica. Y
+  termina con diez leads calificados al azar con los datos en los que se apoya ese juicio, que es
+  lo único que de verdad valida el dato.
+  **Que casi todos sean «Sí» es una ALERTA y no una prueba de que el campo esté roto**: es lo que
+  se veía cuando la marca se derivaba de la etapa (403 de 403), y también lo que se ve cuando el
+  equipo califica solo lo que piensa trabajar y deja el resto vacío, que es un uso legítimo. El
+  script imprime el número y nombra las dos lecturas; declarar roto el dato desde la cifra es el
+  mismo error con el signo cambiado. No imprime teléfonos ni correos: de cada lead salen el id, el
+  origen y los datos académicos, que es lo que hace falta para juzgar la calificación.
+- **Lo que TikTok nos manda también vuelve a TikTok** (`tiktokConversionsService.js`, Events API,
+  `/api/tiktok-capi` bajo `webhooks.view`, tablas `tiktok_capi_stage_events` y
+  `tiktok_capi_events`). Es la hermana de la integración con Meta y existe por el mismo agujero
+  visto desde el otro lado: TikTok nos entrega los leads —a mano, porque no hay webhook— y nunca
+  se enteraba de lo que pasó después, así que su optimización solo puede perseguir «más
+  formularios llenados», que es justo la métrica que se llena de leads que no contestan: la
+  campaña aprende a traer gente que completa un formulario, no gente que compra.
+  **El identificador es el `lead_id` de TikTok y nada más** (`leads.tiktok_lead_id`, preservado
+  tal cual y guardado también en la bitácora, para que el envío se pueda explicar si la ficha se
+  borra o se fusiona). No hay equivalente del `ctwa_clid`: TikTok no manda referral al chat, así
+  que un lead del evaluador, del alta manual o de WhatsApp orgánico **no se reporta** — forzarlo
+  con un identificador aproximado le enseñaría a la campaña una conversión que no trajo. No viaja
+  ningún dato de contacto (con el `lead_id` la plataforma ya sabe quién es) ni ningún importe.
+  El `event_time` es el del **hecho real**: `tiktok_created_time` para el alta —un lead que la
+  importación rescató tres días después tiene las dos fechas muy separadas— y el momento del
+  movimiento para los cambios de etapa; un evento anterior a la generación del lead se **ajusta al
+  alta** en vez de perderse, porque la causa normal es una fecha corregida a mano. La
+  deduplicación es doble: `tiktok_capi_events` evita el reenvío local y el `event_id` es
+  **determinista** (`crm-<lead>-<evento>`), así que un reenvío llega con el mismo id y TikTok lo
+  descarta — con un id al azar, reabrir y volver a ganar se contaría como una segunda venta.
+  **Que TikTok acepte un evento no significa que la campaña optimice por él.** La aceptación es
+  del Events API; la optimización depende del `optimization_goal` del grupo y de que el evento
+  figure en el origen. Dar la segunda por buena porque pasó la primera es el fallo silencioso de
+  esta integración —el mismo que en Meta era mandar al conjunto de datos equivocado—, así que
+  `checkEligibility()` lee el objetivo de los grupos y viaja en la MISMA respuesta del `GET` y no
+  detrás de un botón: escondida detrás de un clic, nadie la hace. Sin servicio de anuncios dice
+  `no_comprobado` y **no** «todo bien». Y la Business API responde **HTTP 200 con el fallo**
+  **adentro** (`code` distinto de 0), así que se mira el código y no el estado: un rechazo anotado
+  como enviado no se reintenta nunca.
+  Los **nombres de evento no son libres**: el conjunto lo fija TikTok (`TIKTOK_EVENT_NAMES`), y
+  `saveMapping()` rechaza con 422 cualquier otro — un nombre propio se aceptaría en la pantalla y
+  se rechazaría en el envío, un error que recién se ve días después. Lo que el equipo elige es QUÉ
+  etapa manda cada evento estándar, y eso es una tabla y no una constante porque las columnas del
+  funnel las crea el equipo y sus claves se generan solas.
+  El disparador es `leadService.updateLeadStatus()` —el punto único por el que cambia la etapa— y
+  se lanza **sin esperarlo**, junto al de Meta: son dos llamadas y no una con un `if`, porque un
+  lead puede tener atribución de las dos plataformas y cada una tiene que enterarse del desenlace
+  del lead que ELLA mandó. Las credenciales son del `.env` (`TIKTOK_EVENTS_SOURCE_ID`,
+  `TIKTOK_EVENTS_ACCESS_TOKEN`, que cae a `TIKTOK_ACCESS_TOKEN`); sin ellas queda apagada.
+  **Lo que todavía no está verificado**: este entorno no tiene credenciales de TikTok, así que la
+  forma del payload sale de la documentación del Events API 2.0 y no de una respuesta observada —a
+  diferencia de la de Meta, que quedó funcionando el 20/10/2026 con los dos canales enviando—. El
+  primer envío real hay que mirarlo con `GET /api/tiktok-capi` en la mano.
 - **Cada quien ve sus leads.** Los dos tableros (y la Base de Datos) muestran solo los leads cuyo
   responsable es quien mira; `leads.manage_all` —"administrador del área comercial"— es el que ve el
   total y el **único** que puede asignar (`PATCH /api/leads/:id/assignee` lo exige, y el círculo de
@@ -718,13 +1574,26 @@ antes de tocar el arranque de producción.
   es el cliente de esas columnas: con la lista copiada en la otra pantalla, una etapa renombrada se
   llamaría distinto en cada una. Lo que no cae en ninguna columna conocida se agrupa en «Otras etapas» en vez
   de desaparecer: un lead que no se lista no se puede repartir.
-  En «Responsable» y «Setter» el desplegable lista **solo a los setters** (`isSetter()` en
-  `src/data/commercialTeam.js`, por el nombre del rol): el área comercial se define por permiso, y
-  por eso ahí aparecían también los administradores —que lo tienen por tenerlos todos, no porque
-  trabajen leads— y elegir uno por error deja el lote a nombre de alguien que no lo va a trabajar.
-  La palabra se busca suelta, así que «Setter Junior» entra solo. «Closer» sigue con el área
-  completa: ese es el otro oficio. El servidor no cambia —`bulkSetLeadTeam()` sigue aceptando a
-  cualquiera del área comercial—: esto acota lo que se OFRECE, no lo que es válido.
+  **A quién se le OFRECE un lead es más chico que el área comercial** (`worksLeads()` en
+  `src/data/leadRoles.js`, con test; `assignableTeam` en `src/data/commercialTeam.js`). El área se
+  define por permiso, así que ahí entran también los **administradores** —que lo tienen por tenerlos
+  todos, no porque trabajen leads— y **Marketing**, que necesita ver el funnel para medir campañas:
+  el desplegable ofrecía siete personas de las que tres iban a trabajar el lead, y elegir una por
+  error deja la ficha a nombre de alguien que nunca la va a mirar. Se filtra por el **nombre del
+  rol** (`setter`, `closer`, `comercial`, `ventas`, `vendedor`), palabra por palabra y por su
+  comienzo, así que «Setter Junior», «Ejecutivo Comercial», «Jefe de Ventas» y los plurales entran
+  solos el día que el equipo los cree; «Ventanilla» no es «Ventas». Esa lista es **la misma en los
+  tres puestos** (responsable, setter y closer) **y en las tres pantallas** que asignan: el círculo
+  de la tarjeta y la ficha (`LeadAssignee.vue`), el reparto masivo (`BulkLeadTeamModal.vue`) y la
+  ficha de la Base de Datos — una lista por puesto o por pantalla es como se llega a que
+  «Responsable» ofrezca gente distinta según desde dónde se asigne. El **filtro** «Responsable» del
+  tablero sigue leyendo `commercialTeam` entero: ahí tiene que aparecer también quien ya tiene leads
+  a su nombre. Y el servidor no cambia —`assignLead()` y `bulkSetLeadTeam()` siguen aceptando a
+  cualquiera del área comercial—: esto acota lo que se OFRECE, no lo que es válido, así que los
+  leads que hoy están a nombre de un administrador siguen como están y se pueden seguir guardando.
+  Si NINGÚN rol del panel se llama de forma comercial se ofrece el área completa y la pantalla lo
+  dice, en vez de dejar un desplegable vacío: sin lista no habría forma de asignar un lead, y un
+  filtro que se apaga solo y en silencio es un filtro que nadie entiende.
   Entre "lo mío" y "todo" hay un punto medio, `setter.view_all`: lo propio más todo lo que aún no
   graduó a Ventas (`visibilityFor()`, `scope: 'setter'`). No deja asignar. El desplegable
   "Responsable" del Setter Funnel es otro permiso, `setter.filter_assignee`: es la herramienta para
@@ -743,14 +1612,28 @@ antes de tocar el arranque de producción.
   momento, porque "ningún camino llega hasta acá" dura hasta el próximo camino que alguien agregue.
   Los barridos **no marcan** lo que no mandaron, así que al encender el bot el recordatorio sale.
 - El **reparto automático de leads** (`/admin/reparto`, `LeadRoutingView.vue`, permiso
-  `leads.routing`, `leadRoutingService.js`) decide quién recibe los leads que entran solos (bot,
-  formularios de Meta, evaluador) y en qué proporción. **Corre exactamente cuando el bot está
-  apagado** (`leadRoutingService.isActive()`): mientras Avan atiende, él califica y agenda, y
-  repartir a la vez pondría a una persona a trabajar en paralelo la misma conversación. No hay un
-  interruptor propio del reparto y `lead_routing_pools.enabled` dejó de decidir nada (queda para el
-  día que haya más de un grupo): con dos interruptores, la combinación "bot apagado + reparto
-  apagado" deja los leads sin responsable Y sin bot — ni los ve nadie ni los contesta nadie, que es
-  el peor estado posible. Cada persona tiene un **peso** (`lead_routing_members.weight`): de cada vuelta
+  `leads.routing`, `leadRoutingService.js`) decide quién recibe los leads que entran solos
+  (formularios de TikTok y de Meta, evaluador, bot) y en qué proporción. **Lo que decide si un lead
+  se reparte no es el interruptor del bot sino quién lo atiende** (`routesNow()` en
+  `leadRouting.js`, con su espejo en `src/leadRouting.js`): el de **formulario** y el del
+  **evaluador** se reparten SIEMPRE y el que nace de una **conversación de WhatsApp** solo con el
+  bot apagado. Hasta el 09/11/2026 la regla era una sola para todos —se repartía con el bot
+  apagado— y el argumento valía solo para la mitad: a un lead de formulario **el bot no lo atiende
+  nunca** (Avan contesta mensajes, no escribe primero), así que con el bot encendido nacía sin
+  responsable, y un lead sin responsable **no lo ve nadie** salvo quien reparte. O sea que la mayoría
+  de lo que entra por anuncios quedaba en tierra de nadie justo mientras el bot estaba encendido,
+  que es casi siempre. Que un lead de formulario tenga dueño no vuelve a pisar al bot si esa persona
+  después escribe: en cuanto alguien le responde a mano, el bot se pausa solo para ese contacto
+  (`whatsapp_bot_sessions.bot_enabled`) — tener responsable no es que alguien esté escribiendo, es
+  que alguien lo ve en su tablero. Quién atiende lo dice el camino de alta: `botWillAttend` viaja
+  solo desde `findOrCreateFromWhatsApp()` y viene en **false** por lo mismo que `autoRoute` viene en
+  `true` — el camino que tiene que acordarse de algo tiene que ser el excepcional, o el próximo que
+  se agregue deja sus leads sin dueño sin que nada falle. `isActive()` sigue existiendo pero ya no
+  significa "el reparto está corriendo" sino "también se reparten las conversaciones de WhatsApp",
+  que es lo que muestra la banda de la pantalla. No hay un interruptor propio del reparto y
+  `lead_routing_pools.enabled` dejó de decidir nada (queda para el día que haya más de un grupo):
+  con dos interruptores, la combinación "bot apagado + reparto apagado" deja los leads sin
+  responsable Y sin bot — ni los ve nadie ni los contesta nadie, que es el peor estado posible. Cada persona tiene un **peso** (`lead_routing_members.weight`): de cada vuelta
   (la suma de los pesos) le tocan tantos leads como su peso, así que "5 a la setter por cada 1 al
   closer" es peso 5 y peso 1, y con más gente se suman filas sin tocar código. El algoritmo es el
   reparto ponderado **suave** (`backend/services/leadRouting.js`, con su espejo `src/leadRouting.js`
@@ -944,6 +1827,143 @@ antes de tocar el arranque de producción.
   setter por **venta**, así que dos cuotas del mismo lead comisionan las dos, y el mismo cobro
   marcado dos veces no paga dos veces. `lead_id` admite nulos porque hay ingresos que no cuelgan de
   ningún lead y también se cobran.
+- El **Reporte General** (`/admin/reporte-general`, `GeneralReportView.vue`, permiso `reports.general`,
+  `generalReportService.js`, `GET /api/general-report?months=3|6|12`) es la pantalla de gerencia y
+  **no tiene tabla propia**: ventas, caja, cartera, embudo y canales, cada KPI comparado con el
+  período anterior de la misma duración. La caja (cobrado, egresos, resultado) **no se vuelve a
+  sumar**: sale de `financeLedgerService.getOverview()`, la misma fuente que Finanzas, para que las
+  dos pantallas no digan cifras distintas. Lo **vendido** es el `total_amount` de los leads ganados,
+  fechado por el `created_at` de su proyecto (nace al ganar). La cartera son las cuotas `pendiente`
+  por antigüedad de `due_date`; las `pagado` van aparte («falta verificar»), no son deuda. Las ventas
+  no concretadas (`deal_cancelled_at`) no cuentan ni como vendido ni como cartera. El embudo y los
+  canales se miden por **cohorte** (los leads que entraron en el período y hasta dónde llegaron),
+  acumulativo: un ganado sin sello también cuenta como "pasó a Ventas". El permiso se copia de
+  entrada solo a quien ya tenía `finance.view`, porque muestra importes. Los gráficos son SVG propios
+  (`src/components/report/`), sin librería, y su paleta (oliva + azul) es la que pasó el chequeo de
+  daltonismo: el naranja de marca junto al oliva no se distingue con deuteranopía.
+- El **contrato firmado** de un lead (`signed_contracts`, `signedContractService.js`, botón
+  "📝 Contrato firmado" en la ficha del Funnel de Ventas, `SignedContractModal.vue`) es el PDF, el
+  Word o el **enlace de Drive** que vuelve con la firma del cliente. Tiene **tabla propia** y no unas
+  columnas en `contracts` por dos razones que se ven apenas se abre una ficha: hay contratos
+  firmados que el sistema **nunca emitió** —se arman en Word por fuera y vuelven escaneados, y son
+  justo los que más falta hace guardar porque no están en ningún otro lado—, y un lead puede tener
+  **más de uno** (el contrato y después su adenda, o la versión corregida que se volvió a firmar).
+  Cuelga del **lead** y no del proyecto: se firma antes de que el proyecto exista, y es lo que
+  habilita abrirlo.
+  Cada fila es **un archivo o un enlace, nunca los dos ni ninguno** (`validateSource()`). Las dos
+  formas conviven porque el equipo usa las dos: el escaneo que llega por WhatsApp se sube, y el que
+  ya vive en la carpeta de Drive del cliente se enlaza — copiarlo sería tener dos originales y no
+  saber cuál manda. El enlace se valida de verdad (`normalizeExternalUrl()`: solo `http`/`https`),
+  porque lo guardado termina siendo un `href` en la ficha y un `javascript:` pegado ahí se
+  ejecutaría al hacer clic. El archivo acepta PDF, Word, ODT **e imágenes**: el contrato firmado
+  llega muchas veces como la foto que el cliente mandó por WhatsApp, y rechazarla obliga a
+  convertirla antes, que es el paso en el que el archivo se queda en el escritorio de alguien.
+  `contract_id` ata el documento al contrato **emitido** cuando lo hay (el desplegable se
+  preselecciona solo si hay uno), y atarlo **marca ese contrato como `firmado`**. No es editar el
+  contrato —su contenido, sus cláusulas y sus importes quedan intactos—: es anotar un hecho que el
+  documento recién subido ya prueba, y sin eso el contrato quedaría en "borrador" en su pantalla con
+  su copia firmada adjunta en la otra. Quitar el documento **no** lo devuelve a borrador: se firmó
+  igual, y borrar la copia no deshace la firma.
+  Las rutas cuelgan del lead (`/api/leads/:id/signed-contracts`), como las notas y el historial de
+  etapas: así reusan `requireLeadVisible` —cada quien ve sus leads, también sus documentos— y el id
+  del lead viaja en la ruta, que es lo que permite comprobar que el documento sea de ESE lead y no
+  solo que exista (mismo cuidado que la ruta de adjuntos de WhatsApp). El permiso es el del funnel y
+  **no `contracts.manage`**: aquel es para EMITIR contratos y esto es parte de cerrar la venta, que
+  lo hace quien trabaja el lead. Los contratos emitidos que viajan como opciones del desplegable van
+  **sin importes**, por la misma regla de siempre.
+  `signed_contracts` está en **CASCADE** sobre el lead, así que `deletionBlockReason()` impide
+  borrar una ficha que tenga uno: de todo lo que cuelga de un lead, el respaldo de la firma es lo
+  único que no se puede volver a generar desde el sistema.
+- El **Reporte de Setters** (`/admin/reporte-setters`, `SetterReportView.vue`, permiso
+  `reports.setters`, `setterReportService.js`, `GET /api/setter-report?months=3|6|12`) contesta cómo
+  le fue a cada setter: leads atribuidos, reuniones conseguidas, cierres y en qué etapa quedaron los
+  demás. **No tiene tabla propia** —como Cobranzas y el Reporte de Leads—: guardar esas cifras
+  obligaría a reescribirlas en cada movimiento de lead.
+  **Un lead se le atribuye a `leads.setter_user_id` y, si no hay sello, a `assigned_user_id`**
+  (`attributedSetterId()`). El sello se escribe una vez, al graduar, con quien tenía el lead
+  entonces, y es lo que sobrevive a que la ficha pase al closer: mirando solo el responsable actual,
+  cada venta cerrada se le atribuiría al closer. Es la misma pareja de columnas de la que cuelga la
+  comisión de la setter, así que el reporte y lo que se le paga no pueden discrepar. Se resuelve en
+  JavaScript y no con un COALESCE en SQL para que la regla exista una sola vez.
+  **Los resultados se miden por cohorte y la actividad por fecha del hecho**, y son dos cosas
+  distintas con dos nombres distintos en pantalla. "Leads de octubre" son los que ENTRARON en
+  octubre, y su reunión y su cierre cuentan en octubre aunque hayan ocurrido después: es la única
+  forma de que las tasas compartan denominador (contar reuniones del mes contra leads del mes da
+  porcentajes mayores al 100%). El precio es que el trabajo hecho este mes sobre leads viejos no
+  aparece, y por eso va aparte la **actividad registrada** (`lead_stage_changes` del período,
+  agrupada por `actor_id`), que es lo único que contesta "¿qué trabajó esta persona este mes?".
+  Asignar no deja rastro en la bitácora, así que "cuándo se le asignó" no existe como dato: la
+  cohorte por `leads.created_at` es lo que sí se puede medir.
+  Qué significa cada desenlace se pregunta donde ya está contestado: `loadWinningStatuses()` (con el
+  proyecto abierto como respaldo, igual que en Campañas), `LOST_STATUSES`, `leadHasGraduated()` y
+  `buildStatusLabeler()` — ninguna lista propia, porque las columnas de los dos tableros las crea el
+  equipo. Por eso `LOST_STATUSES`/`isLostStatus()` pasaron a vivir en `salesFunnelStage.js`, el
+  módulo del vocabulario de `leads.status`, y Campañas los importa de ahí en vez de tener su copia.
+  **Una reunión cancelada en Google no es una reunión conseguida** (va a su propio contador), y el
+  **cierre por reunión** se calcula con `wonWithMeeting / withMeeting` y no con `won / withMeeting`:
+  hay ventas que se cierran sin reunión cargada y con el total de ganados arriba la tasa daba 200%
+  (se vio al correr el reporte contra la base). Una tasa que supera el 100% no es un dato, es un
+  aviso de que el numerador no pertenece al denominador. Los plazos son **medianas** y no promedios:
+  un lead que se agendó seis meses después corre el promedio de todo el equipo.
+  **La visibilidad es la del funnel, no una propia**: reusa `leadService.visibilityQueryFor()` +
+  `applyLeadVisibility()`, así que quien ve solo lo suyo ve una sola fila —la de su propio
+  desempeño— y `scope` viaja a la pantalla para que lo explique. De acá solo salen conteos, pero un
+  conteo sobre los leads de otra persona también es información sobre esos leads. **No muestra
+  importes**, por la misma razón que Proyectos y Entregables: lo que mide a un setter es cuántos
+  leads trabajó y cuántos cerraron, no cuánto facturó cada venta. Los leads **sin responsable** se
+  informan aparte y no se reparten entre las filas (repartidos inflarían a quien no los trabajó),
+  pero sí cuentan en el total del equipo y en el desglose de etapas, que por eso cuadra con las
+  tarjetas de arriba.
+  La **barra de composición** (`ReportStackedBars.vue`) va al 100% y no a escala: lo que se compara
+  es quién tiene la cartera trabada y quién la cierra, y a escala la fila del que más leads tiene
+  tapa al resto — el tamaño va escrito al lado del nombre. Su orden es **Ganado · En proceso ·
+  Perdido** a propósito: así el oliva y el rojo nunca se tocan (con deuteranopía son el mismo color,
+  ΔE 1,5) y el peor par adyacente sube a ΔE 16,8. El trío del gráfico mensual (azul · magenta ·
+  oliva) pasa los seis chequeos de la guía de visualización en los dos temas y en todos los pares.
+  La aritmética del período (`reportPeriod.js`) y los formatos de cifra y de variación
+  (`src/components/report/reportFormat.js`) se comparten con el Reporte General: con una copia por
+  pantalla, el mismo mes se leería distinto según desde dónde se mire.
+  Desde el 12/11/2026 mide además **la atención**, que es lo que la auditoría comercial del corte
+  del 10/11/2026 encontró que el reporte no sabía contestar. Son cuatro cifras y no una:
+  `noFirstResponse` (leads a los que NADIE contestó: 109 de 450 en ese corte), la **mediana**, el
+  **P90** y la **mediana de la respuesta humana**. Van juntas porque una sola engaña —la mediana
+  del equipo era de ~20 segundos, que es Avan acusando recibo, con 62 leads atendidos después de 15
+  minutos y 51 después de una hora debajo—: una medida de centro no dice nada de la cola y la cola
+  es lo que se arregla, y el P90 solo tampoco serviría, porque sin la mediana al lado no se
+  distingue un equipo lento de uno rápido con unos pocos casos olvidados. El dato sale de
+  `leads.first_response_at` / `_by` (`responseMinutes()`), que cubre el mensaje de WhatsApp y la
+  primera nota de la ficha —el único registro que deja una llamada—: medido como el primer saliente
+  de la conversación, el lead de formulario que nunca escribió por WhatsApp salía siempre vacío.
+  Se publica la **distribución en tramos** (`RESPONSE_BUCKETS`) y **no el cumplimiento de un SLA**:
+  el SLA no existe todavía —la auditoría propuso cinco minutos en horario comercial, que es una
+  decisión del área con su definición de horario—, y un «cumple el 62%» contra una meta que nadie
+  acordó es una cifra que no se puede discutir. Los tramos son excluyentes y su suma más
+  `noFirstResponse` es siempre el total de leads, que es lo que sostiene la barra.
+  Dos cifras más del mismo origen: la **cobertura de calificación** en sus tres estados (el vacío no
+  es un «no» — separa al lead que nadie revisó del revisado y descartado, y mide si el setter hace
+  el trabajo, que es distinto de su criterio) y la **cartera dormida** (`STALE_DAYS`, 7): leads
+  todavía abiertos sin un solo movimiento en más de una semana. 7 y no 30 porque los 50 congelados
+  del corte llevaban una mediana de 16,5 días, y con el umbral en un mes ninguno habría aparecido —
+  que es exactamente cómo se llega a tener medio centenar de fichas que nadie mira. Dormido solo se
+  puede estar estando abierto: un ganado o un perdido que nadie toca está terminado, no abandonado.
+  Y `appointmentWithoutMeeting`, que es el lead en la etapa «cita agendada» **sin** una reunión con
+  fecha y hora: se cuenta aparte de `withMeeting` porque es lo que explica que el funnel diga 43
+  citas y la agenda tenga 36 — sin esa cifra, la resta parece un error del reporte. La etapa se
+  pregunta con `isAppointmentStatus()` de `salesFunnelStage.js`, el módulo del vocabulario de
+  `leads.status`, que es el mismo que usa Campañas: con una copia en cada reporte, el día que la
+  etapa cambie de nombre una de las dos pantallas deja de contarlas sin que nada falle.
+  La rampa de los tramos de respuesta es **secuencial de un solo tono** (`--viz-resp-1..4`, azul de
+  claro a oscuro) más el rojo de «sin respuesta», y no cuatro colores distintos: son datos
+  ordenados, una escala de claridad se lee en orden sin leyenda y es la única que sobrevive a
+  cualquier daltonismo. «Sin respuesta» queda **fuera** de la rampa porque no es un tiempo más
+  largo sino la ausencia de respuesta, y al final del azul se leería como «muy lento». Los cinco
+  tonos están validados contra el **blanco** y no contra el fondo de la página —el valor va escrito
+  en blanco dentro de cada segmento y los segmentos cubren la barra entera—: todos pasan 4.5:1 y
+  los pares contiguos quedan en ΔE 10,6 a 13,1, también simulando deuteranopía. Por eso son los
+  mismos en los dos temas.
+  `percentile()` vive en `reportPeriod.js` y no en cada reporte: la pregunta («¿qué esconde la
+  mediana?») es la misma acá y en Campañas, y con una copia por pantalla las dos medirían la cola
+  distinto.
 - Los botones de barra y de fila del panel (`.btn-action-primary` / `-secondary` / `-ghost`), el
   encabezado de los modales (`.modal-title`, `.modal-close-btn`) y `.heading-icon` viven en
   `src/style.css`. Estaban copiados dentro del `<style scoped>` de cada vista, así que una pantalla
@@ -960,6 +1980,267 @@ antes de tocar el arranque de producción.
   entera a la vista; arrastrar tarjetas entre columnas no funciona en táctil (es HTML5 drag and
   drop), y por eso en el celular el tablero es para mirar y entrar a la ficha, donde el desplegable
   de etapa sí mueve el lead.
+- **Mi perfil** (`/admin/perfil`, `ProfileView.vue`, entrada en el menú del avatar del navbar) es la
+  cuenta vista por su propio dueño: su **contraseña** y su **foto**. Es la única pantalla de
+  `/admin` **sin permiso** en el router, y a propósito: todo el mundo tiene una cuenta con una
+  contraseña, así que un permiso para entrar al propio perfil habría que darle a todos — y el día
+  que a alguien no se le dé, esa persona se queda sin poder cambiarla. Las rutas (`/api/profile*`)
+  **no reciben id**: el usuario es el del token. Con el id en la ruta, cada una tendría que
+  comprobar que es el propio, y la que se olvide deja a cualquiera cambiándole la contraseña a
+  cualquiera. Lo que NO se edita desde ahí es el nombre, el correo y el rol: de los tres cuelgan
+  cosas de otros módulos (el correo es la identidad del login, el rol decide los permisos, y el
+  nombre se copia como texto legible en `leads.assigned_to`, en los avisos y en los documentos ya
+  emitidos), así que se gestionan desde Perfiles, que es donde se ve a quién afectan.
+  Cambiar la propia contraseña **pide la actual** aunque la sesión ya esté abierta — un panel que
+  se queda abierto en una pantalla compartida permitiría que cualquiera que pase se quede con la
+  cuenta—, y **restablecer la de otro** desde Perfiles (`PUT /api/users/:id/password`, bajo
+  `roles.manage`) no la pide, porque quien restablece no la sabe: es la única forma de volver a
+  entrar que tiene alguien que la olvidó, ya que el panel interno no manda correos de recuperación
+  como el portal de clientes. Las dos puntas pasan por `#writePassword()` en `userService.js`, que
+  es donde viven las dos reglas —el mínimo (`MIN_PASSWORD_LENGTH`, 8, el mismo del alta de la
+  cuenta y el mismo que valida la pantalla) y que no sea la que ya tenía, porque una pantalla que
+  acepta "la cambié" sin cambiarla deja a la persona convencida de que rotó una contraseña
+  filtrada—. El token **no se invalida**: es stateless y dura 8 h, y lo que cambió es la
+  contraseña, no la identidad. `password_changed_at` no gobierna nada —nada caduca—: existe para
+  que la pantalla pueda decir "la cambiaste el 9 de noviembre", que es lo único que contesta si
+  esa sigue siendo la que le dieron al crearle la cuenta.
+  La **foto** es `users.avatar_filename`, y en la columna va **solo el nombre del archivo**: la
+  carpeta base la decide `UPLOADS_DIR` y puede cambiar entre despliegues, así que una ruta guardada
+  queda apuntando al disco de ayer. La URL se arma en cada lectura con `avatarUrlFor()`, un solo
+  sitio para el `avatar_url` que viaja en el usuario de la sesión (el navbar lo dibuja en todas las
+  pantallas), en el equipo de cada proyecto —cuyo template ya lo esperaba— y en la tabla de
+  Perfiles. Donde no haya foto se siguen viendo las iniciales de `src/avatars.js`: el círculo es el
+  mismo, cambia lo que lleva dentro.
+  Dos decisiones del archivo. **Se sirve por una ruta sin sesión** (`GET /uploads/avatars/:filename`),
+  la única del panel: un `<img>` no manda el header `Authorization`, y el camino de los
+  comprobantes de Finanzas —`fetch` + blob— para una foto que aparece en cada pantalla sería una
+  descarga por página sin caché. Lo que la protege es que el nombre son **16 bytes al azar**, así
+  que no se puede pedir la foto de alguien sin que el panel la haya dado antes (con `3.jpg` la foto
+  de cualquiera quedaría a un número de distancia), y por eso reemplazar una foto **borra la
+  anterior**: el nombre viejo seguiría sirviendo el archivo viejo mientras exista en disco. Y **no
+  se aceptan SVG** aunque sean imágenes, que es la única exclusión: un SVG puede traer `<script>`
+  adentro y, servido desde nuestro propio dominio, correría con los permisos de la página — subir
+  una foto de perfil alcanzaría para robarle la sesión a quien la mire.
+- **La campana del panel también llega al teléfono** (`pushService.js`,
+  `deviceTokenService.js`, tabla `device_tokens`, rutas `/api/devices*` y
+  `/api/push/*`, y la app Flutter de `mobile/` — ver su README). La campana
+  avisaba al equipo solo si alguien tenía una pestaña abierta: una reunión que
+  Avan agenda a las 11 de la noche o un pago verificado se veían cuando alguien
+  se acordaba de mirar.
+  **Se cuelga de `notificationService.create()` y no de cada ruta**: es el punto
+  único por el que nace toda notificación del panel —hoy ocho sitios: el bot
+  (cuatro), los dos avisos de Finanzas, el de proyecto nuevo y el del portal del
+  cliente— y es la misma razón por la que el aviso de proyecto nuevo vive en
+  `projectService` y no en sus tres rutas de alta: puesto en cada llamador, el
+  noveno que se agregue se olvida y nadie se entera de que no avisó. El envío
+  **no espera ni lanza**: la fila ya quedó asentada, que es lo que la campana
+  necesita, y un FCM lento o caído no puede demorar el cierre de una venta ni
+  tumbar el webhook del bot.
+  **No usa `firebase-admin`**: el SDK trae su propia cadena de dependencias y
+  esto corre en hosting compartido; la llamada son treinta líneas de REST y el
+  token OAuth lo firma `googleapis`, que ya es dependencia directa (la usa Google
+  Calendar). El precio es que HTTP v1 **no tiene multicast**, así que un aviso a
+  diez dispositivos son diez llamadas — irrelevante para un equipo chico, y si
+  deja de serlo el cambio es dentro de ese archivo.
+  **El token identifica al DISPOSITIVO y no a la persona**, y de ahí que el
+  índice único de `device_tokens` sea `token` a secas y no (`user_id`, `token`):
+  Firebase le da un token a cada instalación, así que si en ese celular entra
+  otra persona el token tiene que **mudarse** a la cuenta nueva. Con el único
+  sobre el par quedarían dos filas vivas con el mismo token y la notificación de
+  un lead le llegaría a la pantalla de quien usó el teléfono antes. Por lo mismo
+  el cierre de sesión **borra** la fila (no hay nada que diagnosticar y lo que
+  importa es que no le siga llegando nada), mientras que un token que Firebase
+  rechaza por caducado se **marca** (`revoked_at`), para que el envío no lo
+  reintente y la pantalla pueda decir que esa instalación dejó de responder.
+  La regla que más importa es `classifyFcmError()`: un **401/403 no da de baja
+  ningún token**. Es la cuenta de servicio, el proyecto o el permiso —el problema
+  es del servidor y los dispositivos están perfectos—, y tratarlo como "este
+  token no sirve" dejaría a todo el equipo sin dispositivos por una variable de
+  entorno mal pegada, con el agravante de que volver a registrarlos exige que
+  cada persona abra su app. Solo `UNREGISTERED` e `INVALID_ARGUMENT` la dan.
+  Las rutas van con `requireAuth` **y sin permiso propio**, igual que
+  `/api/notifications`: lo que se empuja es exactamente lo que esa persona ya
+  puede leer en la campana (`notifications` no tiene columna de usuario), así que
+  un permiso aparte solo serviría para dejar a alguien con la campana y sin el
+  teléfono. El push **no amplía** lo que alguien ve, lo mueve de pantalla.
+  Sin credenciales (`FCM_*` en el `.env`) la integración queda **apagada** y no
+  se intenta nada: el panel sigue igual. Y la app no depende de ellas —cae al
+  **sondeo** de `/api/notifications` y lo dice en pantalla—, porque en **Windows
+  y Linux Firebase Cloud Messaging no existe (no es que falte configurarlo: el
+  SDK no los soporta)** y porque una app de notificaciones que muestra un error
+  por una credencial faltante no sirve para nada hasta que alguien entre a la
+  consola de Firebase. De ahí la columna `transport` (`fcm` | `polling`): los
+  equipos que sondean se registran igual —así se sabe cuántas instalaciones hay—
+  pero `activeFcmTokens()` los excluye, para no gastar una llamada a Firebase en
+  una dirección que no existe.
+  `POST /api/push/test` manda un aviso **solo a los dispositivos de quien lo
+  pide** y **no deja fila en `notifications`**: es para comprobar la cadena
+  completa (servidor → Firebase → aparato) sin llenarle la campana al equipo.
+  Mismo patrón y mismas razones que los botones de correo de prueba de
+  Entregables y de Proyectos. **Lo que todavía no está verificado**: este entorno
+  no tiene un proyecto de Firebase, así que la forma del payload sale de la
+  documentación de FCM HTTP v1 y no de una respuesta observada. El primer envío
+  real hay que mirarlo con ese botón en la mano.
+- **Los avisos que el equipo se escribe a mano** (`/admin/avisos`,
+  `NoticesView.vue`, permiso `notices.send`, `noticeService.js`, rutas
+  `/api/notices*`). Con la app móvil instalada el equipo tiene un canal al
+  bolsillo de cada uno, y no había forma de usarlo para lo que la gente de
+  verdad necesita decirse: las notificaciones nacían SOLO de eventos del
+  negocio (ocho sitios: el bot, los dos avisos de Finanzas, el de proyecto
+  nuevo, el del portal del cliente).
+  **No tiene tabla propia**, como Cobranzas y el Reporte de Leads: un aviso
+  manual es una fila de `notifications` con `created_by` escrito. Una tabla
+  paralela obligaría a que la campana leyera de dos lados y a mantener
+  sincronizado el "no leído" en los dos — y el día que se separen, nadie sabría
+  cuál dice la verdad.
+  Lo que sí cambió es que las notificaciones pasaron a tener **destinatario**:
+  `notifications.user_id`, nullable, donde **NULL significa "para todos"**. Es
+  nullable y no se rellena a propósito: las filas que ya estaban y TODAS las
+  automáticas siguen naciendo en NULL, así que ni la campana ni los ocho sitios
+  que las crean cambian de comportamiento, y la lectura es un solo
+  `where('user_id', viewer).orWhereNull('user_id')` (`#visibleTo()`). Al revés
+  —una fila por usuario para todo— habría que tocar los ocho llamadores y
+  multiplicar cada aviso del bot por la cantidad de empleados.
+  **Un aviso dirigido a tres personas son TRES filas**, una por destinatario,
+  unidas por `batch_id`. Es lo que hace que `is_read` siga significando lo que
+  significa: cada quien marca el suyo. Con una fila compartida, el primero que
+  lo abre lo marca leído para los otros dos — que es, de hecho, lo que ya les
+  pasa a los avisos globales, y no hay razón para arrastrar esa rareza a lo
+  nuevo. `batch_id` es lo que vuelve a juntar esas filas en UN renglón del
+  historial: sin él, un aviso a diez personas se lee como diez avisos distintos
+  y no se puede decir "esto se mandó una vez, a diez".
+  **Los roles se expanden a personas en el momento de mandar**, no en cada
+  lectura: quien entre al rol la semana que viene vería un aviso que nunca
+  recibió —el push ya salió sin él— y quien salga perdería uno que sí le llegó
+  al teléfono. Es la misma razón por la que la comisión guarda su porcentaje en
+  la fila. Una persona elegida a dedo Y además por su rol es UNA destinataria
+  (`resolveRecipients()`, pura y con test): sin el desduplicado le llegarían dos
+  avisos idénticos y dos pushes. La pantalla cuenta con la MISMA regla, porque
+  con dos distintas prometería un número y el envío haría otro.
+  **El enlace del aviso solo puede ser una ruta de este panel**
+  (`isInternalPath()`): no alcanza con que empiece por `/` — `//evil.com`
+  también empieza por `/` y el navegador lo resuelve como `https://evil.com`, y
+  `/\evil.com` igual. De ese campo cuelga a dónde va quien toca un aviso que le
+  llegó al teléfono con el nombre de la empresa arriba, o sea la forma exacta de
+  un phishing interno. La primera versión de la comprobación era un
+  `startsWith('/')` y dejaba pasar los dos; lo pilló el test. En la pantalla el
+  destino es un desplegable cerrado y no un campo libre, por lo mismo que los
+  nombres de evento de la CAPI de mensajería no son configurables: el conjunto
+  válido es chico, y ofrecer un cuadro de texto solo da la oportunidad de
+  escribir algo que va a ser rechazado.
+  **Marcar leída comprueba que la notificación sea VISIBLE para quien la marca**
+  y no solo que exista (`markRead(id, { userId })`, la ruta responde 404): sin
+  eso, cualquiera con sesión podría marcar leído el aviso dirigido a otra
+  persona probando ids. Es el mismo cuidado de `requireLeadVisible` — filtrar la
+  lista y dejar la fila abierta por id es una cortina, no un permiso.
+  El push sale a quien dice la fila (`sendForNotification` pasa
+  `userIds: notification.user_id ? [...] : null`), y tiene que salir de la MISMA
+  columna que decide quién lo ve en la campana: si el push fuera a todos y la
+  campana solo al destinatario, el aviso dirigido le sonaría en el bolsillo a
+  gente que después no lo encuentra en el panel.
+  El permiso es propio y no "estar autenticado" como leer la campana: esto le
+  suena en el teléfono a la gente, así que no conviene encendido por defecto
+  para todos. La migración lo siembra a quien ya administra el panel
+  (`roles.manage`), y el autor sale de la **sesión** y nunca de un campo del
+  formulario — mandarlo desde la pantalla abriría la puerta a firmar un aviso
+  con el nombre de otro.
+  **Su pantalla tiene dos vistas sobre los MISMOS datos** (pestañas, con lo
+  elegido recordado en `localStorage` entre `try`): «Enviados» contesta qué se
+  mandó y «Quién recibe qué» contesta a quién le llega — la otra mitad del
+  trabajo, que en la lista obliga a abrir aviso por aviso. Es el mismo recurso y
+  las mismas razones que las dos pestañas de Entregables y las dos vistas del
+  Setter Funnel: el cuadro **no pide otra ruta ni calcula otro estado**, se arma
+  sobre el mismo historial y la misma lista de destinatarios, porque dos vistas
+  con criterios propios es como se llega a que cada una diga un número distinto.
+  Para eso el historial devuelve `recipient_list` —**quiénes** y si cada uno lo
+  leyó, no solo cuántos—, que es también lo que permite dibujar las caras en la
+  lista con un anillo verde o naranja según lo haya leído o no.
+  En el cuadro, un aviso a todo el equipo es su propio estado (`all`, ○ hueco) y
+  **nunca «leído» ni «sin leer»**: es UNA fila con `user_id` en NULL, así que su
+  `is_read` es el de quien la abrió primero y afirmar con eso que a una persona
+  le consta sería inventar un dato — la misma razón por la que `read_count` vale
+  `null` ahí. Los tres estados se distinguen además por su **forma** (✓, ●, ○) y
+  no solo por color, porque el verde y el naranja son el mismo color con
+  deuteranopía, y sus tintes son los del sistema de píldoras del panel
+  (`.pill-success` / `.pill-warning` / `.pill-neutral`, con su corrección para el
+  tema oscuro) en vez de una paleta propia.
+  Tres cosas que esta pantalla hacía mal hasta el 14/11/2026 y conviene no
+  repetir: el icono del título era un `<svg>` **sin alto ni ancho** —el resto del
+  panel pone un emoji en `.heading-icon`, que solo le da `display` y un
+  desplazamiento—, así que el navegador lo estiraba hasta llenar la ventana y
+  tapaba el panel entero; los campos usaban `.form-control`, una clase de
+  Bootstrap que este proyecto **no tiene** (las suyas son `.form-input`,
+  `.form-textarea` y `.form-select`), así que se veían con el estilo por defecto
+  del navegador; y el encabezado no usaba el `h2.section-heading` +
+  `p.section-subheading` del resto de `/admin`. El cálculo de a quién le llega
+  cruzaba el rol **por su nombre** y ahora por `role_id`, que es el dato que de
+  verdad los une.
+- **Cada aviso automático se puede acotar a ciertos perfiles**
+  (`notification_routing`, `notificationAudience.js` con test,
+  `notificationRoutingService.js`, `GET`/`PUT /api/notification-routing` bajo `roles.manage`,
+  tercera pestaña de `/admin/avisos`). Todas las automáticas nacen con `user_id` en NULL —"para
+  todos"—, que era lo correcto cuando eran ocho avisos del negocio; hoy son diecisiete tipos muy
+  distintos y le suenan en el teléfono a todo el mundo: el "Recordatorio de reunión sin entregar"
+  le interesa a quien lleva la agenda, "pago verificado" a Finanzas y "escribió y nadie le
+  respondió" a quien trabaja leads. Con los tres mezclados la campana deja de mirarse — **645 sin
+  leer** (19/11/2026) es exactamente eso, y a partir de ahí el aviso que sí importaba tampoco se ve.
+  **Un tipo SIN filas va a todos**: el valor por defecto es el comportamiento de hoy, así que la
+  función se enciende cuando alguien la configura y un entorno donde la migración no corrió se
+  comporta igual que antes, en vez de dejar a medio equipo sin avisos. Por lo mismo la pregunta que
+  se contesta es "**qué se esconde**" (`blockedTypesFor`) y no "qué se muestra": preguntando al
+  revés, el tipo que se agregue mañana no estaría en ninguna lista permitida y desaparecería de
+  todas las campanas sin que nadie lo note.
+  Se guarda el **perfil y no la persona**, por la misma razón que el área comercial se define por
+  permiso: lo que se reparte es un trabajo, no una lista de nombres que hay que corregir cada vez
+  que alguien entra o sale.
+  El filtro se resuelve **al leer**, al revés que los avisos manuales, que se expanden a una fila
+  por destinatario (`resolveRecipients()`). Son avisos distintos: el manual es un hecho puntual
+  ("reunión a las 5") y quien entre al rol mañana no debería verlo —el push ya salió sin él—,
+  mientras que el automático es un estado que sigue siendo cierto mientras nadie lo atienda ("este
+  lead sigue sin respuesta"), así que al setter que entra hoy le sirve ver los de ayer. Y
+  expandirlo multiplicaría cada aviso del bot por la cantidad de empleados, que es justo lo que el
+  `user_id` en NULL evita.
+  Lo que **no** se puede filtrar al leer es el **push**: ese ya salió. Por eso `create()` resuelve
+  el público una vez y se lo pasa a `sendForNotification`, con las MISMAS filas de las que sale el
+  filtro de la campana — si cada canal lo resolviera por su cuenta, el aviso le sonaría en el
+  bolsillo a alguien que después no lo encuentra en el panel, que es la regla que ya gobernaba
+  `notifications.user_id`. Un público acotado que hoy no tiene a nadie es una lista **vacía** y no
+  `null`: "no le toca a nadie" y "le toca a todos" son cosas distintas, y confundirlas mandaría el
+  aviso al equipo entero justo cuando alguien lo acotó.
+  El reparto entra también en **"Marcar todas leídas"**: un aviso de "para todos" es UNA fila con
+  el `is_read` compartido, así que marcar un tipo que a uno le esconden se lo borraría de la
+  campana a quien sí tenía que atenderlo, sin haberlo visto nunca.
+  El **catálogo de tipos vive en el backend** (`NOTIFICATION_TYPES`) y viaja en la respuesta del
+  `GET`, no copiado en la pantalla: con una copia en cada lado, el tipo que se agregue mañana
+  aparece en la base y no en el formulario, así que nadie puede enrutarlo. Lleva etiqueta y
+  descripción en castellano y va agrupado por el trabajo al que pertenece — una lista de
+  diecisiete claves como `whatsapp_reminder_undeliverable` no se puede repartir entre perfiles
+  porque nadie sabe qué significan. El aviso manual (`MANUAL_NOTICE_TYPE`) queda fuera a propósito:
+  esos ya eligen destinatario al mandarse, y enrutarlos además por su tipo haría que uno dirigido a
+  tres personas se le escondiera a una por su perfil — dos reglas peleando por el mismo aviso.
+  Se guarda **tipo por tipo** y no la matriz entera: la pantalla se edita marcando casillas, y
+  mandar las diecisiete filas en cada clic haría que dos personas configurando a la vez se pisaran
+  el trabajo entero en vez de la casilla que tocaron. "Todo el equipo" es una **opción más** y no
+  la ausencia de opciones, porque si no, devolver un tipo a todos obliga a adivinar que hay que
+  desmarcarlo todo. Las filas se **cachean 30 s** e se invalidan al guardar: de ellas depende cada
+  lectura de la campana, que se consulta al abrir el menú y cada 60 s para el contador, y sin caché
+  serían dos consultas por minuto y por persona sobre una tabla que cambia una vez al mes. El
+  perfil del lector se consulta por su id y **no se lee del token**: el JWT lleva el nombre del rol
+  y no su id, y dura 8 h — a quien le cambian el perfil seguiría recibiendo los avisos del anterior
+  toda su sesión.
+- **El aviso de la campana se puede abrir entero** ("Ver todo" en `AdminNavbar.vue`). El cuerpo se
+  recorta a dos líneas (`-webkit-line-clamp: 2`) y estos avisos son párrafos —"escribió hace 1427
+  min… Escribió: «Ok»… Hay que responderle a mano"—, así que lo que se leía era el principio de la
+  primera frase y nada de lo que hay que hacer. Tres detalles: la fila pasó de ser **un `<button>`
+  a un `<div>` con dos botones adentro**, porque un botón dentro de otro es HTML inválido y el clic
+  en "Ver todo" habría disparado además la navegación —o sea que desplegar el texto te sacaba de la
+  campana—; desplegado se respetan los **saltos de línea** (`white-space: pre-line`), porque
+  aplastados en un bloque corrido estos avisos se vuelven ilegibles justo cuando alguien los abrió
+  para leerlos; y si hay que ofrecer el botón se decide por el **largo del texto** (~100
+  caracteres, o un salto de línea) y no midiendo el DOM: medir `scrollHeight` obliga a un reflow
+  por aviso cada vez que se abre la campana, y el costo de pasarse es un "Ver todo" que despliega
+  una línea de más, mientras que el de quedarse corto es un texto recortado sin forma de abrirlo.
+  Lo desplegado se olvida al cerrar el menú: es un gesto del momento, no una preferencia.
 - **RBAC**: `roles` ↔ `permissions` (N:N vía `role_permissions`) ↔ `users` (N:1 vía `role_id`), más
   `user_permissions`, que son las **excepciones de una persona** sobre lo que le da su rol. Los
   permisos efectivos (rol + otorgados − revocados) se resuelven en UN solo sitio
@@ -1001,14 +2282,33 @@ antes de tocar el arranque de producción.
   volver a cerrar no paga dos veces. La etapa ganadora se pregunta con `loadWinningStatuses()`
   (`ganado` + la columna marcada `final`), no comparando contra una constante: el que renombra la
   columna no sabe que de eso cuelga la comisión. El porcentaje y la base se guardan en cada fila:
-  cambiar el 2% no reescribe lo ya devengado. Es el **devengo**, no el pago, y sigue sin entrar en
-  `finance_journal`.
+  cambiar el 2% no reescribe lo ya devengado. Sigue sin entrar en `finance_journal`: el libro
+  diario es contabilidad, y esto es lo que se le debe al equipo por vender y por cobrar.
   En el **Resumen Financiero sí resta**, desde el 16/10/2026: la comisión `pagada` cuenta como
   egreso (fechada en `paid_at`, el día en que salió, no en el que se devengó) y la `pendiente` va
   aparte en `totals.pendientes`, sin tocar el balance. **No se descuenta dos veces** porque acá las
   comisiones se pagan por fuera de la planilla, así que no hay una fila de `finance_salaries` que
   repita ese mismo egreso — si algún día se empiezan a anotar en Salarios, el único lugar donde hay
   que dejar de sumarlas es `getOverview()`, donde está dicho en un comentario.
+  Desde el **31/10/2026 la fila guarda también el pago**: su **cuenta** (`banco`), el método
+  (`metodo_pago`) y sus **comprobantes** (`sales_commission_receipts`, 1:N, calcada de
+  `finance_salary_receipts` y con los archivos en la misma carpeta `uploads/finance-receipts/`). Se
+  corrige desde el lápiz de cada fila (`PUT /api/commissions/:id`, multipart,
+  `commissionService.update()`), y la píldora de estado sigue siendo el `PATCH .../estado` de un
+  clic — va aparte por lo mismo que en el Libro Diario: reenviar el formulario entero para cambiar
+  una palabra reescribe de paso campos que nadie tocó, y por eso `setEstado()` **no** toca la cuenta
+  ni el método. Lo que la edición NO deja cambiar es de dónde viene la comisión —el lead, la cuota,
+  el beneficiario y `base_amount`, que los escribió el cierre o el cobro—, y tampoco hay botón de
+  alta: una comisión cargada a mano no tendría de qué colgar. El **`percent` se recalcula** desde el
+  monto corregido y la base (`update()`): un 2% guardado al lado de un monto que ya no es su 2% es
+  una fila que se contradice sola. Y de `banco` cuelga lo importante: el egreso resta en la tarjeta
+  de **esa** cuenta del Resumen y no en el cajón "Sin cuenta" —las cuatro consultas de comisiones de
+  `getOverview()` van agrupadas por banco, igual que las de salarios—, así que el saldo de la cuenta
+  dejó de decir más de lo que hay. Las comisiones anteriores a esa fecha no tienen cuenta y el
+  filtro de la pestaña las junta bajo "Sin cuenta", que es como se las encuentra para completarlas.
+  `paid_at` se entrega como `"YYYY-MM-DD"` (`isoDay()`, el mismo cuidado que el resto de Finanzas):
+  ahora carga un campo de fecha del formulario, así que un día corrido por el huso no sería una
+  etiqueta mal escrita sino un dato que se guarda al editar.
 - En la bandeja de WhatsApp, cada conversación muestra la **etapa del funnel** del lead
   (`funnel_stage`, resuelto en `funnelStageLabel.js`): quien contesta un mensaje no tenía forma de
   saber si del otro lado hay un contacto recién llegado o un cliente al que ya se le cotizó, y de
@@ -1047,6 +2347,128 @@ antes de tocar el arranque de producción.
   cursor se recalcula desde la última conversación de la lista y no desde el que devuelve esa
   respuesta. `total` viaja aparte y solo en la primera página: "100 conversaciones" era el tamaño de
   la página disfrazado de dato.
+- **La memoria del bot son dos caminos y no uno** (`botMemory.js`, con test). Los cinco datos con
+  los que se atiende un caso de tesis —carrera, universidad, **nivel**, **etapa** y la **consulta
+  principal**— vivían solo en el JSON `whatsapp_bot_sessions.answers`, y eso tenía dos agujeros.
+  (1) Los tres resaltados **no llegaban a la ficha**: `_syncLeadProfile()` escribía carrera,
+  universidad y la terna académica y dejaba fuera `answers.level`, `answers.stage` y
+  `answers.problem`, así que el asesor entraba a la reunión con un lead cuyo `topic` seguía diciendo
+  "Consulta por WhatsApp de 51987…" teniendo el tema escrito tres mensajes arriba. (2) **Se perdían
+  al reiniciar la sesión**: `resetSession()` borra la fila —lo hace el panel y también el barrido al
+  congelar—, y el contacto que volvía era interrogado de cero sobre lo que ya había contestado. Lo
+  que sí sobrevive es la ficha, de ahí `rehydrateAnswers()`: la sesión escribe a la ficha y la ficha
+  siembra la sesión siguiente. El mapeo vive en UN módulo porque de él dependen las dos
+  direcciones, y con una copia en cada punta el día que cambie un nombre de campo la ida seguiría
+  guardando y la vuelta dejaría de leer, sin que nada falle a la vista (el test comprueba justo esa
+  propiedad: ida y vuelta dicen lo mismo). Tres cuidados: la **consulta principal solo pisa un
+  `topic` que todavía es el marcador del alta automática** (`isPlaceholderTopic`) —un tema corregido
+  a mano es un dato del equipo, y el bot no tiene por qué saber más que la persona que lo atendió—;
+  los **valores por defecto del alta no se heredan** (`field_of_study` nace en "General" y el correo
+  con un marcador, así que sembrarlos haría que el bot no le pregunte la carrera a nadie ni pida el
+  correo real); y **no se siembran los marcadores internos** (`__*`: horario propuesto, intentos
+  gastados, avisos ya mandados), que son del hilo que terminó y dejarían la sesión nueva creyéndose
+  a mitad de un agendamiento que ya no existe. La etapa se traduce al catálogo cerrado de
+  `THESIS_SITUATIONS` —el mismo selector de la Base de Datos— y lo que no calza no se guarda: un
+  valor huérfano no se puede editar después desde la pantalla.
+- **Qué quiere un mensaje se contesta en un solo sitio** (`botIntent.js`, con test): precio,
+  urgencia, reclamo, documento y pedido de hablar con una persona. Estaba repartido en tres —las
+  cuatro señales críticas de `leadSignals.js`, `PRICE_QUESTION_RE` dentro del bot y `parseUrgency()`,
+  que solo lee la ficha de un formulario de anuncio—, y eso dejaba dos huecos: **la urgencia escrita
+  a mano no existía** ("sustento el viernes", "lo necesito para mañana") así que el bot trataba igual
+  a quien tiene fecha de sustentación y a quien averigua para el otro semestre, y **un documento no
+  era una intención sino un estorbo** (caía en "no puedo abrir esto", que es verdad y no es lo
+  importante: mandar un PDF es pedir que alguien lo revise). La urgencia tiene **tres familias**
+  porque se responden distinto —`deadline` (fecha tope, lo más fuerte que puede decir un lead),
+  `rush` (prisa sin fecha) y `soon` (plazo corto)— y se escribe en el MISMO campo y con el MISMO
+  vocabulario que el formulario (`urgencyAnswerValue`): con dos escalas, quien mira la ficha no sabe
+  si "asap" y "deadline" son lo mismo. Solo **sube**: una prisa nueva no borra una fecha tope ya
+  declarada. "Rápido" suelto queda fuera a propósito ("¿responden rápido?" es una pregunta sobre el
+  servicio, y tratarla como urgencia pondría media bandeja en prioridad alta), y el documento se
+  reconoce por el **tipo** de mensaje y no por su texto —el cuerpo de un documento es su nombre de
+  archivo—, con el sticker fuera (es una reacción) y el audio también (ya se transcribe con Whisper,
+  así que mandarlo a revisar es mandar a revisar lo que el bot sí pudo leer). La **señal crítica
+  sigue preguntándose a `leadSignals` y no se deriva de esta lista**: de ella depende el escalado a
+  una persona, y acá se agregaron intenciones que no escalan — derivarla del `top` mandaría a un
+  asesor cada pregunta de precio.
+- **La derivación al asesor es una fila con dueño y con acuse** (`lead_handoffs`,
+  `leadHandoffService.js`, `GET /api/lead-handoffs`, `PATCH /api/lead-handoffs/:id/ack`).
+  `handOffToAdvisor()` movía el lead, le avisaba al contacto y mandaba el aviso al equipo, y ninguna
+  de las tres deja constancia de lo único que se pregunta después: **a quién le toca y si alguien lo
+  atendió**. El aviso va a la campana y al correo, o sea a una bandeja compartida donde cada uno
+  puede suponer que es de otro; de las 17 transferencias del período medido, 0 terminaron en reunión
+  y no había forma de distinguir "nadie la atendió" de "se atendió y no cerró".
+  **La fila ES la tarea** y no va a `tasks`: esa cuelga de `projects` en CASCADE —un lead transferido
+  todavía no tiene proyecto, y el día que lo tenga, borrarlo se llevaría el rastro— y su vocabulario
+  (`pendiente`/`completado`) no tiene dónde guardar a quién le toca ni cuándo se hizo cargo. Mismas
+  razones que la tabla propia de Entregables.
+  **A quién le toca** es el responsable que el lead ya tiene; si no tiene, se le pide uno al reparto
+  (`pickAssignee({ botWillAttend: false })` — el bot acaba de dejar de atenderlo, que es el supuesto
+  exacto de `routesNow()`) y se le escribe también al lead con `assignmentPatch()`, el único sitio
+  que toca esas dos columnas. No es un efecto de paso: un lead sin responsable **no lo ve nadie**
+  salvo quien reparte, así que derivarlo sin asignarlo es dejar la tarea en una cola que una sola
+  persona del panel puede abrir. Y el aviso lo **nombra**, con "SIN ASIGNAR" escrito con todas las
+  letras cuando no hay —un aviso al que le falta el dato hace creer que el aviso no lo trae—.
+  La **confirmación de atención tiene dos caminos y el bueno no exige apretar nada**: el acuse se
+  deriva de que una persona le escribió (`ackHandoffFromReply`, llamado desde los mismos puntos de
+  `whatsappMessageService` donde se sella la primera respuesta del lead), porque la prueba de que un
+  asesor se hizo cargo es que escribió. **Avan no acusa recibo de su propia transferencia**: un
+  saliente sin autor es el bot —así se guarda `whatsapp_messages.sent_by`— y contarlo marcaría
+  atendidas todas las derivaciones en el mismo segundo en que se crean, con el mensaje "Te paso con
+  un asesor"; por eso un `sentBy` nulo solo cuenta con `via: 'whatsapp_app'`, que es el eco de la app
+  de WhatsApp Business, o sea una persona escribiendo desde el celular. El botón del panel existe
+  además porque hay atención que no pasa por WhatsApp —el asesor **llama por teléfono**, y el
+  teléfono no pasa por el sistema—: sin él esa derivación quedaba escalando para siempre, que es
+  justo lo que `_followUpStaleHandoffs()` no podía ver deduciendo del último saliente. Quién atendió
+  sale de la **sesión** y nunca de un campo del formulario, igual que el beneficiario de la comisión
+  de cobranza. `ackHandoffFromReply` es **función de módulo y no método**, con el mismo patrón y las
+  mismas razones que `stampFirstResponseByPhone`: hacerla método obligaría a `whatsappMessageService`
+  a recibir inyectado un servicio que necesita el de leads y el de reparto para un `UPDATE`.
+  **Una sola derivación abierta por contacto**: un segundo pedido de hablar con una persona mientras
+  la primera sigue sin atender no es otra tarea, es la misma más urgente, así que sube la prioridad
+  y suma el motivo en vez de abrir otra fila — dos partirían la cola y bastaría atender una para que
+  la otra quedara viva para siempre (misma idempotencia que `attribution_conflicts`). La prioridad
+  (`attentionPriority`) la deciden la urgencia y lo que ya está roto; una pregunta de precio es
+  intención de compra y no una emergencia, así que no desplaza a un reclamo. La visibilidad es la del
+  funnel —cada quien ve lo suyo, `leads.manage_all` ve todo— resuelta en el servidor, y lo que **no**
+  tiene asesor entra en la lista de todos: es justo lo que hay que repartir, y esconderlo lo deja sin
+  nadie que pueda asignarlo. Nada de esto puede tumbar la transferencia: si la fila falla, el lead ya
+  se movió y al contacto ya se le dijo que lo atiende una persona.
+- **El monitor de calidad del bot** (`bot_quality_events`, `botQuality.js` con test,
+  `botQualityService.js`, `GET /api/whatsapp/bot/quality` bajo `bot.manage`). El bot anotaba todo
+  —más de cien tipos en `logActivity()`— pero en un arreglo **en memoria** de tamaño fijo: se pierde
+  en cada despliegue, no se consulta por fecha y no se suma, así que las cuatro preguntas que de
+  verdad se hacen no tenían respuesta —cuántas preguntas quedaron sin resolver, cuántos errores
+  hubo, cuántas veces repitió lo mismo y cuántas conversaciones se abandonaron—. Las tres veces que
+  se encontró algo así (las ocho conversaciones huérfanas, los cuatro "estoy en sala de espera", los
+  35 entrantes sin responder) fue porque alguien se puso a abrir conversaciones a mano.
+  El enganche es **`logActivity()` y no cada llamador**, por la misma razón que el push se cuelga de
+  `notificationService.create()` y que el aviso de proyecto nuevo vive en `projectService` y no en
+  sus tres rutas de alta: es el punto único por el que pasa todo, y puesto en cada sitio el evento
+  número ciento once se olvida y nadie se entera de que no se está midiendo. **No se guarda todo**:
+  `send_success` y `llm_request` solos son dos filas por turno, así que persistirlos enterraría las
+  cuatro cifras que la tabla viene a hacer visibles — la bitácora en memoria sigue siendo la que se
+  mira para depurar UNA conversación, que es otra pregunta. No espera y no lanza: un fallo al anotar
+  que algo salió mal no puede ser la causa de que el contacto se quede sin respuesta, y sobrevive a
+  que la migración no haya corrido (`missingTable()`, como las rutas de `financeOptionService`).
+  `actor` separa **quién abandonó**, y es la mitad del dato: un contacto que se fue y una
+  conversación que NOSOTROS dejamos sin contestar se ven igual en una cifra y se arreglan al revés
+  —al primero se le insiste, al segundo se le reclama al equipo—. El resumen se cuenta con un
+  `GROUP BY` en el servidor y no sumando las filas de `list()`, que está limitada: un total derivado
+  de ahí diría "500" para cualquier semana con más de 500 eventos, el mismo tope disfrazado de dato
+  que tenía el "100 conversaciones" de la bandeja. Y el test recorre los tipos medidos **contra el
+  código del bot**: la clasificación los nombra por su cadena literal, así que un tipo renombrado
+  dejaría su cajón en cero sin que nada falle.
+- **Un documento se deriva SIEMPRE; lo que se dice una sola vez es el mensaje al contacto.** El
+  "una sola vez por conversación" de `handleUnreadableMessage` gobernaba las dos cosas, y así el
+  **segundo** archivo no producía absolutamente nada —ni respuesta ni aviso—. Y el segundo es el
+  habitual: quien manda su plan de tesis manda después las observaciones del jurado y la carta de la
+  facultad, cada una en su archivo, y solo el primero llegaba a un ojo humano. Ahora el aviso dice
+  **qué llegó en castellano y qué hacer con eso** (`_deriveMediaForReview`) en vez de
+  `Llegó un mensaje de tipo "document"` cerrado con dos condicionales, y un sticker o una ubicación
+  no generan aviso ninguno: mandar al equipo a mirar un sticker es enseñarle a ignorar estos avisos.
+  Aparte, el webhook de **YCloud —que es el que está en producción— nunca llamaba a
+  `handleUnreadableMessage`**: solo lo hacía el nativo de Meta, así que la mitad multimedia del bot
+  estaba escrita y apagada. Es el fallo silencioso de siempre: no falla nada, simplemente no ocurre.
 - **Bot de WhatsApp** (`whatsappBotService.js`, el servicio más grande del backend): conversa con
   leads, agenda reuniones vía `googleCalendarService`/`scheduledMeetingService`, y hace seguimiento
   de conversaciones inactivas (recordatorio a la 1h, estado "Congelado" a las 2h — barrido cada
@@ -1130,6 +2552,23 @@ antes de tocar el arranque de producción.
   cortesía como "gracias" no). "No hay problema", "sin problema" y los dedazos de "sí" ("Dii") son un
   sí, y una respuesta ambigua al "¿Confirmo…?" repregunta una vez por el mismo horario
   (`confirmReasked`) en vez de soltarlo y preguntar "¿qué día te viene mejor?".
+- **Elegir un horario de la lista reserva directo, y pedir otro no es "no te entendí"**
+  (`slotReply.js`, enganchado en `handleSchedulingTimeReply()` antes del LLM; análisis de las
+  conversaciones del 14/09 al 01/11/2026). Dos fugas con la lista ya en pantalla: (1) quien
+  contestaba "2", "la opción 3" o "10.30" recibía "¿Confirmo…? Responde *Sí*", y de los 177 que
+  recibieron esa pregunta 81 no volvieron a escribir — ahora `directSlotPick()` reconoce la
+  elección **inequívoca** (número, ordinal, o la hora de UN solo horario de la lista) y va directo
+  a `confirmSlot()`; la confirmación queda para lo que salió de **interpretar** una frase, que es
+  para lo que existe. (2) "otro día", "otra hora", "no me calza ninguno", "en las tardes", "noche
+  por favor" caían en "No te entendí bien 🤔" con la misma lista y a la segunda en un asesor —
+  ahora `readSlotReply()` los reconoce y `_answerSlotReplyByRules()` ofrece horarios que **no**
+  se le mostraron (de otros días si pidió otro día) y del momento que nombró; si ahí no hay nada
+  lo dice («En la noche no tengo horarios libres») y ofrece lo más cercano, y sin ningún horario
+  libre transfiere. Ofrecer otra lista vuelve el contador de intentos a cero. Un "Listo" o "Si
+  porfavor" sin número pide el número UNA vez sin gastar intento. Son reglas y no el LLM por lo
+  mismo que la corrección de carrera: frases cortas y fijas en el paso más caro de perder, que
+  tiene que funcionar aunque el modelo tarde o falle. Un día concreto ("el sábado", "mañana")
+  **no** lo tocan: sigue yendo al camino de fechas, que busca ese día.
 - **Al contacto que nos corrige la carrera o la universidad se le hace caso en cualquier paso del
   agendamiento** (`profileCorrection.js` → `detectProfileCorrection()`, enganchado en
   `handleSchedulingTurn()` antes del clasificador de dudas). El bot le devuelve los dos datos
@@ -1145,6 +2584,29 @@ antes de tocar el arranque de producción.
   resuelve con reglas y no con el LLM porque de esto depende lo que queda escrito en la ficha —y
   después en la cotización y en el contrato—, y el veto más importante es el del día y la hora: los
   pasos del agendamiento son los dueños de esas frases.
+- **"¿Tienen sede en Lima?" se contesta con un sí y con la dirección** (`officeLocation.js` →
+  `officeQuestion()`, el texto en `whatsappBotCopy.officeLocations()`, enganchado en
+  `runConversationTurn()` **antes** de `_handleTrustDoubt`). Es un dato y no un criterio: la
+  dirección exacta no puede depender de lo que improvise el LLM —una calle inventada manda a
+  alguien a tocar una puerta que no existe—, así que se detecta con reglas, igual que la corrección
+  de carrera/universidad. Va antes de la duda de confianza porque "tienen oficina" coincide con
+  `TRUST_DOUBT_RE`, y por ahí la pregunta se contestaba con el **domicilio legal de Huancayo**: al
+  que preguntaba por Lima se le respondía que estamos en otra ciudad, teniendo la sede de Lima en el
+  catálogo. Las sedes salen de `COMPANY.offices` —la misma fuente que imprime el pie de la
+  cotización— y la de Lima llega hasta el **piso y el número de oficina** (`Jirón Washington 1420,
+  2.º piso, oficina 10`): quien pregunta por la sede va a ir. Se contestan **todas** las que el
+  mensaje nombre ("¿en Lima o en Huancayo?" pregunta por las dos) y **ninguna** que no esté en el
+  catálogo: Arequipa sigue el camino normal en vez de recibir un "¡sí!" por una oficina que no
+  existe. El Meet va al final y como alternativa, nunca en lugar de la dirección — contestar
+  "trabajamos por videollamada" a quien pregunta dónde están es la evasiva que la regla dura del
+  prompt ya prohíbe. Como la duda de confianza, el turno se gasta **entero** en responder (el
+  horario se vuelve a pedir en el turno siguiente), pero a la tercera pregunta **no** se escala a
+  una persona: se deja seguir el camino normal, porque el bloque de datos del LLM ya tiene las
+  sedes (`OFFICES_FACT` en `whatsappBotPromptDefaults.js`, en la FAQ editable y en la red de
+  seguridad de `buildKnowledgeBlock`) y eso cubre las vueltas que ninguna regla va a cubrir ("¿en
+  qué ciudades están?"). Los verbos en **singular** ("queda", "está", "es") quedan fuera del
+  detector a propósito: "mi universidad está en Lima" es una respuesta normal del perfilamiento, y
+  contestarla con la dirección de la oficina es responderle algo que no preguntó.
 - El **catálogo de universidades** (`backend/data/peruUniversities.js`) gana el match **más
   específico de todo el catálogo**, no el de la primera entrada que coincida, y los términos que
   varias comparten (`AMBIGUOUS_UNIVERSITY_TERMS`: "católica", "nacional") **no resuelven a ninguna**

@@ -25,120 +25,46 @@
       </select>
       <select v-model="bancoFilter" class="ledger-filter" aria-label="Filtrar por banco">
         <option value="">Todo banco</option>
-        <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+        <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
       </select>
-      <button type="button" class="btn-primary ledger-add-btn" @click="isFormOpen ? closeForm() : openCreate()">
-        {{ isFormOpen ? (editingRow ? '✕ Cancelar edición' : '✕ Cerrar') : '+ Nuevo asiento' }}
+      <LedgerDateRange v-model:desde="desde" v-model:hasta="hasta" noun="Fecha del asiento" />
+      <button type="button" class="btn-primary ledger-add-btn" @click="openCreate()">
+        + Nuevo asiento
       </button>
     </div>
 
     <p v-if="errorMessage" class="info-box ledger-alert">⚠️ {{ errorMessage }}</p>
     <p v-if="successMessage" class="info-box ledger-success">✅ {{ successMessage }}</p>
 
-    <section v-if="isFormOpen" class="glass-panel ledger-form-panel">
-      <h3 v-if="editingRow" class="ledger-form-title">
-        Editando el asiento <strong>{{ editingRow.code }}</strong>
-      </h3>
-      <form class="ledger-form" @submit.prevent="submit">
-        <div class="ledger-form-grid">
-          <div class="form-group">
-            <label class="form-label">Fecha</label>
-            <input v-model="form.fecha" type="date" class="form-input" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Monto</label>
-            <input v-model="form.monto" type="number" step="0.01" class="form-input" placeholder="Puede ser negativo" required />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Moneda</label>
-            <select v-model="form.moneda" class="form-select">
-              <option value="soles">Soles</option>
-              <option value="dolares">Dólares</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">ITF (S/)</label>
-            <input
-              v-model="form.itf"
-              type="number"
-              step="0.01"
-              min="0"
-              class="form-input"
-              :placeholder="formatAmount(itfSugerido)"
-              @input="onItfInput"
-            />
-            <p v-if="itfEditado" class="ledger-receipt-hint">
-              La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
-              <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
-            </p>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Banco</label>
-            <select v-model="form.banco" class="form-select" required>
-              <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Estado</label>
-            <select v-model="form.estado" class="form-select">
-              <option value="pendiente">Pendiente</option>
-              <option value="pagado">Pagado</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Área de la empresa</label>
-            <input v-model="form.area" type="text" class="form-input" list="journal-areas" placeholder="Ej: Ventas, Operaciones..." />
-            <datalist id="journal-areas">
-              <option value="Ventas" />
-              <option value="Marketing" />
-              <option value="Operaciones" />
-              <option value="Administración" />
-              <option value="Recursos Humanos" />
-              <option value="Finanzas" />
-            </datalist>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Asiento por destino</label>
-            <input v-model="form.asientoPorDestino" type="text" class="form-input" placeholder="Ej: Gasto por servicios..." />
-          </div>
-          <div class="form-group ledger-form-wide">
-            <label class="form-label">Detalle</label>
-            <textarea v-model="form.detalle" class="form-textarea" rows="2" placeholder="Descripción del movimiento" required></textarea>
-          </div>
-          <div class="form-group ledger-form-wide">
-            <label class="form-label">Comprobantes (imágenes o PDF, opcional)</label>
-            <input
-              ref="fileInput"
-              type="file"
-              accept="image/*,application/pdf"
-              multiple
-              class="form-input"
-              @change="onFileChange"
-            />
-            <p class="ledger-receipt-hint">
-              Puedes seleccionar varios archivos a la vez (hasta {{ MAX_RECEIPTS }}).
-              <template v-if="editingRow">
-                Se añaden a los {{ editingRow.receipts?.length || 0 }} que ya tiene; para
-                quitar alguno usa la ✕ de su miniatura en la tabla.
-              </template>
-            </p>
-          </div>
-        </div>
-
-        <button type="submit" class="btn-primary ledger-submit-btn" :disabled="isSaving">
-          {{ isSaving ? 'Guardando...' : (editingRow ? 'Guardar cambios' : 'Guardar asiento') }}
-        </button>
-      </form>
-    </section>
-
-    <div v-if="isLoading" class="empty-state"><p>Cargando libro diario...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="📖"
+      title="Cargando libro diario…"
+      subtitle="Sincronizando asientos contables, cuentas e ITF."
+    />
 
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Libro diario vacío</p>
-      <p class="empty-state-text">Registra el primer asiento con "+ Nuevo asiento".</p>
+      <p class="empty-state-text">Todavía no hay movimientos registrados en este libro.</p>
+      <button type="button" class="btn-primary ledger-submit-btn" @click="openCreate()">
+        + Registrar el primer asiento
+      </button>
     </div>
 
     <template v-else>
+      <!-- Los totales de abajo suman lo que pasó el filtro, así que un recorte
+           de fechas sin decirlo se lee como un mes flojo. -->
+      <p v-if="hasDateRange" class="ledger-range-notice">
+        <span>
+          Mostrando solo los asientos fechados <strong>{{ rangeLabel(desde, hasta) }}</strong>,
+          y los totales cuentan únicamente esos.
+        </span>
+        <button type="button" class="ledger-range-notice-btn" @click="clearDateRange()">
+          Ver todo el histórico
+        </button>
+      </p>
+
       <dl class="ledger-summary">
         <div class="ledger-summary-item">
           <dt>Asientos</dt>
@@ -175,6 +101,9 @@
       <div v-if="paged.length === 0" class="empty-state">
         <p class="empty-state-title">Ningún asiento coincide</p>
         <p class="empty-state-text">
+          <template v-if="hasDateRange">
+            No hay asientos fechados {{ rangeLabel(desde, hasta) }}.
+          </template>
           Ajusta la búsqueda o los filtros para volver a ver el registro.
         </p>
         <button type="button" class="btn-secondary ledger-submit-btn" @click="clearFilters()">
@@ -251,43 +180,12 @@
                   <span class="ledger-stack-main">{{ row.asiento_por_destino || '—' }}</span>
                 </td>
                 <td>
-                  <div class="receipt-cell">
-                    <span
-                      v-for="rcpt in row.receipts"
-                      :key="rcpt.id"
-                      class="receipt-thumb"
-                      :title="receiptTitle(rcpt)"
-                    >
-                      <a
-                        v-if="receiptUrls[rcpt.id]"
-                        :href="receiptUrls[rcpt.id]"
-                        target="_blank"
-                        rel="noopener"
-                        class="receipt-thumb-link"
-                      >
-                        <span v-if="isPdfReceipt(rcpt.mime_type, rcpt.original_name)" class="receipt-thumb-pdf">PDF</span>
-                        <img v-else :src="receiptUrls[rcpt.id]" alt="Comprobante" />
-                      </a>
-                      <span v-else-if="rcpt.missing" class="receipt-thumb-missing">!</span>
-                      <span v-else class="receipt-thumb-loading">…</span>
-                      <button
-                        type="button"
-                        class="receipt-remove"
-                        title="Eliminar comprobante"
-                        @click="removeReceipt(rcpt.id)"
-                      >✕</button>
-                    </span>
-                    <label class="receipt-add" title="Agregar comprobantes (imágenes o PDF)">
-                      <input
-                        type="file"
-                        accept="image/*,application/pdf"
-                        multiple
-                        hidden
-                        @change="(e) => uploadReceipts(row.id, e)"
-                      />
-                      +
-                    </label>
-                  </div>
+                  <ReceiptCell
+                    :receipts="row.receipts"
+                    :urls="receiptUrls"
+                    @upload="(e) => uploadReceipts(row.id, e)"
+                    @remove="removeReceipt"
+                  />
                 </td>
                 <td class="ledger-col-actions">
                   <div class="ledger-row-actions">
@@ -319,17 +217,282 @@
         />
       </template>
     </template>
+
+    <!-- ================================================================= -->
+    <!-- MODAL: alta y edición de un asiento                               -->
+    <!--                                                                   -->
+    <!-- El formulario vive acá y ya no desplegado bajo la barra: abierto   -->
+    <!-- en su sitio empujaba la tabla media pantalla hacia abajo —así que  -->
+    <!-- al guardar nadie veía la fila recién creada— y el botón de guardar -->
+    <!-- quedaba al final de once campos, fuera de la vista. Acá el guardar -->
+    <!-- está siempre a la vista, en el pie fijo.                           -->
+    <!--                                                                   -->
+    <!-- NO se cierra al hacer clic afuera, por la misma razón que la ficha -->
+    <!-- del lead: adentro hay un asiento a medio escribir con sus          -->
+    <!-- comprobantes ya elegidos, y el clic de al lado es el que se da     -->
+    <!-- para volver a mirar la tabla. Se cierra con la ✕, con "Cancelar" o -->
+    <!-- con Esc, y si hay algo escrito pregunta antes.                     -->
+    <!-- ================================================================= -->
+    <div v-if="isFormOpen" class="modal-overlay">
+      <div class="modal-content journal-modal" role="dialog" aria-modal="true" aria-labelledby="journal-modal-title">
+        <header class="modal-header">
+          <div>
+            <h3 id="journal-modal-title" class="modal-title">
+              <span class="heading-icon" aria-hidden="true">🧾</span>
+              {{ editingRow ? 'Editar asiento' : 'Nuevo asiento' }}
+            </h3>
+            <p class="journal-modal-sub">
+              <template v-if="editingRow">
+                Código <strong>{{ editingRow.code }}</strong> · registrado el {{ formatDate(editingRow.fecha) }}
+              </template>
+              <template v-else>
+                El código lo genera el sistema al guardar, a partir del día del asiento.
+              </template>
+            </p>
+          </div>
+          <button type="button" class="modal-close-btn" title="Cerrar" aria-label="Cerrar" @click="requestClose()">✕</button>
+        </header>
+
+        <form id="journal-form" class="modal-body journal-modal-body" @submit.prevent="submit">
+          <!-- ---------------------------------------------- El movimiento -->
+          <fieldset class="journal-fieldset">
+            <legend class="journal-legend">Movimiento</legend>
+            <div class="ledger-form-grid">
+              <div class="form-group ledger-form-wide">
+                <label class="form-label">Tipo de movimiento</label>
+                <!--
+                  El signo del monto se elige, no se teclea: un egreso anotado
+                  sin el menos entra al libro como ingreso y desbalancea el
+                  neto sin que nada falle a la vista.
+                -->
+                <div class="journal-type" role="group" aria-label="Tipo de movimiento">
+                  <button
+                    type="button"
+                    class="journal-type-btn is-in"
+                    :class="{ 'is-active': form.tipo === 'ingreso' }"
+                    :aria-pressed="form.tipo === 'ingreso'"
+                    @click="form.tipo = 'ingreso'"
+                  >↑ Ingreso</button>
+                  <button
+                    type="button"
+                    class="journal-type-btn is-out"
+                    :class="{ 'is-active': form.tipo === 'egreso' }"
+                    :aria-pressed="form.tipo === 'egreso'"
+                    @click="form.tipo = 'egreso'"
+                  >↓ Egreso</button>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="journal-monto">Monto</label>
+                <div class="journal-amount" :class="form.tipo === 'egreso' ? 'is-out' : 'is-in'">
+                  <span class="journal-amount-sign" aria-hidden="true">{{ signoPrefijo }}</span>
+                  <input
+                    id="journal-monto"
+                    ref="montoInput"
+                    v-model="form.montoAbs"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="form-input journal-amount-input"
+                    placeholder="0.00"
+                    required
+                  />
+                </div>
+                <p class="ledger-receipt-hint">
+                  Se guarda como
+                  <strong :class="form.tipo === 'egreso' ? 'journal-out' : 'journal-in'">{{ signedPreview }}</strong>.
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="journal-moneda">Moneda</label>
+                <select id="journal-moneda" v-model="form.moneda" class="form-select">
+                  <option value="soles">Soles</option>
+                  <option value="dolares">Dólares</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="journal-fecha">Fecha</label>
+                <input id="journal-fecha" v-model="form.fecha" type="date" class="form-input" required />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="journal-itf">ITF (S/)</label>
+                <input
+                  id="journal-itf"
+                  v-model="form.itf"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  class="form-input"
+                  :placeholder="formatAmount(itfSugerido)"
+                  @input="onItfInput"
+                />
+                <p v-if="itfEditado" class="ledger-receipt-hint">
+                  La fórmula daría S/ {{ formatAmount(itfSugerido) }}.
+                  <button type="button" class="ledger-inline-link" @click="usarItfSugerido">Usar ese</button>
+                </p>
+                <p v-else class="ledger-receipt-hint">
+                  Lo propone la fórmula del área; corrígelo con lo que cobró el banco.
+                </p>
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- -------------------------------------------- Cuenta y estado -->
+          <fieldset class="journal-fieldset">
+            <legend class="journal-legend">Cuenta y estado</legend>
+            <div class="ledger-form-grid">
+              <div class="form-group">
+                <div class="ledger-label-row">
+                  <label class="form-label" for="journal-banco">Banco</label>
+                  <FinanceOptionAdder kind="banco" @added="(b) => (form.banco = b)" />
+                </div>
+                <select id="journal-banco" v-model="form.banco" class="form-select" required>
+                  <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
+                  <!-- Una cuenta que ya no está en la lista sigue mostrándose en el asiento que la usa. -->
+                  <option v-if="form.banco && !bancos.includes(form.banco)" :value="form.banco">{{ form.banco }}</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="journal-estado">Estado</label>
+                <select id="journal-estado" v-model="form.estado" class="form-select">
+                  <option value="pendiente">Pendiente</option>
+                  <option value="pagado">Pagado</option>
+                </select>
+                <p class="ledger-receipt-hint">
+                  Un asiento <strong>pendiente</strong> no suma en los totales: es dinero que todavía no se movió.
+                </p>
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- ---------------------------------------------- Clasificación -->
+          <fieldset class="journal-fieldset">
+            <legend class="journal-legend">Clasificación</legend>
+            <div class="ledger-form-grid">
+              <div class="form-group">
+                <div class="ledger-label-row">
+                  <label class="form-label" for="journal-area">Área de la empresa</label>
+                  <FinanceOptionAdder kind="area" @added="(a) => (form.area = a)" />
+                </div>
+                <input
+                  id="journal-area"
+                  v-model="form.area"
+                  type="text"
+                  class="form-input"
+                  list="journal-areas"
+                  placeholder="Ej: Ventas, Operaciones..."
+                />
+                <datalist id="journal-areas">
+                  <option v-for="a in areas" :key="a" :value="a" />
+                </datalist>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="journal-destino">Asiento por destino</label>
+                <input
+                  id="journal-destino"
+                  v-model="form.asientoPorDestino"
+                  type="text"
+                  class="form-input"
+                  placeholder="Ej: Gasto por servicios..."
+                />
+              </div>
+            </div>
+          </fieldset>
+
+          <!-- ----------------------------------------- Detalle y respaldo -->
+          <fieldset class="journal-fieldset">
+            <legend class="journal-legend">Detalle y respaldo</legend>
+            <div class="ledger-form-grid">
+              <div class="form-group ledger-form-wide">
+                <label class="form-label" for="journal-detalle">Detalle</label>
+                <textarea
+                  id="journal-detalle"
+                  v-model="form.detalle"
+                  class="form-textarea"
+                  rows="2"
+                  placeholder="Descripción del movimiento"
+                  required
+                ></textarea>
+              </div>
+
+              <div class="form-group ledger-form-wide">
+                <label class="form-label" for="journal-receipts">Comprobantes (imágenes o PDF, opcional)</label>
+                <input
+                  id="journal-receipts"
+                  ref="fileInput"
+                  type="file"
+                  accept="image/*,application/pdf"
+                  multiple
+                  class="form-input"
+                  @change="onFileChange"
+                />
+                <!--
+                  Los archivos elegidos se listan acá y el campo se vacía: así
+                  se pueden sumar en varias tandas y, sobre todo, se ve QUÉ se
+                  está por subir ("3 archivos" no dice si está el que falta).
+                -->
+                <ul v-if="pendingFiles.length" class="journal-files">
+                  <li v-for="(file, i) in pendingFiles" :key="file.name + i">
+                    <span class="journal-file-name" :title="file.name">{{ file.name }}</span>
+                    <button
+                      type="button"
+                      class="journal-file-remove"
+                      :title="'Quitar ' + file.name"
+                      :aria-label="'Quitar ' + file.name"
+                      @click="removePendingFile(i)"
+                    >✕</button>
+                  </li>
+                </ul>
+                <p class="ledger-receipt-hint">
+                  Puedes elegir varios a la vez (hasta {{ MAX_RECEIPTS }}).
+                  <template v-if="pendingFiles.length">
+                    {{ pendingFiles.length }} listo(s) para subir.
+                  </template>
+                  <template v-if="editingRow">
+                    Se añaden a los {{ editingRow.receipts?.length || 0 }} que ya tiene; para
+                    quitar alguno usa la ✕ de su miniatura en la tabla.
+                  </template>
+                </p>
+              </div>
+            </div>
+          </fieldset>
+        </form>
+
+        <footer class="journal-modal-footer">
+          <!-- El error del guardado se lee acá y no detrás del modal, que es
+               donde quedaba el aviso de la pantalla. -->
+          <p v-if="formError" class="journal-modal-error">⚠️ {{ formError }}</p>
+          <div class="journal-modal-actions">
+            <button type="button" class="btn-action-secondary" @click="requestClose()">Cancelar</button>
+            <button type="submit" form="journal-form" class="btn-action-primary" :disabled="isSaving">
+              {{ isSaving ? 'Guardando…' : (editingRow ? 'Guardar cambios' : 'Guardar asiento') }}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
-import { isPdfReceipt, loadReceiptUrl } from './receiptImage.js';
-import { BANCOS, calcItf } from './incomeOptions.js';
+import { loadReceiptUrl } from './receiptImage.js';
+import { areas, bancos, calcItf, loadFinanceOptions } from './incomeOptions.js';
+import FinanceOptionAdder from './FinanceOptionAdder.vue';
 import { currencySymbol, dayOnly, formatAmount, formatDate } from './format.js';
 import { useLedgerTable } from './useLedgerTable.js';
+import LedgerDateRange from './LedgerDateRange.vue';
+import { rangeLabel } from './dateRange.js';
 import LedgerPagination from './LedgerPagination.vue';
+import ReceiptCell from './ReceiptCell.vue';
+import AppLoader from '../../components/AppLoader.vue';
 import './ledger.css';
 
 const props = defineProps({
@@ -346,6 +509,11 @@ const isLoading = ref(false);
 const estadoSavingId = ref(null);
 const errorMessage = ref('');
 const successMessage = ref('');
+/**
+ * El error del guardado va aparte del de la pantalla: con el modal abierto,
+ * `errorMessage` se dibuja detrás del velo y no lo lee nadie.
+ */
+const formError = ref('');
 
 watch(() => props.openFormTrigger, (val) => {
   if (val > 0) {
@@ -356,12 +524,21 @@ watch(() => props.openFormTrigger, (val) => {
 const rows = ref([]);
 const receiptUrls = reactive({});
 const fileInput = ref(null);
+const montoInput = ref(null);
 const editingRow = ref(null);
-let pendingFiles = [];
+/** Los comprobantes elegidos que todavía no se subieron (se listan en el modal). */
+const pendingFiles = ref([]);
+/**
+ * El formulario tal como se abrió. Es lo único que permite saber si cerrar
+ * tira algo escrito: sin eso, "Cancelar" o un Esc de más borran un asiento
+ * entero sin preguntar.
+ */
+const formBaseline = ref('');
 
 const {
-  search, estado: estadoFilter, banco: bancoFilter, sort, page, pageSize,
-  filtered, paged, totalPages, range, toggleSort, sortCaret, clearFilters
+  search, estado: estadoFilter, banco: bancoFilter, desde, hasta, sort, page, pageSize,
+  filtered, paged, totalPages, range, hasDateRange,
+  toggleSort, sortCaret, clearFilters, clearDateRange
 } = useLedgerTable(rows, {
   searchText: (row) => [row.code, row.detalle, row.area, row.asiento_por_destino, row.banco]
     .filter(Boolean).join(' '),
@@ -407,7 +584,28 @@ const totals = computed(() => {
  * `calcItf` sale de `incomeOptions.js`, que es donde vive la fórmula para todo
  * el módulo: la copia que había acá podía quedar diciendo otra cosa.
  */
-const itfSugerido = computed(() => calcItf(form.monto));
+const itfSugerido = computed(() => calcItf(form.montoAbs));
+
+/**
+ * Lo que se guarda en `finance_journal.monto`: el importe escrito en positivo
+ * con el signo que le pone el tipo de movimiento. El signo se elige y no se
+ * teclea porque un egreso anotado sin el menos entra como ingreso y
+ * desbalancea el neto sin que nada falle a la vista.
+ */
+const montoFirmado = computed(() => {
+  const abs = Math.abs(Number(form.montoAbs) || 0);
+  return form.tipo === 'egreso' ? -abs : abs;
+});
+
+/** El signo y la moneda, pegados al campo del monto ("+S/", "−US$"). */
+const signoPrefijo = computed(
+  () => `${form.tipo === 'egreso' ? '−' : '+'}${currencySymbol(form.moneda)}`
+);
+
+/** Cómo va a quedar escrito, para confirmarlo antes de guardar. */
+const signedPreview = computed(
+  () => `${signoPrefijo.value} ${formatAmount(Math.abs(Number(form.montoAbs) || 0))}`
+);
 
 const itfEditado = computed(() => {
   if (form.itf === '' || form.itf === null) return false;
@@ -422,7 +620,7 @@ const itfEditado = computed(() => {
 const itfTocado = ref(false);
 
 watch(
-  () => form.monto,
+  () => form.montoAbs,
   () => { if (!itfTocado.value) form.itf = itfSugerido.value; }
 );
 
@@ -439,7 +637,9 @@ function emptyForm() {
   return {
     fecha: new Date().toISOString().slice(0, 10),
     detalle: '',
-    monto: '',
+    // El tipo pone el signo; el monto se escribe siempre en positivo.
+    tipo: 'ingreso',
+    montoAbs: '',
     // Vacío = "usá la fórmula"; se rellena solo al escribir el monto.
     itf: '',
     moneda: 'soles',
@@ -453,42 +653,93 @@ function emptyForm() {
 const form = reactive(emptyForm());
 
 function onFileChange(event) {
-  pendingFiles = Array.from(event.target.files || []).slice(0, MAX_RECEIPTS);
+  const elegidos = Array.from(event.target.files || []);
+  pendingFiles.value = [...pendingFiles.value, ...elegidos].slice(0, MAX_RECEIPTS);
+  // El campo se vacía y manda la lista de abajo: así se pueden sumar archivos
+  // en varias tandas y se ve cuáles son, que es lo que "3 archivos" no dice.
+  event.target.value = '';
+}
+
+function removePendingFile(index) {
+  pendingFiles.value = pendingFiles.value.filter((_, i) => i !== index);
 }
 
 function resetForm() {
   Object.assign(form, emptyForm());
   itfTocado.value = false;
-  pendingFiles = [];
+  pendingFiles.value = [];
   if (fileInput.value) fileInput.value.value = '';
 }
 
-/** Texto del tooltip de una miniatura, avisando si el archivo ya no está. */
-function receiptTitle(rcpt) {
-  const name = rcpt.original_name || 'Comprobante';
-  return rcpt.missing ? `${name} — el archivo ya no está en el servidor` : name;
+/** Deja constancia de cómo se abrió el formulario, para la pregunta al cerrar. */
+function markBaseline() {
+  formBaseline.value = JSON.stringify(form);
+}
+
+/** Hay algo que perder si se cierra ahora. */
+const isDirty = computed(
+  () => pendingFiles.value.length > 0 || JSON.stringify(form) !== formBaseline.value
+);
+
+/**
+ * La foto del formulario se toma en el tick siguiente, no al abrirlo: el ITF
+ * sigue al monto con un `watch`, así que recién después el formulario queda
+ * como lo va a ver el usuario. Tomada antes, un formulario recién abierto ya
+ * se considera tocado y cerrarlo pregunta sin que nadie haya escrito nada.
+ */
+async function settleOpenForm() {
+  await nextTick();
+  markBaseline();
+  // El foco va al monto y no a la fecha: la fecha ya viene puesta en hoy.
+  montoInput.value?.focus();
 }
 
 function openCreate() {
   editingRow.value = null;
   resetForm();
+  formError.value = '';
   isFormOpen.value = true;
+  settleOpenForm();
 }
 
 function closeForm() {
   isFormOpen.value = false;
   editingRow.value = null;
+  formError.value = '';
   resetForm();
 }
 
-/** Abre el formulario con los datos del asiento para editarlo en su sitio. */
+/**
+ * Cerrar es un gesto deliberado (la ✕, "Cancelar" o Esc) y nunca un clic
+ * afuera, igual que la ficha del lead. Si hay algo escrito, pregunta: el
+ * asiento es largo de volver a tipear y los comprobantes, de volver a elegir.
+ */
+function requestClose() {
+  if (isDirty.value && !confirm('¿Descartar este asiento sin guardar?')) return;
+  closeForm();
+}
+
+function onModalKeydown(event) {
+  if (event.key !== 'Escape') return;
+  // Esc dentro de "＋ Agregar" cierra ese panelito, no el asiento entero.
+  if (event.target?.closest?.('.opt-adder')) return;
+  requestClose();
+}
+
+watch(isFormOpen, (open) => {
+  if (open) document.addEventListener('keydown', onModalKeydown);
+  else document.removeEventListener('keydown', onModalKeydown);
+});
+
+/** Abre el modal con los datos del asiento cargados para editarlo. */
 function startEdit(row) {
   editingRow.value = row;
   resetForm();
   Object.assign(form, {
     fecha: dayOnly(row.fecha),
     detalle: row.detalle || '',
-    monto: row.monto ?? '',
+    tipo: Number(row.monto) < 0 ? 'egreso' : 'ingreso',
+    montoAbs: row.monto === null || row.monto === undefined ? '' : Math.abs(Number(row.monto)),
     itf: row.itf ?? '',
     moneda: row.moneda || 'soles',
     banco: row.banco || 'BCP',
@@ -499,8 +750,9 @@ function startEdit(row) {
   // Un ITF guardado que no coincide con la fórmula se corrigió a mano: se marca
   // como tocado para que cambiar el monto no lo pise en silencio.
   itfTocado.value = Math.abs(Number(row.itf || 0) - calcItf(row.monto)) > 0.005;
+  formError.value = '';
   isFormOpen.value = true;
-  errorMessage.value = '';
+  settleOpenForm();
 }
 
 function releaseUrls() {
@@ -554,6 +806,7 @@ async function fetchRows() {
 
 async function submit() {
   isSaving.value = true;
+  formError.value = '';
   errorMessage.value = '';
   successMessage.value = '';
   const editing = editingRow.value;
@@ -561,7 +814,7 @@ async function submit() {
     const fd = new FormData();
     fd.append('fecha', form.fecha);
     fd.append('detalle', form.detalle);
-    fd.append('monto', form.monto);
+    fd.append('monto', montoFirmado.value);
     // Vacío viaja como cadena vacía y el servidor lo lee como "calculalo con
     // la fórmula" (`resolveItf`): un 0 escrito a mano, en cambio, se respeta.
     fd.append('itf', form.itf ?? '');
@@ -570,7 +823,7 @@ async function submit() {
     fd.append('estado', form.estado);
     fd.append('area', form.area);
     fd.append('asientoPorDestino', form.asientoPorDestino);
-    for (const file of pendingFiles) fd.append('receipts', file);
+    for (const file of pendingFiles.value) fd.append('receipts', file);
 
     const response = await apiFetch(
       editing ? `/api/finance/journal/${editing.id}` : '/api/finance/journal',
@@ -588,7 +841,7 @@ async function submit() {
     closeForm();
     await fetchRows();
   } catch (error) {
-    errorMessage.value = error.message;
+    formError.value = error.message;
   } finally {
     isSaving.value = false;
   }
@@ -671,6 +924,12 @@ async function removeRow(id) {
   }
 }
 
-onMounted(fetchRows);
-onBeforeUnmount(releaseUrls);
+onMounted(() => {
+  fetchRows();
+  loadFinanceOptions();
+});
+onBeforeUnmount(() => {
+  releaseUrls();
+  document.removeEventListener('keydown', onModalKeydown);
+});
 </script>

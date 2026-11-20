@@ -90,3 +90,26 @@ test('el teléfono se cruza por los últimos 9 dígitos, no por la cadena exacta
     assert.equal(phoneMatchKey(variante), esperado, `debería cruzar: ${variante}`);
   }
 });
+
+/*
+ * Tercer camino, 01/11/2026: el anuncio "Acompañamiento 17 Sep" mostraba
+ * S/ 2.300 cobrados con CERO leads en Ganado. La plata estaba registrada y
+ * verificada en Finanzas y la tarjeta se había quedado sin mover, así que el
+ * reporte decía a la vez que la venta no existía y que el dinero había
+ * entrado.
+ */
+test('un lead con una cuota verificada es una venta cerrada aunque su tarjeta no se haya movido', () => {
+  const statuses = new Set(['ganado']);
+  const lead = { id: 77, status: 'en_negociacion' };
+
+  assert.equal(isWonLead(lead, statuses, new Set(), new Set()), false);
+  assert.equal(isWonLead(lead, statuses, new Set(), new Set([77])), true);
+});
+
+test('sin cuotas verificadas, el camino del dinero no cambia nada', () => {
+  const statuses = new Set(['ganado']);
+  // Una cuota `pagado` todavía no pasó por el visto bueno de Finanzas, así que
+  // no entra en ese conjunto: de los tres estados, `verificado` es el único
+  // que suma en los libros.
+  assert.equal(isWonLead({ id: 5, status: 'cotizado' }, statuses, new Set(), new Set([9])), false);
+});

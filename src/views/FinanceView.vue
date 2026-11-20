@@ -76,6 +76,10 @@ import JournalTab from './finance/JournalTab.vue';
 import FixedExpensesTab from './finance/FixedExpensesTab.vue';
 import SalariesTab from './finance/SalariesTab.vue';
 import CommissionsTab from './finance/CommissionsTab.vue';
+import { loadFinanceOptions } from './finance/incomeOptions.js';
+
+// Las cuentas y áreas que agregó el equipo: las leen todas las pestañas.
+loadFinanceOptions();
 
 const TABS = [
   { key: 'overview', label: 'Resumen Financiero', icon: '📊', component: OverviewTab },

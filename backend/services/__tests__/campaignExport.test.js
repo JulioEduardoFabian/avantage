@@ -28,13 +28,29 @@ const COLUMNAS_META = [
   'Resultados (iniciales)', 'Indicador de resultados (inicial)'
 ];
 
-/** Las 18 columnas de la hoja de atribución, en su orden exacto. */
+/**
+ * Las 21 columnas de la hoja de atribución, en su orden exacto.
+ *
+ * Desde el 01/11/2026 los cinco desenlaces del funnel van separados —agendada,
+ * asistida, cotizada, ganada y cobrada—. Antes agendada y asistida eran una
+ * sola columna, así que un anuncio que trae gente que agenda y no aparece se
+ * leía exactamente igual que uno que trae gente que se presenta; y 'cerrada'
+ * se confundía con 'cobrada', que es lo verificado en Finanzas.
+ */
 const COLUMNAS_ATRIBUCION = [
   'Campaña', 'ID del conjunto de anuncios', 'Conjunto de anuncios', 'ID del anuncio', 'Anuncio',
   'Inversión (PEN)', 'Impresiones', 'Clics en el enlace', 'CTR del enlace (%)', 'Leads generados',
-  'Costo por lead (PEN)', 'Leads en cotización', 'Leads en seguimiento', 'Leads descartados',
-  'Ventas cerradas', 'Ingreso cobrado (PEN)',
-  'Ingreso registrado, incl. cuotas por cobrar (PEN)', 'ROAS real (CRM)'
+  'Costo por lead (PEN)', 'Leads sin respuesta', 'Citas agendadas', 'Citas asistidas',
+  'Leads en cotización', 'Leads en seguimiento', 'Leads descartados', 'Ventas cerradas',
+  'Leads cobrados',
+  // Las cuatro cifras de dinero separadas: lo propuesto, lo de ventas ya
+  // ganadas, lo de acuerdos sin cerrar y lo cobrado. Antes eran dos, y la
+  // segunda mezclaba ventas con acuerdos.
+  'Leads con cotización', 'Valor cotizado (PEN)',
+  'Registrado de ventas ganadas (PEN)', 'Cuota pactada sin cerrar (PEN)',
+  'Ingreso cobrado (PEN)',
+  'Ingreso registrado, incl. cuotas por cobrar (PEN)', 'ROAS real (CRM, sobre cobrado)',
+  'Contactos sin ficha en el CRM', 'Leads con pieza desconocida'
 ];
 
 function campaignFixture() {
@@ -58,7 +74,11 @@ function campaignFixture() {
           shopClicks: 7, metaResults: 64, metaResultIndicator: 'Conversaciones con mensajes iniciadas',
           metaCostPerResult: 13.28, attributionSetting: '7d_click_1d_view',
           reportStart: '2026-08-19', reportStop: '2026-09-17', metaMessagingStarted: 64,
-          conversations: 58, responded: 55, qualified: 31, appointments: 12, won: 4, lost: 9,
+          // 58 conversaciones atribuidas, de las que 47 trajeron a alguien que
+          // NO estaba en la base: sin ese tercer nivel, un anuncio de
+          // retargeting se lee tan eficiente como uno que trae gente nueva.
+          conversations: 58, newOpportunities: 47,
+          responded: 55, qualified: 31, appointments: 12, won: 4, lost: 9,
           qualificationRate: 53.4, conversationToAppointmentRate: 20.7, appointmentToWonRate: 33.3,
           avgViability: 72, medianFirstResponseMin: 3.5, costPerConversation: 14.66,
           costPerAppointment: 70.84, costPerWon: 212.53, quotedValue: 9600, roas: 11.29
@@ -105,6 +125,9 @@ function campaignFixture() {
             key: 'ad:1', adId: '1', adName: 'Video testimonial — asesoría de tesis',
             adsetId: '11', adsetName: 'Lima Norte 22-35', adSourceId: '1', headline: null,
             leads: 41, responded: 39, qualified: 25, appointments: 10,
+            // De las 10 citas agendadas solo 7 ocurrieron: esa brecha es la
+            // calidad del público, y se perdía con las dos en una columna.
+            attended: 7, collected: 3,
             quotation: 6, followUp: 27, discarded: 4, won: 4,
             paidRevenue: 9600, billedRevenue: 12000, quotedValue: 9600
           },
@@ -250,7 +273,10 @@ test('la hoja de campañas trae el agregado de Meta y el funnel del CRM', async 
   assert.equal(cell(2, 'Campaña'), 'Ingeniería Civil — Lima Norte');
   assert.equal(cell(2, 'Resultados'), 64);
   assert.equal(cell(2, 'Citas agendadas'), 12);
-  assert.equal(cell(2, 'ROAS'), 11.29);
+  // El ROAS se calcula sobre lo COBRADO y verificado, y el encabezado lo dice:
+  // con el valor cotizado ahora completo (incluye el pipeline abierto), un
+  // ROAS sobre cotizaciones premiaría al anuncio que nunca cierra ninguna.
+  assert.equal(cell(2, 'ROAS (sobre cobrado)'), 11.29);
   // Una campaña manual no tiene métricas de Meta pero sí funnel propio.
   assert.equal(cell(3, 'Campaña'), 'Campaña manual sin Meta');
   assert.equal(cell(3, 'Impresiones'), null);
@@ -268,11 +294,19 @@ test('campaignIds limita la exportación a las campañas filtradas en pantalla',
   assert.match(String(ads.getRow(2).getCell(headers.indexOf('Nombre del anuncio') + 1).value), /Sincronizar con Meta/);
 });
 
-test('la hoja de atribución abre el libro con las columnas de los tres bloques', async () => {
+test('la hoja de atribución trae las columnas de los tres bloques', async () => {
   const { workbook } = await buildAndReopen();
 
-  assert.equal(workbook.worksheets[0].name, 'Atribución anuncio → venta',
-    'es la hoja con la que se abre el archivo');
+  /*
+   * Primero va "Cómo leer este libro" y después la atribución. El libro se
+   * compara a diario contra el Administrador de anuncios y contra la planilla
+   * de marketing, y las tres fuentes cuentan cosas distintas con los mismos
+   * nombres: qué universo cuenta cada cifra y hasta cuándo llegan los datos de
+   * cada lado es lo primero que hay que leer, no un anexo al final.
+   */
+  assert.equal(workbook.worksheets[0].name, 'Cómo leer este libro');
+  assert.equal(workbook.worksheets[1].name, 'Atribución anuncio → venta',
+    'la hoja de trabajo va inmediatamente después');
   assert.deepEqual(headersOf(workbook.getWorksheet('Atribución anuncio → venta')), COLUMNAS_ATRIBUCION);
 });
 
@@ -325,6 +359,33 @@ test('el funnel del CRM se reparte en cajones excluyentes que suman los leads', 
   assert.equal(cell(2, 'Ingreso registrado, incl. cuotas por cobrar (PEN)'), 12000);
 });
 
+test('ninguna columna declarada queda sin escribir', async () => {
+  const { workbook } = await buildAndReopen();
+  const sheet = workbook.getWorksheet('Atribución anuncio → venta');
+  const headers = headersOf(sheet);
+  const cell = (row, header) => sheet.getRow(row).getCell(headers.indexOf(header) + 1).value;
+
+  /*
+   * "Citas agendadas", "Citas asistidas" y "Leads cobrados" estaban declaradas
+   * como columnas y nunca se llenaban, así que salían en blanco en TODAS las
+   * filas del libro que se reporta: una columna vacía se lee como un cero, y
+   * con eso ningún anuncio parecía haber traído una sola cita. Es un fallo que
+   * no rompe nada y que solo se ve mirando el archivo.
+   */
+  assert.equal(cell(2, 'Citas agendadas'), 10);
+  assert.equal(cell(2, 'Citas asistidas'), 7);
+  assert.equal(cell(2, 'Leads cobrados'), 3);
+
+  // Y el mismo descuido en la hoja de campañas, con el nivel que separa la
+  // conversación de la persona que NO estaba en la base.
+  const campañas = workbook.getWorksheet('Campañas');
+  const hc = headersOf(campañas);
+  assert.equal(
+    campañas.getRow(2).getCell(hc.indexOf('Personas nuevas (CRM)') + 1).value,
+    47
+  );
+});
+
 test('el costo por lead y el ROAS se calculan con la inversión del anuncio', async () => {
   const { workbook } = await buildAndReopen();
   const sheet = workbook.getWorksheet('Atribución anuncio → venta');
@@ -333,13 +394,13 @@ test('el costo por lead y el ROAS se calculan con la inversión del anuncio', as
 
   assert.equal(cell(2, 'Inversión (PEN)'), 560.4);
   assert.equal(cell(2, 'Costo por lead (PEN)'), 13.67);  // 560.40 / 41
-  assert.equal(cell(2, 'ROAS real (CRM)'), 17.13);       // 9600 / 560.40
+  assert.equal(cell(2, 'ROAS real (CRM, sobre cobrado)'), 17.13);       // 9600 / 560.40
 
   // Sin leads no hay costo por lead, y sin ingreso no hay ROAS: la celda va
   // vacía en vez de mostrar un 0 que se leería como "cuesta 0".
   assert.equal(cell(6, 'Leads generados'), 0);
   assert.equal(cell(6, 'Costo por lead (PEN)'), null);
-  assert.equal(cell(6, 'ROAS real (CRM)'), null);
+  assert.equal(cell(6, 'ROAS real (CRM, sobre cobrado)'), null);
   assert.equal(cell(6, 'Inversión (PEN)'), 120.5);
 });
 
@@ -354,7 +415,7 @@ test('un anuncio que ya no está en Meta conserva sus leads bajo el id del refer
   assert.equal(cell(3, 'Ventas cerradas'), 1);
   // No hay métricas de Meta para él: la inversión queda vacía, no en cero.
   assert.equal(cell(3, 'Inversión (PEN)'), null);
-  assert.equal(cell(3, 'ROAS real (CRM)'), null);
+  assert.equal(cell(3, 'ROAS real (CRM, sobre cobrado)'), null);
 });
 
 test('el archivo se nombra con la fecha de generación', async () => {

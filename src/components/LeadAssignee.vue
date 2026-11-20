@@ -45,8 +45,15 @@
       <div class="lead-assignee-pop" :style="popStyle" @click.stop>
         <header class="pop-header">
           <span class="pop-title">{{ meta.popTitle }}</span>
-          <span class="pop-hint">Área comercial</span>
+          <span class="pop-hint">{{ assignableIsFallback ? 'Área comercial' : 'Setters y comercial' }}</span>
         </header>
+
+        <!-- Ningún rol del panel se llama de forma comercial, así que se está
+             ofreciendo el área entera. Se dice en vez de disimularlo: un filtro
+             que se apaga solo y en silencio es un filtro que nadie entiende. -->
+        <p v-if="assignableIsFallback" class="pop-status">
+          Ningún rol se llama Setter ni Comercial: se ofrece el área comercial completa.
+        </p>
 
         <p v-if="error" class="pop-error">⚠️ {{ error }}</p>
 
@@ -94,7 +101,7 @@ import { computed, onUnmounted, ref } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import { avatarColor, initials } from '../avatars.js';
 import { hasPermission } from '../auth.js';
-import { commercialTeam as team, loadCommercialTeam } from '../data/commercialTeam.js';
+import { assignableIsFallback, assignableTeam as team, loadCommercialTeam } from '../data/commercialTeam.js';
 
 const props = defineProps({
   lead: { type: Object, required: true },
@@ -109,8 +116,13 @@ const props = defineProps({
 });
 const emit = defineEmits(['assigned']);
 
-/* El área comercial (`team`) es un `ref` compartido por todas las tarjetas y
-   se pide una sola vez — ver src/data/commercialTeam.js. */
+/* `team` es quien trabaja leads: el área comercial menos quien está ahí por
+   tener todos los permisos (los administradores) o por medir campañas
+   (Marketing) — ver `worksLeads()` en src/data/leadRoles.js. Es un valor
+   compartido por todas las tarjetas y se pide una sola vez. Los tres puestos
+   —responsable, setter y closer— ofrecen la misma gente: son el mismo trabajo
+   repartido, y una lista por puesto termina ofreciendo distinto según desde
+   dónde se asigne. */
 
 const isOpen = ref(false);
 const loading = ref(false);

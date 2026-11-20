@@ -119,7 +119,7 @@
             <div class="form-group">
               <label class="form-label">Banco</label>
               <select v-model="banco" class="form-select">
-                <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+                <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
               </select>
             </div>
             <div class="form-group">
@@ -179,7 +179,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
 import PaymentScheduleEditor from './PaymentScheduleEditor.vue';
-import { BANCOS } from '../views/finance/incomeOptions.js';
+import { bancos, loadFinanceOptions } from '../views/finance/incomeOptions.js';
 
 const props = defineProps({ lead: { type: Object, required: true } });
 const emit = defineEmits(['close', 'won']);
@@ -264,6 +264,7 @@ const clientName = computed(() => {
  * servidor después de llenar el formulario.
  */
 onMounted(async () => {
+  loadFinanceOptions();
   try {
     const response = await apiFetch(`/api/leads/${props.lead.id}/win-preview`);
     const data = await response.json();

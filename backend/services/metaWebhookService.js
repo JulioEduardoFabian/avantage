@@ -2,102 +2,22 @@ import crypto from 'crypto';
 import { LeadService } from './leadService.js';
 import { PageInteractionService } from './pageInteractionService.js';
 import { PageMessageService } from './pageMessageService.js';
+import {
+  extractCustomFields,
+  extractMetaLeadForm,
+  formatCustomFieldsNote
+} from './metaLeadFields.js';
 
 const GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || 'v21.0';
 
 const MAX_RECENT_EVENTS = 50;
 
-/** Sin tildes/mayúsculas y con guiones/guiones bajos como espacio, para comparar contra la clave de una pregunta del formulario sea cual sea el formato en que Meta la mande. */
-function normalizeFieldKey(text) {
-  return String(text || '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** "Título profesional" / "Maestría" / etc. -> uno de los tres niveles canónicos, o null. */
-function mapAcademicLevel(value) {
-  const v = normalizeFieldKey(value);
-  if (/doctorado/.test(v)) return 'Posgrado (Doctorado)';
-  if (/maestria|magister|master/.test(v)) return 'Posgrado (Maestría)';
-  if (/bachiller|titulo|pregrado|licenciatura/.test(v)) return 'Pregrado (Bachiller/Título)';
-  return null;
-}
-
-/**
- * Las respuestas de opción múltiple de un formulario de Meta Lead Ads a
- * veces llegan como la CLAVE interna de la opción ("estoy_con_el_proyecto")
- * en vez del texto que la persona vio y eligió ("Estoy con el proyecto") —
- * caso real: la misma respuesta que en el visor nativo de Meta se ve
- * legible llegaba así por la Graph API. Si el valor tiene esa forma
- * (todo en snake_case/kebab-case, sin espacios ni mayúsculas), se convierte
- * a texto legible; un valor que ya viene con espacios o mayúsculas propias
- * (como "UNDAC" o "Título profesional") se deja tal cual.
+/*
+ * La lectura del `field_data` vive en `metaLeadFields.js` (reglas puras, con
+ * sus pruebas). Se re-exporta desde acá porque es el nombre por el que ya la
+ * importan el backfill y los scripts.
  */
-function prettifyFormValue(value) {
-  const v = String(value || '').trim();
-  if (!v || !/^[a-z0-9]+([_-][a-z0-9]+)+$/.test(v)) return v;
-  const words = v.replace(/[_-]+/g, ' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-// Mismas preguntas que ya reconoce extractLeadFormFields() en
-// whatsappBotService.js para el resumen que llega por WhatsApp — acá se
-// comparan contra la CLAVE de cada pregunta del formulario de Meta Lead Ads
-// (no contra texto libre), que suele conservar palabras de la pregunta
-// original aunque venga en snake_case.
-const LEVEL_KEY_RE = /sacando|nivel academ|grado academ/;
-const UNIVERSITY_KEY_RE = /universidad/;
-const FIELD_KEY_RE = /carrera/;
-const PROGRESS_KEY_RE = /punto|avanzad|avance|estado.*tesis/;
-
-/**
- * Extrae grado académico, universidad, carrera y avance declarado a partir
- * del `field_data` que devuelve la Graph API para un lead de Meta Lead Ads
- * (formulario instantáneo) — sin esto, esas respuestas quedaban capturadas
- * por Meta pero nunca se guardaban en el lead (solo nombre/teléfono/correo),
- * y la ficha del lead se veía con los valores por defecto ("General", "No
- * especificada") aunque la persona sí los hubiera contestado.
- */
-export function extractCustomFields(fieldData) {
-  const extracted = {};
-  for (const item of fieldData || []) {
-    const key = normalizeFieldKey(item.name);
-    const value = (item.values?.[0] || '').trim();
-    if (!key || !value) continue;
-
-    if (!extracted.academicLevel && LEVEL_KEY_RE.test(key)) {
-      const level = mapAcademicLevel(value);
-      if (level) extracted.academicLevel = level;
-    } else if (!extracted.university && UNIVERSITY_KEY_RE.test(key)) {
-      extracted.university = prettifyFormValue(value);
-    } else if (!extracted.fieldOfStudy && FIELD_KEY_RE.test(key)) {
-      extracted.fieldOfStudy = prettifyFormValue(value);
-    } else if (!extracted.progressNote && PROGRESS_KEY_RE.test(key)) {
-      extracted.progressNote = prettifyFormValue(value);
-    }
-  }
-  return extracted;
-}
-
-/**
- * Arma el bloque de notas legible con lo que se pudo extraer del
- * formulario ("Grado académico: ...", "Universidad: ...", etc.) — mismo
- * estilo de etiquetas que ya usa whatsappBotService.finalize() para las
- * notas de un lead calificado por WhatsApp, para que el equipo vea el
- * mismo formato sea cual sea el origen del lead.
- */
-export function formatCustomFieldsNote(custom) {
-  const lines = [];
-  if (custom.academicLevel) lines.push(`Grado académico: ${custom.academicLevel}`);
-  if (custom.fieldOfStudy) lines.push(`Carrera: ${custom.fieldOfStudy}`);
-  if (custom.university) lines.push(`Universidad: ${custom.university}`);
-  if (custom.progressNote) lines.push(`Avance declarado: ${custom.progressNote}`);
-  return lines.join('\n');
-}
+export { extractCustomFields, formatCustomFieldsNote, extractMetaLeadForm };
 
 /**
  * Campos que se le piden a la Graph API por cada lead de un formulario
@@ -106,8 +26,16 @@ export function formatCustomFieldsNote(custom) {
  * llegaron al CRM?" sin exportar a mano el CSV del Administrador de anuncios,
  * y `created_time` es el momento real del envío, distinto de cuándo el lead
  * entró a este sistema (ver la migración de atribución de Meta).
+ *
+ * Los tres `*_name` se piden aunque el nombre pueda resolverse después contra
+ * las métricas sincronizadas de la campaña: ahí solo están los anuncios que
+ * siguen entregando dentro de la ventana sincronizada, así que un anuncio
+ * pausado, borrado o de un mes anterior dejaba al lead sin nombre de campaña y
+ * la hoja de marketing lo mostraba como "Sin campaña asignada" teniendo su
+ * `ad_id` guardado. El nombre que manda la API al momento del alta es el que
+ * ese lead tuvo; el enlace sigue siendo por id.
  */
-export const META_LEAD_FIELDS = 'id,created_time,field_data,form_id,platform,ad_id,adset_id,campaign_id';
+export const META_LEAD_FIELDS = 'id,created_time,field_data,form_id,platform,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name';
 
 /**
  * Convierte la respuesta de la Graph API de UN lead en el prospecto del CRM.
@@ -122,31 +50,45 @@ export const META_LEAD_FIELDS = 'id,created_time,field_data,form_id,platform,ad_
 export async function persistMetaLead(leadService, data) {
   const leadgenId = String(data.id || '');
 
-  const fields = {};
-  for (const item of data.field_data || []) {
-    fields[item.name] = item.values?.[0] || '';
-  }
-
   // "platform" indica si el formulario se llenó en Facebook ("fb") o
   // Instagram ("ig"); sin ese dato, se etiqueta genéricamente como Meta Ads.
   const source = data.platform === 'ig' ? 'Instagram Ads' : data.platform === 'fb' ? 'Facebook Ads' : 'Meta Ads';
 
-  const custom = extractCustomFields(data.field_data);
+  /*
+   * Las respuestas se leen por patrón y no por la clave exacta de Meta: los
+   * formularios que se contestan dentro de Messenger o de Instagram traen
+   * preguntas propias (`cual_es_tu_numero_de_celular`) en vez de las claves
+   * canónicas (`phone_number`), y de esos leads entraba solo el nombre. Ver
+   * `metaLeadFields.js`.
+   */
+  const form = extractMetaLeadForm(data.field_data);
   // El marcador sigue escribiéndose en las notas aunque el leadgen_id ya viva
   // en su propia columna: es lo que hace legible la ficha para el equipo, y
   // lo que permite reconocer estos leads si alguna vez hay que rehacer la
   // columna.
   const notesParts = [`[Meta leadgen_id=${leadgenId}] form_id=${data.form_id || 'desconocido'}`];
-  const customNote = formatCustomFieldsNote(custom);
+  const customNote = formatCustomFieldsNote(form);
   if (customNote) notesParts.push(customNote);
 
-  const phone = fields.phone_number || fields.phone || '';
+  const phone = form.phone || '';
+  if (!phone) {
+    // Un lead de formulario sin celular no se puede llamar ni cruzar contra la
+    // ficha que ya exista, así que no puede quedarse en silencio: se deja
+    // escrito qué preguntas SÍ mandó Meta, que es con lo que se corrige el
+    // formulario (o este extractor) sin tener que reproducir el caso.
+    const keys = (data.field_data || []).map((item) => item.name).join(', ') || 'ninguna';
+    console.warn(`⚠️ [Meta Webhook] El lead ${leadgenId} llegó sin celular. Preguntas recibidas: ${keys}`);
+  }
+
   const atribucion = {
     leadgenId: leadgenId || null,
     formId: data.form_id || null,
     adId: data.ad_id || null,
     adsetId: data.adset_id || null,
     campaignId: data.campaign_id || null,
+    adName: data.ad_name || null,
+    adsetName: data.adset_name || null,
+    campaignName: data.campaign_name || null,
     platform: data.platform || null,
     createdTime: data.created_time || null
   };
@@ -169,13 +111,14 @@ export async function persistMetaLead(leadService, data) {
   }
 
   const lead = await leadService.createProspect({
-    fullName: fields.full_name || fields.nombre_completo || 'Prospecto de Facebook',
-    email: fields.email || fields.correo_electronico || '',
+    fullName: form.fullName || 'Prospecto de Facebook',
+    email: form.email || '',
     phone,
+    dni: form.dni,
     source,
-    academicLevel: custom.academicLevel,
-    university: custom.university,
-    fieldOfStudy: custom.fieldOfStudy,
+    academicLevel: form.academicLevel,
+    university: form.university,
+    fieldOfStudy: form.fieldOfStudy,
     // Arranca igual que un contacto nuevo de WhatsApp que Avan todavía no
     // calificó: esta persona llenó el formulario pero nunca llegó a escribir
     // (o recibir) un mensaje de WhatsApp real, así que no es un lead comercial
@@ -188,6 +131,9 @@ export async function persistMetaLead(leadService, data) {
     metaAdId: atribucion.adId,
     metaAdsetId: atribucion.adsetId,
     metaCampaignId: atribucion.campaignId,
+    metaAdName: atribucion.adName,
+    metaAdsetName: atribucion.adsetName,
+    metaCampaignName: atribucion.campaignName,
     metaPlatform: atribucion.platform,
     metaCreatedTime: atribucion.createdTime
   });

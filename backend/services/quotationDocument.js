@@ -23,7 +23,37 @@ export const COMPANY = {
   phone: '+51 972566937',
   email: 'avantage@avantagegroup.com',
   website: 'www.grupoavantage.com',
-  tagline: 'INNOVACIÓN · INVESTIGACIÓN · SOFTWARE · MARKETING'
+  tagline: 'INNOVACIÓN · INVESTIGACIÓN · SOFTWARE · MARKETING',
+  /*
+   * Las sedes de atención, que son las que el cliente necesita para ir a la
+   * oficina. Se imprimen al pie de la cotización.
+   *
+   * Van aparte de `address`/`addressCity` a propósito: esos dos son el
+   * **domicilio legal** —el que va en el contrato (`domicilio_empresa`), el que
+   * el bot da cuando le preguntan dónde queda la empresa y el que se consulta
+   * en SUNAT—, y abrir una sede comercial no cambia el domicilio inscrito.
+   * Pisarlos haría que el contrato dijera una dirección que no es la de la
+   * ficha RUC.
+   *
+   * Las lee además el bot de WhatsApp (`officeLocation.js`), que es el que
+   * contesta "¿tienen sede en Lima?". Por eso la dirección llega hasta el
+   * piso y el número de oficina: quien pregunta eso va a ir, y "Jirón
+   * Washington 1420" a secas lo deja parado en la puerta de un edificio.
+   */
+  offices: [
+    { city: 'LIMA', address: 'Jirón Washington 1420, 2.º piso, oficina 10' },
+    { city: 'HUANCAYO', address: 'Calle Neptuno 185' }
+  ],
+  /*
+   * Los teléfonos de atención que se imprimen en el CONTRATO. Son los que
+   * quedan en manos del cliente para reclamar o consultar durante el trabajo,
+   * así que van en el documento que él se queda y no solo en la cotización.
+   *
+   * Van aparte de `phone` —el número único de la cotización y del comprobante—
+   * porque son otros: reemplazarlo cambiaría de golpe lo que dice cada
+   * documento ya emitido que se vuelva a imprimir.
+   */
+  contactPhones: ['904 961 715', '936 271 254']
 };
 
 /**
@@ -201,7 +231,11 @@ const ICONS = {
   clock: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.6 1.6"/>',
   card: '<rect x="1.5" y="4" width="13" height="8" rx="1.2"/><path d="M1.5 6.9h13"/>',
   shield: '<path d="M8 1.5 13 3.4V8c0 3.5-2.5 5.6-5 6.6C5.5 13.6 3 11.5 3 8V3.4z"/><path d="m5.9 8 1.5 1.6L10.3 6"/>',
-  doc: '<path d="M4 1.6h5l3 3v9.8H4z"/><path d="M9 1.6v3h3"/><path d="M6 8h4M6 10.4h4"/>'
+  doc: '<path d="M4 1.6h5l3 3v9.8H4z"/><path d="M9 1.6v3h3"/><path d="M6 8h4M6 10.4h4"/>',
+  /* El pin es de las sedes del pie. Antes la dirección iba con el icono de
+     persona (`user`) y pasaba por una firma; con dos sedes una debajo de la
+     otra, el icono es lo que dice de un vistazo que son direcciones. */
+  pin: '<path d="M8 14.4S3 10.1 3 6.6a5 5 0 0 1 10 0c0 3.5-5 7.8-5 7.8z"/><circle cx="8" cy="6.4" r="1.8"/>'
 };
 
 function icon(name, cls = 'q-ic') {
@@ -374,6 +408,13 @@ export function buildQuotationDocument({ quote, lead, forPrint = false, forEmail
     margin-top: 9px; font-size: 11px; font-weight: 700; letter-spacing: 2px;
     color: var(--olive-deep); padding-bottom: 4px; border-bottom: 2px solid var(--olive);
   }
+  /* El RUC va en el encabezado y no solo al pie: es el dato con el que el
+     cliente comprueba en SUNAT que la empresa existe, y al pie llega recién
+     después de haber leído el precio. */
+  .q-title .q-ruc {
+    margin-top: 5px; font-size: 9px; font-weight: 700; letter-spacing: 1.1px;
+    color: var(--muted);
+  }
   .q-facts { display: grid; gap: 10px; }
   .q-fact__k {
     display: flex; align-items: center; gap: 6px;
@@ -480,6 +521,9 @@ export function buildQuotationDocument({ quote, lead, forPrint = false, forEmail
   .q-foot__list .q-row { display: flex; gap: 7px; align-items: flex-start; }
   .q-foot__list .q-ic { width: 12px; height: 12px; color: ${C.olivePale}; flex: none; margin-top: 1px; }
   .q-foot__list strong { color: #fff; font-weight: 700; }
+  /* La ciudad va como etiqueta delante de la calle: con dos sedes al pie, es
+     lo primero que se busca ("¿tienen oficina en Lima?"). */
+  .q-foot__list .q-city { letter-spacing: 0.7px; margin-right: 3px; }
   .q-pay { margin-bottom: 9px; position: relative; z-index: 1; }
   .q-pay:last-child { margin-bottom: 0; }
   .q-pay__bank { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 3px; }
@@ -528,6 +572,7 @@ ${printBar}
       <div class="q-title">
         <h1>COTIZACIÓN<br>DE SERVICIOS</h1>
         <span class="q-num">CÓDIGO: ${esc(quoteNumber)}</span>
+        <span class="q-ruc">RUC ${esc(COMPANY.ruc)}</span>
         <span class="q-sub">Propuesta de asesoría integral de tesis</span>
       </div>
     </div>
@@ -602,7 +647,8 @@ ${printBar}
       <div class="q-foot__list">
         <div class="q-row">${icon('career')}<span><strong>${esc(COMPANY.legalName)}</strong></span></div>
         <div class="q-row">${icon('doc')}<span>RUC: ${esc(COMPANY.ruc)}</span></div>
-        <div class="q-row">${icon('user')}<span>${esc(COMPANY.address)}, ${esc(COMPANY.addressCity)}</span></div>
+        ${COMPANY.offices.map((o) => `
+        <div class="q-row">${icon('pin')}<span><strong class="q-city">${esc(o.city)}</strong> ${esc(o.address)}</span></div>`).join('')}
         <div class="q-row">${icon('phone')}<span>${esc(COMPANY.phone)}</span></div>
         <div class="q-row">${icon('mail')}<span>${esc(COMPANY.email)}</span></div>
         <div class="q-row">${icon('career')}<span>${esc(COMPANY.website)}</span></div>

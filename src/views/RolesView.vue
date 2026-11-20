@@ -49,7 +49,10 @@
               :key="user.id"
               class="pf-member"
             >
-              <span class="pf-avatar pf-avatar-sm" :style="{ background: hueOf(user.name) }">{{ initials(user.name) }}</span>
+              <span class="pf-avatar pf-avatar-sm" :style="user.avatar_url ? null : { background: hueOf(user.name) }">
+                <img v-if="user.avatar_url" :src="user.avatar_url" :alt="user.name" />
+                <template v-else>{{ initials(user.name) }}</template>
+              </span>
               <span class="pf-member-texts">
                 <span class="pf-member-name">{{ user.name }}</span>
                 <span class="pf-member-email data-mono">{{ user.email }}</span>
@@ -132,7 +135,12 @@
             <tr v-for="user in visibleUsers" :key="user.id">
               <td>
                 <div class="pf-cell-user">
-                  <span class="pf-avatar" :style="{ background: hueOf(user.name) }">{{ initials(user.name) }}</span>
+                  <!-- La foto si la subio en Mi perfil, y las iniciales si no:
+                       el circulo es el mismo, cambia lo que lleva dentro. -->
+                  <span class="pf-avatar" :style="user.avatar_url ? null : { background: hueOf(user.name) }">
+                    <img v-if="user.avatar_url" :src="user.avatar_url" :alt="user.name" />
+                    <template v-else>{{ initials(user.name) }}</template>
+                  </span>
                   <span class="pf-cell-user-name">{{ user.name }}</span>
                 </div>
               </td>
@@ -164,6 +172,9 @@
                 <div v-if="openMenuId === user.id" class="pf-menu" @click.stop>
                   <button type="button" class="pf-menu-item" @click="openUserPermissions(user)">
                     🧩 Permisos de esta persona
+                  </button>
+                  <button type="button" class="pf-menu-item" @click="openPasswordReset(user)">
+                    🔑 Restablecer contraseña
                   </button>
                   <span class="pf-menu-label">Cambiar rol</span>
                   <button
@@ -466,6 +477,59 @@
     </div>
 
     <!-- ===================== Modal: Nuevo usuario ===================== -->
+    <!-- ============ Restablecer la contraseña de otra cuenta ============ -->
+    <!--
+      La contracara de "Mi perfil": acá no se pide la contraseña actual porque
+      quien restablece no la sabe. Es la única forma de volver a entrar que
+      tiene alguien que la olvidó — el panel interno no manda correos de
+      recuperación como el portal de clientes.
+    -->
+    <div v-if="resetUser" class="modal-overlay" @click.self="closePasswordReset">
+      <div class="modal-content pf-modal pf-modal-narrow">
+        <div class="modal-header">
+          <h3 class="pf-modal-title">🔑 Restablecer contraseña</h3>
+          <button type="button" class="btn-secondary pf-close-btn" @click="closePasswordReset">✕ Cerrar</button>
+        </div>
+        <form class="modal-body" @submit.prevent="submitPasswordReset">
+          <p class="pf-modal-note">
+            Le pones una contraseña nueva a <strong>{{ resetUser.name }}</strong> y se la entregas.
+            La persona la puede cambiar después desde su propio perfil, y ahí sí se le pide la que
+            tenga puesta.
+          </p>
+          <div class="form-group">
+            <label class="form-label">Contraseña nueva</label>
+            <input
+              v-model="resetForm.next"
+              type="password"
+              class="form-input"
+              :minlength="MIN_PASSWORD_LENGTH"
+              autocomplete="new-password"
+              required
+              autofocus
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Repetir la nueva</label>
+            <input
+              v-model="resetForm.repeat"
+              type="password"
+              class="form-input"
+              autocomplete="new-password"
+              required
+            />
+          </div>
+          <p v-if="resetError" class="pf-form-error">{{ resetError }}</p>
+          <p v-else-if="resetFlash" class="pf-form-ok">✔️ {{ resetFlash }}</p>
+          <div class="pf-modal-actions">
+            <button type="button" class="btn-secondary" @click="closePasswordReset">Cerrar</button>
+            <button type="submit" class="btn-primary" :disabled="isResetting">
+              {{ isResetting ? 'Guardando…' : 'Restablecer' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div v-if="showUserModal" class="modal-overlay" @click.self="showUserModal = false">
       <div class="modal-content pf-modal pf-modal-narrow">
         <div class="modal-header">
@@ -483,7 +547,13 @@
           </div>
           <div class="form-group">
             <label class="form-label">Contraseña</label>
-            <input v-model="newUser.password" type="password" class="form-input" minlength="6" required />
+            <input
+              v-model="newUser.password"
+              type="password"
+              class="form-input"
+              :minlength="MIN_PASSWORD_LENGTH"
+              required
+            />
           </div>
           <div class="form-group">
             <label class="form-label">Rol</label>
@@ -510,6 +580,12 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
 import { apiFetch } from '../apiClient.js';
 
 const AVATAR_HUES = ['#6F8125', '#2E7D46', '#DE754B', '#C85532', '#8A3F28', '#56624A', '#4B5A1C'];
+
+/* El mismo mínimo que aplica el servidor (`MIN_PASSWORD_LENGTH` en
+   userService.js). Vale para el alta de una cuenta y para restablecerla: dos
+   mínimos distintos según la pantalla es como se crea una cuenta con una
+   contraseña que después el propio panel no deja volver a usar. */
+const MIN_PASSWORD_LENGTH = 8;
 
 const roles = ref([]);
 const permissions = ref([]);
@@ -809,6 +885,61 @@ async function openUserPermissions(user) {
     permError.value = err.message;
   } finally {
     permLoading.value = false;
+  }
+}
+
+// -------------------- Restablecer una contraseña ----------------------
+
+const resetUser = ref(null);
+const resetForm = reactive({ next: '', repeat: '' });
+const resetError = ref('');
+const resetFlash = ref('');
+const isResetting = ref(false);
+
+function openPasswordReset(user) {
+  openMenuId.value = null;
+  resetUser.value = { id: user.id, name: user.name };
+  resetForm.next = '';
+  resetForm.repeat = '';
+  resetError.value = '';
+  resetFlash.value = '';
+}
+
+function closePasswordReset() {
+  resetUser.value = null;
+}
+
+async function submitPasswordReset() {
+  resetError.value = '';
+  resetFlash.value = '';
+
+  if (resetForm.next.length < MIN_PASSWORD_LENGTH) {
+    resetError.value = `La contraseña nueva debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`;
+    return;
+  }
+  if (resetForm.next !== resetForm.repeat) {
+    resetError.value = 'La contraseña nueva y su repetición no coinciden.';
+    return;
+  }
+
+  isResetting.value = true;
+  try {
+    const res = await apiFetch(`/api/users/${resetUser.value.id}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ newPassword: resetForm.next })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'No se pudo restablecer la contraseña.');
+
+    resetForm.next = '';
+    resetForm.repeat = '';
+    // El modal queda abierto con el aviso: hay que copiarle la contraseña a la
+    // persona, y cerrándose solo se pierde de vista lo que se acaba de poner.
+    resetFlash.value = `Contraseña restablecida. Entrégasela a ${resetUser.value.name}.`;
+  } catch (err) {
+    resetError.value = err.message;
+  } finally {
+    isResetting.value = false;
   }
 }
 
@@ -1142,6 +1273,13 @@ onBeforeUnmount(() => {
   color: #fff;
   flex-shrink: 0;
   font-family: var(--font-heading);
+  overflow: hidden;
+}
+
+.pf-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .pf-avatar-sm {
@@ -1668,6 +1806,12 @@ onBeforeUnmount(() => {
 
 .pf-form-error {
   color: var(--accent-rose);
+  font-size: 0.82rem;
+  margin: 0.25rem 0 0;
+}
+
+.pf-form-ok {
+  color: var(--accent-emerald);
   font-size: 0.82rem;
   margin: 0.25rem 0 0;
 }

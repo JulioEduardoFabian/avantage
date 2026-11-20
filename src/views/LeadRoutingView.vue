@@ -5,29 +5,33 @@
         <span class="page-eyebrow">Configuración</span>
         <h2 class="section-heading"><span class="heading-icon">🔀</span> Reparto de leads</h2>
         <p class="section-subheading rt-subheading">
-          Quién recibe los leads que entran solos —por el bot de WhatsApp, los formularios de Meta y el
-          evaluador de tesis— y en qué proporción. Cada persona tiene un <strong>peso</strong>: de cada
-          vuelta, le tocan tantos leads como su peso.
+          Quién recibe los leads que entran solos —los formularios de TikTok y de Meta, el evaluador de
+          tesis y las conversaciones del bot de WhatsApp— y en qué proporción. Cada persona tiene un
+          <strong>peso</strong>: de cada vuelta, le tocan tantos leads como su peso.
         </p>
       </div>
     </header>
 
-    <!-- El reparto no tiene interruptor propio: corre exactamente cuando el bot
-         de WhatsApp está apagado. La banda dice cuál de los dos estados es el
-         de ahora y dónde se cambia, porque el botón está en otra pantalla. -->
-    <section class="rt-status" :class="{ 'is-live': pool?.active }">
-      <span class="rt-status-pill">{{ pool?.active ? 'Repartiendo' : 'En espera' }}</span>
+    <!-- El reparto no tiene interruptor propio, y lo que decide qué se reparte
+         no es el interruptor del bot sino QUIÉN atiende a cada lead: al de
+         formulario no lo atiende nadie, así que se reparte siempre; la
+         conversación de WhatsApp la lleva Avan mientras esté encendido. La
+         banda dice las dos cosas, porque con una sola frase la mitad de los
+         leads quedaba sin explicación. -->
+    <section class="rt-status is-live">
+      <span class="rt-status-pill">Repartiendo</span>
       <p class="rt-status-text">
+        <strong>Los formularios de TikTok y de Meta y el evaluador se reparten siempre.</strong>
+        Cada lead nuevo se le asigna a quien le toque y aparece en su Setter Funnel: a esos
+        el bot no los atiende —Avan contesta mensajes, no escribe primero—, así que sin
+        responsable no los vería nadie.
         <template v-if="pool?.active">
-          <strong>Avan está apagado, así que esto ya está repartiendo.</strong>
-          Cada lead nuevo del bot, de un formulario de Meta o del evaluador se le asigna
-          a quien le toque y aparece en su Setter Funnel.
+          Y como Avan está apagado, también se reparten las conversaciones de WhatsApp.
         </template>
         <template v-else>
-          <strong>Avan está encendido, así que todavía no reparte.</strong>
-          Mientras el bot atiende, él califica y agenda, y los leads entran como hoy.
-          Esto empieza a aplicarse —tal cual está armado acá— en cuanto se apague el bot
-          desde <router-link to="/admin/whatsapp">WhatsApp</router-link>.
+          Las conversaciones de WhatsApp, en cambio, las lleva Avan mientras esté encendido:
+          esas empiezan a repartirse en cuanto se apague el bot desde
+          <router-link to="/admin/whatsapp">WhatsApp</router-link>.
         </template>
       </p>
     </section>

@@ -108,45 +108,6 @@
       </div>
     </section>
 
-    <!-- Simulador de prueba del bot + LLM -->
-    <h3 class="subsection-title">🧪 Simulador de prueba (bot + LLM de Ollama Cloud)</h3>
-    <section class="info-box">
-      <p>
-        Simula mensajes entrantes de un contacto sin depender del webhook real de Meta ni del envío
-        por WhatsApp. Útil para ver que el agrupado de 5 segundos y la llamada al LLM funcionan.
-        Usa un <strong>wa_id de prueba</strong> (no un número real) para no mezclarlo con leads reales.
-      </p>
-    </section>
-    <section class="simulator-panel">
-      <form class="simulator-form" @submit.prevent="sendSimulatedMessage">
-        <div class="simulator-field">
-          <label class="field-label">wa_id de prueba</label>
-          <input v-model="simWaId" type="text" class="form-input-sm" placeholder="test-12345" />
-        </div>
-        <div class="simulator-field simulator-field-grow">
-          <label class="field-label">Mensaje a simular</label>
-          <input
-            v-model="simText"
-            type="text"
-            class="form-input-sm"
-            placeholder="Ej: hola, quiero saber sobre mi tesis"
-            @keydown.enter.prevent="sendSimulatedMessage"
-          />
-        </div>
-        <button type="submit" class="btn-send" :disabled="isSimulating || !simText.trim() || !simWaId.trim()">
-          {{ isSimulating ? 'Enviando...' : '📤 Simular mensaje' }}
-        </button>
-        <button type="button" class="btn-action-secondary" @click="resetSimWaId">🆕 Nuevo wa_id de prueba</button>
-      </form>
-
-      <div class="simulator-history" v-if="simMessagesSent.length">
-        <span class="preview-label">Mensajes simulados enviados a <code>{{ simWaId }}</code>:</span>
-        <div class="sim-message-chips">
-          <span v-for="(m, i) in simMessagesSent" :key="i" class="sim-message-chip">{{ m }}</span>
-        </div>
-      </div>
-    </section>
-
     <!-- Actividad del bot: vive en un modal en vez de ocupar media página. La
          bitácora se consulta cuando algo no cuadra, no todo el tiempo, y
          teniéndola aquí abajo el chat quedaba fuera de pantalla. -->
@@ -336,7 +297,14 @@
 
     <!-- Bandeja de conversaciones -->
     <h3 class="subsection-title">Conversaciones</h3>
-    <section v-if="!isLoading && conversations.length === 0 && !contactSearch" class="empty-state">
+    <AppLoader
+      v-if="isLoading && conversations.length === 0"
+      variant="chat"
+      icon="💚"
+      title="Cargando bandeja de WhatsApp…"
+      subtitle="Sincronizando hilos de conversación y estado de atención de Avan."
+    />
+    <section v-else-if="!isLoading && conversations.length === 0 && !contactSearch" class="empty-state">
       <div class="empty-state-visual">
         <img src="/images/empty_chat_state.jpg" alt="WhatsApp Inbox" class="empty-state-photo" />
       </div>
@@ -596,20 +564,68 @@
       </div>
     </section>
 
-    <!-- Prueba de conexión cruda -->
-    <h3 class="subsection-title">🔌 Prueba de conexión (eventos crudos)</h3>
-    <section v-if="!isLoading && rawEvents.length === 0" class="empty-state small">
-      <p>Sin eventos de prueba todavía. Usa el botón "Test" en Meta → WhatsApp → Webhooks.</p>
-    </section>
-    <section v-else class="events-list">
-      <article v-for="event in rawEvents" :key="event.id" class="event-card">
-        <header class="event-card-header">
-          <span class="event-time">{{ formatTime(event.receivedAt) }}</span>
-          <span class="signature-badge" :class="signatureBadgeClass(event)">{{ signatureBadgeText(event) }}</span>
-        </header>
-        <pre class="event-payload">{{ formatBody(event.body) }}</pre>
-      </article>
-    </section>
+    <!-- Herramientas de prueba y diagnóstico plegadas para despejar la bandeja operativa -->
+    <details class="wa-dev-drawer">
+      <summary class="wa-dev-summary">
+        <span>🧪 Herramientas de prueba y diagnóstico (Simulador de Bot LLM y Eventos de Webhook)</span>
+        <span class="wa-dev-badge">Desarrollador / QA</span>
+      </summary>
+
+      <div class="wa-dev-body">
+        <h3 class="subsection-title">🧪 Simulador de prueba (bot + LLM de Ollama Cloud)</h3>
+        <section class="info-box">
+          <p>
+            Simula mensajes entrantes de un contacto sin depender del webhook real de Meta ni del envío
+            por WhatsApp. Útil para ver que el agrupado de 5 segundos y la llamada al LLM funcionan.
+            Usa un <strong>wa_id de prueba</strong> (no un número real) para no mezclarlo con leads reales.
+          </p>
+        </section>
+        <section class="simulator-panel">
+          <form class="simulator-form" @submit.prevent="sendSimulatedMessage">
+            <div class="simulator-field">
+              <label class="field-label">wa_id de prueba</label>
+              <input v-model="simWaId" type="text" class="form-input-sm" placeholder="test-12345" />
+            </div>
+            <div class="simulator-field simulator-field-grow">
+              <label class="field-label">Mensaje a simular</label>
+              <input
+                v-model="simText"
+                type="text"
+                class="form-input-sm"
+                placeholder="Ej: hola, quiero saber sobre mi tesis"
+                @keydown.enter.prevent="sendSimulatedMessage"
+              />
+            </div>
+            <button type="submit" class="btn-send" :disabled="isSimulating || !simText.trim() || !simWaId.trim()">
+              {{ isSimulating ? 'Enviando...' : '📤 Simular mensaje' }}
+            </button>
+            <button type="button" class="btn-action-secondary" @click="resetSimWaId">🆕 Nuevo wa_id de prueba</button>
+          </form>
+
+          <div class="simulator-history" v-if="simMessagesSent.length">
+            <span class="preview-label">Mensajes simulados enviados a <code>{{ simWaId }}</code>:</span>
+            <div class="sim-message-chips">
+              <span v-for="(m, i) in simMessagesSent" :key="i" class="sim-message-chip">{{ m }}</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Prueba de conexión cruda -->
+        <h3 class="subsection-title">🔌 Prueba de conexión (eventos crudos)</h3>
+        <section v-if="!isLoading && rawEvents.length === 0" class="empty-state small">
+          <p>Sin eventos de prueba todavía. Usa el botón "Test" en Meta → WhatsApp → Webhooks.</p>
+        </section>
+        <section v-else class="events-list">
+          <article v-for="event in rawEvents" :key="event.id" class="event-card">
+            <header class="event-card-header">
+              <span class="event-time">{{ formatTime(event.receivedAt) }}</span>
+              <span class="signature-badge" :class="signatureBadgeClass(event)">{{ signatureBadgeText(event) }}</span>
+            </header>
+            <pre class="event-payload">{{ formatBody(event.body) }}</pre>
+          </article>
+        </section>
+      </div>
+    </details>
   </main>
 </template>
 
@@ -619,6 +635,7 @@ import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import { hasPermission } from '../auth.js';
 import { Form } from 'lucide-vue-next';
+import AppLoader from '../components/AppLoader.vue';
 
 const conversations = ref([]);
 const contactSearch = ref('');
@@ -3135,5 +3152,52 @@ onUnmounted(() => {
   padding: 0.6rem 1.1rem;
   border-radius: 10px;
   font-family: var(--font-heading);
+}
+
+.wa-dev-drawer {
+  margin-top: 1.5rem;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.wa-dev-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.85rem 1.15rem;
+  font-family: var(--font-heading);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-sub);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.wa-dev-summary:hover {
+  background: var(--surface-2);
+  color: var(--text-main);
+}
+
+.wa-dev-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+}
+
+.wa-dev-body {
+  padding: 0.5rem 1.15rem 1.25rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
 }
 </style>

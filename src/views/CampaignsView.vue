@@ -38,6 +38,13 @@
         >{{ syncingTikTok ? '↻ Sincronizando…' : '↻ Sincronizar con TikTok' }}</button>
         <button
           type="button"
+          class="btn-secondary sync-btn sync-btn-tiktok"
+          :disabled="tiktokStatus && !tiktokStatus.configured"
+          :title="tiktokStatus && !tiktokStatus.configured ? 'Configura las credenciales de TikTok Ads primero' : 'Traer al CRM los leads de los formularios instantáneos de TikTok'"
+          @click="openTikTokLeads"
+        >📥 Leads de TikTok</button>
+        <button
+          type="button"
           class="btn-secondary export-btn"
           :disabled="exporting || !report || !report.campaigns.length"
           title="Descargar el rendimiento en Excel (.xlsx): atribución anuncio → venta, anuncios, conjuntos y campañas"
@@ -46,6 +53,22 @@
         <button type="button" class="btn-primary new-campaign-btn" @click="openCreateModal">＋ Nueva campaña</button>
       </div>
     </header>
+
+    <!-- Tira compacta de estado de integraciones cuando están conectadas -->
+    <div v-if="(metaStatus && metaStatus.configured) || (tiktokStatus && tiktokStatus.configured)" class="connections-strip">
+      <span v-if="metaStatus && metaStatus.configured" class="conn-pill conn-pill-meta">
+        <span class="conn-dot"></span>
+        <strong>Meta Ads</strong>
+        <template v-if="metaStatus.accountName"> · {{ metaStatus.accountName }}</template>
+        <span class="data-mono">({{ metaStatus.accountId }})</span>
+      </span>
+      <span v-if="tiktokStatus && tiktokStatus.configured" class="conn-pill conn-pill-tiktok">
+        <span class="conn-dot"></span>
+        <strong>TikTok Ads</strong>
+        <template v-if="tiktokStatus.advertiserName"> · {{ tiktokStatus.advertiserName }}</template>
+        <span class="data-mono">({{ tiktokStatus.advertiserId }})</span>
+      </span>
+    </div>
 
     <p v-if="metaStatus && !metaStatus.configured" class="state-banner state-hint">
       <template v-if="metaStatus.reason === 'no_token'">
@@ -68,13 +91,6 @@
       <template v-else>
         🔌 No se pudo conectar con Meta Ads: {{ metaStatus.error || 'error desconocido' }}.
         Verifica el permiso <code>ads_read</code> del token o define <code>META_ADS_ACCOUNT_ID</code> en el <code>.env</code>.
-      </template>
-    </p>
-    <p v-else-if="metaStatus && metaStatus.configured" class="state-banner state-ok meta-connected">
-      🟢 Conectado a Meta Ads<template v-if="metaStatus.accountName"> · {{ metaStatus.accountName }}</template>
-      <span class="data-mono"> ({{ metaStatus.accountId }})</span>
-      <template v-if="metaStatus.accountSource === 'auto' && metaStatus.accountOptions > 1">
-        · detectadas {{ metaStatus.accountOptions }} cuentas, usando la primera activa; fija una con <code>META_ADS_ACCOUNT_ID</code>
       </template>
     </p>
     <p v-if="metaStatus && metaStatus.accountDisabled" class="state-banner state-hint">
@@ -109,13 +125,6 @@
         🔌 No se pudo conectar con TikTok Ads: {{ tiktokStatus.error || 'error desconocido' }}.
       </template>
     </p>
-    <p v-else-if="tiktokStatus && tiktokStatus.configured" class="state-banner state-ok tiktok-connected">
-      🟢 Conectado a TikTok Ads<template v-if="tiktokStatus.advertiserName"> · {{ tiktokStatus.advertiserName }}</template>
-      <span class="data-mono"> ({{ tiktokStatus.advertiserId }})</span>
-      <template v-if="tiktokStatus.advertiserSource === 'auto' && tiktokStatus.advertiserOptions > 1">
-        · detectadas {{ tiktokStatus.advertiserOptions }} cuentas, usando la primera; fija una con <code>TIKTOK_ADVERTISER_ID</code>
-      </template>
-    </p>
     <p v-if="tiktokStatus && tiktokStatus.advertiserDisabled" class="state-banner state-hint">
       ⚠️ TikTok reporta la cuenta publicitaria
       <strong>{{ tiktokStatus.advertiserStatusLabel || 'no activa' }}</strong>
@@ -126,77 +135,151 @@
     <p v-if="syncMsg" class="state-banner" :class="syncError ? 'state-error' : 'state-ok'">{{ syncMsg }}</p>
     <p v-if="exportMsg" class="state-banner state-error">⚠️ {{ exportMsg }}</p>
     <p v-if="errorMsg" class="state-banner state-error">⚠️ {{ errorMsg }}</p>
-    <p v-else-if="loading && !report" class="state-banner">Cargando rendimiento de campañas…</p>
+    <AppLoader
+      v-else-if="loading && !report"
+      variant="dashboard"
+      icon="📣"
+      title="Cargando rendimiento de campañas…"
+      subtitle="Consolidando inversión, atribución de mensajes y retorno de ventas."
+    />
 
     <template v-if="report">
-      <!-- KPIs -->
-      <section class="kpi-row">
-        <div class="kpi-tile">
-          <span class="kpi-label">Campañas activas</span>
+      <!-- KPIs Principales (6 indicadores ejecutivos con jerarquía visual) -->
+      <section class="kpi-hero-row">
+        <div class="kpi-tile kpi-hero is-primary">
+          <div class="kpi-top-line">
+            <span class="kpi-label">Campañas activas</span>
+            <span class="kpi-mini-badge">En curso</span>
+          </div>
           <span class="kpi-value">{{ report.kpis.activeCampaigns }}</span>
+          <span class="kpi-sub">de {{ report.campaigns.length }} registradas</span>
         </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Conversaciones atribuidas</span>
+
+        <div class="kpi-tile kpi-hero is-cyan">
+          <div class="kpi-top-line">
+            <span class="kpi-label">Conversaciones</span>
+            <span class="kpi-mini-badge">{{ num(report.kpis.qualified) }} calif.</span>
+          </div>
           <span class="kpi-value">{{ num(report.kpis.totalConversations) }}</span>
           <span class="kpi-sub" v-if="report.kpis.unclassifiedConversations">
             {{ num(report.kpis.unclassifiedConversations) }} sin clasificar
           </span>
+          <span class="kpi-sub" v-else>Contactos atribuidos en CRM</span>
         </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Calificados</span>
-          <span class="kpi-value">{{ num(report.kpis.qualified) }}</span>
-        </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Citas agendadas</span>
+
+        <div class="kpi-tile kpi-hero is-amber">
+          <div class="kpi-top-line">
+            <span class="kpi-label">Citas agendadas</span>
+            <span class="kpi-mini-badge">Agenda</span>
+          </div>
           <span class="kpi-value">{{ num(report.kpis.appointments) }}</span>
+          <span class="kpi-sub">
+            Costo/cita: {{ report.kpis.costPerAppointment != null ? money(report.kpis.costPerAppointment) : '—' }}
+          </span>
         </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Ganados</span>
+
+        <div class="kpi-tile kpi-hero is-emerald">
+          <div class="kpi-top-line">
+            <span class="kpi-label">Ventas ganadas</span>
+            <span class="kpi-mini-badge">Cierres</span>
+          </div>
           <span class="kpi-value">{{ num(report.kpis.won) }}</span>
+          <span class="kpi-sub">
+            Costo/ganado: {{ report.kpis.costPerWon != null ? money(report.kpis.costPerWon) : '—' }}
+          </span>
         </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Inversión registrada</span>
+
+        <div class="kpi-tile kpi-hero is-rose">
+          <div class="kpi-top-line">
+            <span class="kpi-label">Inversión registrada</span>
+            <span class="kpi-mini-badge">Gasto</span>
+          </div>
           <span class="kpi-value">{{ money(report.kpis.totalSpend) }}</span>
+          <span class="kpi-sub">Meta Ads · TikTok Ads · Manual</span>
         </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Costo por cita</span>
-          <span class="kpi-value">{{ report.kpis.costPerAppointment != null ? money(report.kpis.costPerAppointment) : '—' }}</span>
+
+        <div class="kpi-tile kpi-hero is-emerald">
+          <div class="kpi-top-line">
+            <span class="kpi-label">Cobrado y verificado</span>
+            <span v-if="report.kpis.roas != null" class="kpi-mini-badge is-roas">ROAS {{ report.kpis.roas }}×</span>
+          </div>
+          <span class="kpi-value">{{ money(report.kpis.totalCollectedRevenue) }}</span>
+          <span class="kpi-sub">Ingreso real verificado en caja</span>
         </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Costo por ganado</span>
-          <span class="kpi-value">{{ report.kpis.costPerWon != null ? money(report.kpis.costPerWon) : '—' }}</span>
-        </div>
-        <div class="kpi-tile">
-          <span class="kpi-label">Valor cotizado (ganados)</span>
-          <span class="kpi-value">{{ money(report.kpis.totalQuotedValue) }}</span>
-          <span class="kpi-sub" v-if="report.kpis.roas != null">ROAS {{ report.kpis.roas }}×</span>
-        </div>
-        <template v-if="report.kpis.metaImpressions != null">
-          <div class="kpi-tile kpi-meta">
-            <span class="kpi-label">Impresiones (Meta)</span>
-            <span class="kpi-value">{{ num(report.kpis.metaImpressions) }}</span>
-            <span class="kpi-sub" v-if="report.kpis.metaReach">Alcance {{ num(report.kpis.metaReach) }}</span>
-          </div>
-          <div class="kpi-tile kpi-meta">
-            <span class="kpi-label">Clics (Meta)</span>
-            <span class="kpi-value">{{ num(report.kpis.metaClicks) }}</span>
-            <span class="kpi-sub" v-if="report.kpis.metaCtr != null">CTR {{ report.kpis.metaCtr }}%</span>
-          </div>
-          <div class="kpi-tile kpi-meta">
-            <span class="kpi-label">Clics en el enlace (Meta)</span>
-            <span class="kpi-value">{{ num(report.kpis.metaLinkClicks) }}</span>
-            <span class="kpi-sub" v-if="report.kpis.metaLinkCtr != null">CTR del enlace {{ report.kpis.metaLinkCtr }}%</span>
-          </div>
-          <div class="kpi-tile kpi-meta" v-if="report.kpis.metaLandingPageViews">
-            <span class="kpi-label">Visitas a la página (Meta)</span>
-            <span class="kpi-value">{{ num(report.kpis.metaLandingPageViews) }}</span>
-          </div>
-          <div class="kpi-tile kpi-meta">
-            <span class="kpi-label">Conversaciones (Meta)</span>
-            <span class="kpi-value">{{ num(report.kpis.metaMessagingStarted) }}</span>
-          </div>
-        </template>
       </section>
+
+      <!-- Desglose secundario plegable para no saturar la primera vista -->
+      <div class="kpi-secondary-wrap">
+        <button
+          type="button"
+          class="kpi-drawer-toggle"
+          :class="{ 'is-open': showExtraKpis }"
+          @click="showExtraKpis = !showExtraKpis"
+        >
+          <span>📊 {{ showExtraKpis ? 'Ocultar métricas detalladas de pipeline y alcance publicitario' : 'Ver métricas de pipeline comercial, finanzas y alcance Meta / TikTok' }}</span>
+          <span class="kpi-drawer-Chips">
+            <span class="kpi-inline-preview">Pipeline: <strong>{{ money(report.kpis.totalQuotedValue) }}</strong></span>
+            <span v-if="report.kpis.metaImpressions != null" class="kpi-inline-preview">Impresiones: <strong>{{ num(report.kpis.metaImpressions) }}</strong></span>
+            <span class="kpi-drawer-caret">{{ showExtraKpis ? '▴' : '▾' }}</span>
+          </span>
+        </button>
+
+        <transition name="kpi-expand">
+          <section v-if="showExtraKpis" class="kpi-row kpi-secondary-grid">
+            <div class="kpi-tile">
+              <span class="kpi-label">Valor cotizado (pipeline)</span>
+              <span class="kpi-value">{{ money(report.kpis.totalQuotedValue) }}</span>
+              <span class="kpi-sub" v-if="report.kpis.quotedToSpend != null">{{ report.kpis.quotedToSpend }}× el gasto</span>
+            </div>
+            <div class="kpi-tile">
+              <span class="kpi-label">Registrado en Finanzas</span>
+              <span class="kpi-value">{{ money(report.kpis.totalWonRevenue) }}</span>
+              <span class="kpi-sub">
+                de ventas ganadas<template v-if="report.kpis.totalPactedRevenue">
+                  · {{ money(report.kpis.totalPactedRevenue) }} pactado sin cerrar</template>
+              </span>
+            </div>
+            <div class="kpi-tile">
+              <span class="kpi-label">Calificados</span>
+              <span class="kpi-value">{{ num(report.kpis.qualified) }}</span>
+              <span class="kpi-sub">Prospectos aptos</span>
+            </div>
+            <div class="kpi-tile">
+              <span class="kpi-label">Costo por cita</span>
+              <span class="kpi-value">{{ report.kpis.costPerAppointment != null ? money(report.kpis.costPerAppointment) : '—' }}</span>
+            </div>
+            <div class="kpi-tile">
+              <span class="kpi-label">Costo por ganado</span>
+              <span class="kpi-value">{{ report.kpis.costPerWon != null ? money(report.kpis.costPerWon) : '—' }}</span>
+            </div>
+            <template v-if="report.kpis.metaImpressions != null">
+              <div class="kpi-tile kpi-meta">
+                <span class="kpi-label">Impresiones (Ads)</span>
+                <span class="kpi-value">{{ num(report.kpis.metaImpressions) }}</span>
+                <span class="kpi-sub" v-if="report.kpis.metaReach">Alcance {{ num(report.kpis.metaReach) }}</span>
+              </div>
+              <div class="kpi-tile kpi-meta">
+                <span class="kpi-label">Clics totales</span>
+                <span class="kpi-value">{{ num(report.kpis.metaClicks) }}</span>
+                <span class="kpi-sub" v-if="report.kpis.metaCtr != null">CTR {{ report.kpis.metaCtr }}%</span>
+              </div>
+              <div class="kpi-tile kpi-meta">
+                <span class="kpi-label">Clics en el enlace</span>
+                <span class="kpi-value">{{ num(report.kpis.metaLinkClicks) }}</span>
+                <span class="kpi-sub" v-if="report.kpis.metaLinkCtr != null">CTR enlace {{ report.kpis.metaLinkCtr }}%</span>
+              </div>
+              <div class="kpi-tile kpi-meta" v-if="report.kpis.metaLandingPageViews">
+                <span class="kpi-label">Visitas a la página</span>
+                <span class="kpi-value">{{ num(report.kpis.metaLandingPageViews) }}</span>
+              </div>
+              <div class="kpi-tile kpi-meta">
+                <span class="kpi-label">Conversaciones (Ads)</span>
+                <span class="kpi-value">{{ num(report.kpis.metaMessagingStarted) }}</span>
+              </div>
+            </template>
+          </section>
+        </transition>
+      </div>
 
       <!-- Campañas -->
       <section class="campaigns-table-section">
@@ -297,32 +380,115 @@
                   <tr v-if="expandedId === campaign.id" class="campaign-detail-row">
                     <td colspan="9">
                       <div class="campaign-detail">
-                        <span class="campaign-meta">
-                          <template v-if="campaign.lastSyncedAt">Última sincronización: {{ formatDateTime(campaign.lastSyncedAt) }}</template>
-                          <template v-else>Campaña manual, sin sincronizar con Meta ni TikTok</template>
-                        </span>
+                        <!-- Barra superior de detalle con sub-pestañas para evitar sobrecarga visual -->
+                        <div class="detail-top-bar">
+                          <div class="detail-nav-tabs" role="tablist" aria-label="Secciones del detalle de la campaña">
+                            <button
+                              type="button"
+                              class="detail-nav-tab"
+                              :class="{ 'is-active': detailTab === 'crm' }"
+                              @click="detailTab = 'crm'"
+                            >
+                              🎯 Embudo &amp; CRM
+                            </button>
+                            <button
+                              v-if="campaign.metaAdsets && campaign.metaAdsets.length"
+                              type="button"
+                              class="detail-nav-tab"
+                              :class="{ 'is-active': detailTab === 'adsets' }"
+                              @click="detailTab = 'adsets'"
+                            >
+                              🗂️ {{ campaign.source === 'tiktok' ? 'Grupos' : 'Conjuntos' }}
+                              <span class="detail-tab-count">{{ campaign.metaAdsets.length }}</span>
+                            </button>
+                            <button
+                              v-if="campaign.metaAds && campaign.metaAds.length"
+                              type="button"
+                              class="detail-nav-tab"
+                              :class="{ 'is-active': detailTab === 'ads' }"
+                              @click="detailTab = 'ads'"
+                            >
+                              🧾 Anuncios
+                              <span class="detail-tab-count">{{ campaign.metaAds.length }}</span>
+                            </button>
+                            <button
+                              v-if="campaign.metrics.impressions != null"
+                              type="button"
+                              class="detail-nav-tab"
+                              :class="{ 'is-active': detailTab === 'platform' }"
+                              @click="detailTab = 'platform'"
+                            >
+                              📊 {{ campaign.source === 'tiktok' ? 'TikTok Ads' : 'Meta Ads' }}
+                            </button>
+                            <button
+                              type="button"
+                              class="detail-nav-tab"
+                              :class="{ 'is-active': detailTab === 'all' }"
+                              @click="detailTab = 'all'"
+                            >
+                              📋 Ver todo
+                            </button>
+                          </div>
 
-                        <!-- Embudo real -->
-                        <div class="funnel">
-                          <div v-for="(stage, i) in campaign.funnel" :key="stage.key" class="funnel-row">
-                            <span class="funnel-label">{{ stage.label }}</span>
-                            <div class="funnel-bar-track">
-                              <div
-                                class="funnel-bar-fill"
-                                :style="{ width: funnelBarWidth(campaign.funnel, stage) }"
-                                :title="`${stage.label}: ${num(stage.count)}`"
-                              ></div>
-                              <span class="funnel-bar-value">{{ num(stage.count) }}</span>
+                          <span class="campaign-meta">
+                            <template v-if="campaign.lastSyncedAt">Sincronizado: {{ formatDateTime(campaign.lastSyncedAt) }}</template>
+                            <template v-else>Campaña manual</template>
+                          </span>
+                        </div>
+
+                        <!-- SECCIÓN 1: Embudo real + Métricas CRM lado a lado -->
+                        <div v-if="detailTab === 'crm' || detailTab === 'all'" class="crm-overview-split">
+                          <div class="crm-funnel-card">
+                            <div class="metrics-block-head">
+                              <h4 class="metrics-block-title">🔻 Embudo de Conversión Real</h4>
+                              <span class="metrics-block-note">Recorrido de los contactos atribuidos</span>
                             </div>
-                            <span v-if="i > 0" class="funnel-dropoff">{{ dropoffLabel(campaign.funnel[i - 1], stage) }}</span>
-                            <span v-else class="funnel-dropoff funnel-dropoff-spacer"></span>
+                            <div class="funnel">
+                              <div v-for="(stage, i) in campaign.funnel" :key="stage.key" class="funnel-row">
+                                <span class="funnel-label">{{ stage.label }}</span>
+                                <div class="funnel-bar-track">
+                                  <div
+                                    class="funnel-bar-fill"
+                                    :style="{ width: funnelBarWidth(campaign.funnel, stage) }"
+                                    :title="`${stage.label}: ${num(stage.count)}`"
+                                  ></div>
+                                  <span class="funnel-bar-value">{{ num(stage.count) }}</span>
+                                </div>
+                                <span v-if="i > 0" class="funnel-dropoff">{{ dropoffLabel(campaign.funnel[i - 1], stage) }}</span>
+                                <span v-else class="funnel-dropoff funnel-dropoff-spacer"></span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="crm-metrics-card">
+                            <div class="metrics-block-head">
+                              <h4 class="metrics-block-title">🎯 Indicadores Comerciales (CRM)</h4>
+                              <span class="metrics-block-note">Tasas de avance, tiempos de respuesta y retorno</span>
+                            </div>
+                            <div class="metric-grid">
+                              <div class="metric"><span class="metric-label">Tasa de calificación</span><span class="metric-value">{{ campaign.metrics.qualificationRate }}%</span></div>
+                              <div class="metric"><span class="metric-label">Conversación → cita</span><span class="metric-value">{{ campaign.metrics.conversationToAppointmentRate }}%</span></div>
+                              <div class="metric"><span class="metric-label">Asistencia a citas</span><span class="metric-value">{{ campaign.metrics.attendanceRate }}%</span></div>
+                              <div class="metric"><span class="metric-label">Cita asistida → ganado</span><span class="metric-value">{{ campaign.metrics.attendedToWonRate }}%</span></div>
+                              <div class="metric"><span class="metric-label">Viabilidad prom.</span><span class="metric-value">{{ campaign.metrics.avgViability != null ? campaign.metrics.avgViability + '%' : '—' }}</span></div>
+                              <div class="metric"><span class="metric-label">1ª respuesta (mediana)</span><span class="metric-value">{{ responseLabel(campaign.metrics.medianFirstResponseMin) }}</span></div>
+                              <div class="metric"><span class="metric-label">1ª respuesta (P90)</span><span class="metric-value">{{ responseLabel(campaign.metrics.p90FirstResponseMin) }}</span></div>
+                              <div class="metric"><span class="metric-label">Sin respuesta</span><span class="metric-value">{{ num(campaign.metrics.noFirstResponse) }}</span></div>
+                              <div class="metric"><span class="metric-label">Costo / conversación</span><span class="metric-value">{{ campaign.metrics.costPerConversation != null ? money(campaign.metrics.costPerConversation) : '—' }}</span></div>
+                              <div class="metric"><span class="metric-label">Costo / cita asistida</span><span class="metric-value">{{ campaign.metrics.costPerAttended != null ? money(campaign.metrics.costPerAttended) : '—' }}</span></div>
+                              <div class="metric"><span class="metric-label">Costo / ganado</span><span class="metric-value">{{ campaign.metrics.costPerWon != null ? money(campaign.metrics.costPerWon) : '—' }}</span></div>
+                              <div class="metric"><span class="metric-label">Valor cotizado (pipeline)</span><span class="metric-value">{{ money(campaign.metrics.quotedValue) }}</span></div>
+                              <div class="metric"><span class="metric-label">Cobrado y verificado</span><span class="metric-value">{{ money(campaign.metrics.collectedRevenue) }}</span></div>
+                              <div class="metric"><span class="metric-label">Cuota pactada sin cerrar</span><span class="metric-value">{{ money(campaign.metrics.pactedRevenue) }}</span></div>
+                              <div class="metric"><span class="metric-label">ROAS (sobre cobrado)</span><span class="metric-value">{{ campaign.metrics.roas != null ? campaign.metrics.roas + '×' : '—' }}</span></div>
+                            </div>
                           </div>
                         </div>
 
-                        <!-- Métricas del Administrador de anuncios (Meta) -->
-                        <div v-if="campaign.metrics.impressions != null" class="metrics-block">
+                        <!-- SECCIÓN 2: Métricas del Administrador de anuncios -->
+                        <div v-if="(detailTab === 'platform' || detailTab === 'all') && campaign.metrics.impressions != null" class="metrics-block">
                           <div class="metrics-block-head">
-                            <h4 class="metrics-block-title">📊 Meta Ads</h4>
+                            <h4 class="metrics-block-title">📊 {{ campaign.source === 'tiktok' ? 'TikTok Ads' : 'Meta Ads' }}</h4>
                             <span class="metrics-block-note">
                               Informe {{ reportWindowLabel(campaign.metrics) }}
                               <template v-if="campaign.metrics.attributionSetting">
@@ -351,26 +517,33 @@
                             <div class="metric metric-meta"><span class="metric-label">Visitas a la página de destino</span><span class="metric-value">{{ num(campaign.metrics.landingPageViews) }}</span></div>
                             <div class="metric metric-meta"><span class="metric-label">Coste por visita a la página</span><span class="metric-value">{{ campaign.metrics.costPerLandingPageView != null ? money(campaign.metrics.costPerLandingPageView) : '—' }}</span></div>
                             <div v-if="campaign.metrics.shopClicks" class="metric metric-meta"><span class="metric-label">Clics en la tienda</span><span class="metric-value">{{ num(campaign.metrics.shopClicks) }}</span></div>
-                            <div class="metric metric-meta"><span class="metric-label">Conversaciones (Meta)</span><span class="metric-value">{{ num(campaign.metrics.metaMessagingStarted) }}</span></div>
-                            <div class="metric metric-meta"><span class="metric-label">Costo/conv. (Meta)</span><span class="metric-value">{{ campaign.metrics.costPerLeadMeta != null ? money(campaign.metrics.costPerLeadMeta) : '—' }}</span></div>
+                            <div class="metric metric-meta"><span class="metric-label">Conversaciones ({{ adsSourceLabel(campaign) }})</span><span class="metric-value">{{ num(campaign.metrics.metaMessagingStarted) }}</span></div>
+                            <div class="metric metric-meta"><span class="metric-label">Costo/conv. ({{ adsSourceLabel(campaign) }})</span><span class="metric-value">{{ campaign.metrics.costPerLeadMeta != null ? money(campaign.metrics.costPerLeadMeta) : '—' }}</span></div>
                           </div>
                         </div>
 
-                        <!-- Desglose por conjunto de anuncios: el nivel intermedio
-                             de la jerarquía de Meta. El presupuesto y el objetivo de
-                             optimización viven aquí, no en el anuncio. -->
-                        <div v-if="campaign.metaAdsets && campaign.metaAdsets.length" class="metrics-block">
+                        <!-- SECCIÓN 3: Desglose por conjunto de anuncios -->
+                        <div v-if="(detailTab === 'adsets' || detailTab === 'all') && campaign.metaAdsets && campaign.metaAdsets.length" class="metrics-block">
                           <div class="metrics-block-head">
-                            <h4 class="metrics-block-title">🗂️ Rendimiento por {{ groupNoun(campaign).long }}</h4>
-                            <span class="metrics-block-note">
-                              Informe {{ reportWindowLabel(campaign.metrics) }} ·
-                              {{ campaign.metaAdsets.length }}
-                              {{ campaign.metaAdsets.length === 1 ? groupNoun(campaign).one : groupNoun(campaign).many }}
-                              <template v-if="campaign.budgetType">
-                                · Presupuesto de la campaña: {{ campaign.budgetType === 'diario' ? 'diario' : 'total' }}
-                              </template>
-                              <template v-else>· El presupuesto lo lleva cada {{ groupNoun(campaign).one }}</template>
-                            </span>
+                            <div>
+                              <h4 class="metrics-block-title">🗂️ Rendimiento por {{ groupNoun(campaign).long }}</h4>
+                              <span class="metrics-block-note">
+                                Informe {{ reportWindowLabel(campaign.metrics) }} ·
+                                {{ campaign.metaAdsets.length }}
+                                {{ campaign.metaAdsets.length === 1 ? groupNoun(campaign).one : groupNoun(campaign).many }}
+                                <template v-if="campaign.budgetType">
+                                  · Presupuesto de la campaña: {{ campaign.budgetType === 'diario' ? 'diario' : 'total' }}
+                                </template>
+                                <template v-else>· El presupuesto lo lleva cada {{ groupNoun(campaign).one }}</template>
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              class="col-density-btn"
+                              @click="showAllAdColumns = !showAllAdColumns"
+                            >
+                              {{ showAllAdColumns ? '👁️ Vista esencial (8 cols)' : '📐 Ver las 21 columnas' }}
+                            </button>
                           </div>
                           <div class="ads-insights-wrapper">
                             <table class="data-table ads-insights-table">
@@ -380,23 +553,25 @@
                                   <th>Entrega</th>
                                   <th>Anuncios</th>
                                   <th>Presupuesto</th>
-                                  <th>Resultados</th>
-                                  <th>Coste por resultado</th>
-                                  <th>Alcance</th>
-                                  <th>Frecuencia</th>
                                   <th>Importe gastado</th>
-                                  <th>Optimización</th>
-                                  <th>Fin</th>
-                                  <th>Impresiones</th>
-                                  <th>CPM</th>
-                                  <th>Clics en el enlace</th>
-                                  <th>CPC del enlace</th>
-                                  <th>CTR del enlace</th>
-                                  <th>Clics (todos)</th>
-                                  <th>CTR (todos)</th>
-                                  <th>CPC (todos)</th>
-                                  <th>Visitas a la página</th>
-                                  <th>Coste por visita</th>
+                                  <th>Resultados</th>
+                                  <th>Coste / res.</th>
+                                  <th>Alcance</th>
+                                  <th>Clics enlace</th>
+                                  <th>CTR enlace</th>
+                                  <template v-if="showAllAdColumns">
+                                    <th>Frecuencia</th>
+                                    <th>Optimización</th>
+                                    <th>Fin</th>
+                                    <th>Impresiones</th>
+                                    <th>CPM</th>
+                                    <th>CPC del enlace</th>
+                                    <th>Clics (todos)</th>
+                                    <th>CTR (todos)</th>
+                                    <th>CPC (todos)</th>
+                                    <th>Visitas a la página</th>
+                                    <th>Coste por visita</th>
+                                  </template>
                                 </tr>
                               </thead>
                               <tbody>
@@ -411,42 +586,51 @@
                                     {{ set.budget != null ? money(set.budget) : '—' }}
                                     <span v-if="set.budgetType" class="ad-row-sub">{{ set.budgetType === 'diario' ? 'Diario' : 'Total' }}</span>
                                   </td>
+                                  <td class="data-mono"><strong>{{ money(set.spend) }}</strong></td>
                                   <td class="data-mono">
                                     {{ numOrDash(set.results) }}
                                     <span v-if="set.resultIndicator" class="ad-row-sub">{{ set.resultIndicator }}</span>
                                   </td>
                                   <td class="data-mono">{{ set.costPerResult != null ? money(set.costPerResult) : '—' }}</td>
                                   <td class="data-mono">{{ numOrDash(set.reach) }}</td>
-                                  <td class="data-mono">{{ set.frequency != null ? set.frequency : '—' }}</td>
-                                  <td class="data-mono">{{ money(set.spend) }}</td>
-                                  <td class="data-mono">{{ optimizationGoalLabel(set.optimizationGoal) }}</td>
-                                  <td class="data-mono">{{ set.endTime ? formatDate(set.endTime) : 'Sin fecha' }}</td>
-                                  <td class="data-mono">{{ numOrDash(set.impressions) }}</td>
-                                  <td class="data-mono">{{ set.cpm != null ? money(set.cpm) : '—' }}</td>
                                   <td class="data-mono">{{ numOrDash(set.linkClicks) }}</td>
-                                  <td class="data-mono">{{ set.costPerLinkClick != null ? money(set.costPerLinkClick) : '—' }}</td>
                                   <td class="data-mono">{{ pct(set.linkCtr) }}</td>
-                                  <td class="data-mono">{{ numOrDash(set.clicks) }}</td>
-                                  <td class="data-mono">{{ pct(set.ctr) }}</td>
-                                  <td class="data-mono">{{ set.cpc != null ? money(set.cpc) : '—' }}</td>
-                                  <td class="data-mono">{{ numOrDash(set.landingPageViews) }}</td>
-                                  <td class="data-mono">{{ set.costPerLandingPageView != null ? money(set.costPerLandingPageView) : '—' }}</td>
+                                  <template v-if="showAllAdColumns">
+                                    <td class="data-mono">{{ set.frequency != null ? set.frequency : '—' }}</td>
+                                    <td class="data-mono">{{ optimizationGoalLabel(set.optimizationGoal) }}</td>
+                                    <td class="data-mono">{{ set.endTime ? formatDate(set.endTime) : 'Sin fecha' }}</td>
+                                    <td class="data-mono">{{ numOrDash(set.impressions) }}</td>
+                                    <td class="data-mono">{{ set.cpm != null ? money(set.cpm) : '—' }}</td>
+                                    <td class="data-mono">{{ set.costPerLinkClick != null ? money(set.costPerLinkClick) : '—' }}</td>
+                                    <td class="data-mono">{{ numOrDash(set.clicks) }}</td>
+                                    <td class="data-mono">{{ pct(set.ctr) }}</td>
+                                    <td class="data-mono">{{ set.cpc != null ? money(set.cpc) : '—' }}</td>
+                                    <td class="data-mono">{{ numOrDash(set.landingPageViews) }}</td>
+                                    <td class="data-mono">{{ set.costPerLandingPageView != null ? money(set.costPerLandingPageView) : '—' }}</td>
+                                  </template>
                                 </tr>
                               </tbody>
                             </table>
                           </div>
                         </div>
 
-                        <!-- Desglose por anuncio: mismas columnas que el informe
-                             del Administrador de anuncios. Las tres clasificaciones
-                             y la entrega sólo existen a este nivel. -->
-                        <div v-if="campaign.metaAds && campaign.metaAds.length" class="metrics-block">
+                        <!-- SECCIÓN 4: Desglose por anuncio -->
+                        <div v-if="(detailTab === 'ads' || detailTab === 'all') && campaign.metaAds && campaign.metaAds.length" class="metrics-block">
                           <div class="metrics-block-head">
-                            <h4 class="metrics-block-title">🧾 Rendimiento por anuncio</h4>
-                            <span class="metrics-block-note">
-                              Informe {{ reportWindowLabel(campaign.metrics) }} ·
-                              {{ campaign.metaAds.length }} {{ campaign.metaAds.length === 1 ? 'anuncio' : 'anuncios' }} · desplázate en horizontal para ver todas las columnas
-                            </span>
+                            <div>
+                              <h4 class="metrics-block-title">🧾 Rendimiento por anuncio</h4>
+                              <span class="metrics-block-note">
+                                Informe {{ reportWindowLabel(campaign.metrics) }} ·
+                                {{ campaign.metaAds.length }} {{ campaign.metaAds.length === 1 ? 'anuncio' : 'anuncios' }}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              class="col-density-btn"
+                              @click="showAllAdColumns = !showAllAdColumns"
+                            >
+                              {{ showAllAdColumns ? '👁️ Vista esencial (9 cols)' : '📐 Ver las 23 columnas' }}
+                            </button>
                           </div>
                           <div class="ads-insights-wrapper">
                             <table class="data-table ads-insights-table">
@@ -454,27 +638,29 @@
                                 <tr>
                                   <th class="col-ad-name">Nombre del anuncio</th>
                                   <th>Entrega</th>
-                                  <th>Resultados</th>
-                                  <th>Coste por resultado</th>
-                                  <th>Alcance</th>
-                                  <th>Frecuencia</th>
-                                  <th>Presupuesto del conjunto</th>
                                   <th>Importe gastado</th>
-                                  <th>Fin</th>
+                                  <th>Resultados</th>
+                                  <th>Coste / res.</th>
+                                  <th>Alcance</th>
+                                  <th>Clics enlace</th>
+                                  <th>CTR enlace</th>
                                   <th>Calidad</th>
-                                  <th>Interacción</th>
-                                  <th>Conversión</th>
-                                  <th>Impresiones</th>
-                                  <th>CPM</th>
-                                  <th>Clics en el enlace</th>
-                                  <th>Clics en la tienda</th>
-                                  <th>CPC del enlace</th>
-                                  <th>CTR del enlace</th>
-                                  <th>Clics (todos)</th>
-                                  <th>CTR (todos)</th>
-                                  <th>CPC (todos)</th>
-                                  <th>Visitas a la página</th>
-                                  <th>Coste por visita</th>
+                                  <template v-if="showAllAdColumns">
+                                    <th>Frecuencia</th>
+                                    <th>Presupuesto del conjunto</th>
+                                    <th>Fin</th>
+                                    <th>Interacción</th>
+                                    <th>Conversión</th>
+                                    <th>Impresiones</th>
+                                    <th>CPM</th>
+                                    <th>Clics en la tienda</th>
+                                    <th>CPC del enlace</th>
+                                    <th>Clics (todos)</th>
+                                    <th>CTR (todos)</th>
+                                    <th>CPC (todos)</th>
+                                    <th>Visitas a la página</th>
+                                    <th>Coste por visita</th>
+                                  </template>
                                 </tr>
                               </thead>
                               <tbody>
@@ -496,64 +682,49 @@
                                     </div>
                                   </td>
                                   <td><span class="pill pill-xs" :class="deliveryPillClass(ad.delivery)">{{ deliveryLabel(ad.delivery) }}</span></td>
+                                  <td class="data-mono"><strong>{{ money(ad.spend) }}</strong></td>
                                   <td class="data-mono">
                                     {{ numOrDash(ad.results) }}
                                     <span v-if="ad.resultIndicator" class="ad-row-sub">{{ ad.resultIndicator }}</span>
                                   </td>
                                   <td class="data-mono">{{ ad.costPerResult != null ? money(ad.costPerResult) : '—' }}</td>
                                   <td class="data-mono">{{ numOrDash(ad.reach) }}</td>
-                                  <td class="data-mono">{{ ad.frequency != null ? ad.frequency : '—' }}</td>
-                                  <td class="data-mono">
-                                    {{ ad.adsetBudget != null ? money(ad.adsetBudget) : '—' }}
-                                    <span v-if="ad.adsetBudgetType" class="ad-row-sub">{{ ad.adsetBudgetType === 'diario' ? 'Diario' : 'Total' }}</span>
-                                  </td>
-                                  <td class="data-mono">{{ money(ad.spend) }}</td>
-                                  <td class="data-mono">{{ ad.endTime ? formatDate(ad.endTime) : 'Sin fecha' }}</td>
-                                  <td><span class="pill pill-xs" :class="rankPillClass(ad.qualityRanking)" :title="rankTitle(ad.qualityRanking)">{{ rankLabel(ad.qualityRanking) }}</span></td>
-                                  <td><span class="pill pill-xs" :class="rankPillClass(ad.engagementRanking)" :title="rankTitle(ad.engagementRanking)">{{ rankLabel(ad.engagementRanking) }}</span></td>
-                                  <td><span class="pill pill-xs" :class="rankPillClass(ad.conversionRanking)" :title="rankTitle(ad.conversionRanking)">{{ rankLabel(ad.conversionRanking) }}</span></td>
-                                  <td class="data-mono">{{ numOrDash(ad.impressions) }}</td>
-                                  <td class="data-mono">{{ ad.cpm != null ? money(ad.cpm) : '—' }}</td>
                                   <td class="data-mono">{{ numOrDash(ad.linkClicks) }}</td>
-                                  <td class="data-mono">{{ numOrDash(ad.shopClicks) }}</td>
-                                  <td class="data-mono">{{ ad.costPerLinkClick != null ? money(ad.costPerLinkClick) : '—' }}</td>
                                   <td class="data-mono">{{ pct(ad.linkCtr) }}</td>
-                                  <td class="data-mono">{{ numOrDash(ad.clicks) }}</td>
-                                  <td class="data-mono">{{ pct(ad.ctr) }}</td>
-                                  <td class="data-mono">{{ ad.cpc != null ? money(ad.cpc) : '—' }}</td>
-                                  <td class="data-mono">{{ numOrDash(ad.landingPageViews) }}</td>
-                                  <td class="data-mono">{{ ad.costPerLandingPageView != null ? money(ad.costPerLandingPageView) : '—' }}</td>
+                                  <td><span class="pill pill-xs" :class="rankPillClass(ad.qualityRanking)" :title="rankTitle(ad.qualityRanking)">{{ rankLabel(ad.qualityRanking) }}</span></td>
+                                  <template v-if="showAllAdColumns">
+                                    <td class="data-mono">{{ ad.frequency != null ? ad.frequency : '—' }}</td>
+                                    <td class="data-mono">
+                                      {{ ad.adsetBudget != null ? money(ad.adsetBudget) : '—' }}
+                                      <span v-if="ad.adsetBudgetType" class="ad-row-sub">{{ ad.adsetBudgetType === 'diario' ? 'Diario' : 'Total' }}</span>
+                                    </td>
+                                    <td class="data-mono">{{ ad.endTime ? formatDate(ad.endTime) : 'Sin fecha' }}</td>
+                                    <td><span class="pill pill-xs" :class="rankPillClass(ad.engagementRanking)" :title="rankTitle(ad.engagementRanking)">{{ rankLabel(ad.engagementRanking) }}</span></td>
+                                    <td><span class="pill pill-xs" :class="rankPillClass(ad.conversionRanking)" :title="rankTitle(ad.conversionRanking)">{{ rankLabel(ad.conversionRanking) }}</span></td>
+                                    <td class="data-mono">{{ numOrDash(ad.impressions) }}</td>
+                                    <td class="data-mono">{{ ad.cpm != null ? money(ad.cpm) : '—' }}</td>
+                                    <td class="data-mono">{{ numOrDash(ad.shopClicks) }}</td>
+                                    <td class="data-mono">{{ ad.costPerLinkClick != null ? money(ad.costPerLinkClick) : '—' }}</td>
+                                    <td class="data-mono">{{ numOrDash(ad.clicks) }}</td>
+                                    <td class="data-mono">{{ pct(ad.ctr) }}</td>
+                                    <td class="data-mono">{{ ad.cpc != null ? money(ad.cpc) : '—' }}</td>
+                                    <td class="data-mono">{{ numOrDash(ad.landingPageViews) }}</td>
+                                    <td class="data-mono">{{ ad.costPerLandingPageView != null ? money(ad.costPerLandingPageView) : '—' }}</td>
+                                  </template>
                                 </tr>
                               </tbody>
                             </table>
                           </div>
                         </div>
 
-                        <!-- Métricas del funnel propio (CRM) -->
-                        <div class="metrics-block">
-                          <div class="metrics-block-head">
-                            <h4 class="metrics-block-title">🎯 Funnel del CRM</h4>
-                          </div>
-                          <div class="metric-grid">
-                            <div class="metric"><span class="metric-label">Tasa de calificación</span><span class="metric-value">{{ campaign.metrics.qualificationRate }}%</span></div>
-                            <div class="metric"><span class="metric-label">Conversación → cita</span><span class="metric-value">{{ campaign.metrics.conversationToAppointmentRate }}%</span></div>
-                            <div class="metric"><span class="metric-label">Cita → ganado</span><span class="metric-value">{{ campaign.metrics.appointmentToWonRate }}%</span></div>
-                            <div class="metric"><span class="metric-label">Viabilidad prom.</span><span class="metric-value">{{ campaign.metrics.avgViability != null ? campaign.metrics.avgViability + '%' : '—' }}</span></div>
-                            <div class="metric"><span class="metric-label">1ª respuesta (mediana)</span><span class="metric-value">{{ responseLabel(campaign.metrics.medianFirstResponseMin) }}</span></div>
-                            <div class="metric"><span class="metric-label">Costo / conversación</span><span class="metric-value">{{ campaign.metrics.costPerConversation != null ? money(campaign.metrics.costPerConversation) : '—' }}</span></div>
-                            <div class="metric"><span class="metric-label">Costo / ganado</span><span class="metric-value">{{ campaign.metrics.costPerWon != null ? money(campaign.metrics.costPerWon) : '—' }}</span></div>
-                            <div class="metric"><span class="metric-label">Valor cotizado</span><span class="metric-value">{{ money(campaign.metrics.quotedValue) }}</span></div>
-                            <div class="metric"><span class="metric-label">ROAS</span><span class="metric-value">{{ campaign.metrics.roas != null ? campaign.metrics.roas + '×' : '—' }}</span></div>
-                          </div>
-                        </div>
-
                         <!-- Anuncios mapeados -->
                         <div class="ad-chips">
-                          <span class="ad-chips-label">Anuncios:</span>
-                          <span v-for="ad in campaign.ads" :key="ad.id" class="ad-chip">
+                          <span class="ad-chips-label">Anuncios asociados ({{ campaign.ads.length }}):</span>
+                          <span v-for="ad in campaign.ads.slice(0, 12)" :key="ad.id" class="ad-chip">
                             {{ ad.label || ad.sourceId }}
                             <button type="button" class="ad-chip-x" title="Quitar anuncio" @click="detachAd(ad.id)">✕</button>
                           </span>
+                          <span v-if="campaign.ads.length > 12" class="ad-chips-empty">+{{ campaign.ads.length - 12 }} más</span>
                           <span v-if="!campaign.ads.length" class="ad-chips-empty">sin anuncios asociados</span>
                         </div>
                       </div>
@@ -713,6 +884,115 @@
       </div>
     </div>
 
+    <!--
+      Leads de formulario instantáneo de TikTok.
+
+      Dos pasos a propósito, igual que la conciliación de Meta: al abrir solo
+      se COMPARA (el GET no escribe nada) y recién el botón de adentro importa.
+      Traer leads agrega gente al funnel que el equipo va a trabajar y a
+      repartir, así que no puede ser el efecto de abrir una pantalla.
+    -->
+    <div v-if="showTikTokLeads" class="cmp-modal-overlay" @click.self="closeTikTokLeads">
+      <div class="cmp-modal cmp-modal-wide">
+        <div class="cmp-modal-head">
+          <div class="trace-head-text">
+            <h3>📥 Leads de formulario de TikTok</h3>
+            <span class="trace-head-sub">Compara lo que TikTok tiene contra lo que llegó al CRM</span>
+          </div>
+          <button type="button" class="icon-btn" @click="closeTikTokLeads">✕</button>
+        </div>
+
+        <div class="cmp-modal-body trace-modal-body">
+          <p v-if="ttLeadsLoading" class="trace-hint">⏳ Preguntándole a TikTok… puede tardar unos segundos: hay que pedirle una descarga por formulario y esperar a que la prepare.</p>
+
+          <p v-else-if="ttLeadsError" class="state-banner state-hint">
+            ⚠️ {{ ttLeadsError }}
+          </p>
+
+          <template v-else-if="ttLeadsReport">
+            <p v-if="ttLeadsReport.aviso" class="state-banner state-hint">⚠️ {{ ttLeadsReport.aviso }}</p>
+
+            <div class="trace-summary">
+              <div class="trace-summary-item">
+                <span class="trace-summary-value">{{ num(ttLeadsReport.totals.en_tiktok) }}</span>
+                <span class="trace-summary-label">En TikTok</span>
+              </div>
+              <div class="trace-summary-item">
+                <span class="trace-summary-value">{{ num(ttLeadsReport.totals.en_crm) }}</span>
+                <span class="trace-summary-label">Ya en el CRM</span>
+              </div>
+              <div class="trace-summary-item">
+                <span class="trace-summary-value">{{ num(ttLeadsReport.totals.faltantes) }}</span>
+                <span class="trace-summary-label">Faltan</span>
+              </div>
+              <div v-if="ttLeadsReport.aplicado" class="trace-summary-item">
+                <span class="trace-summary-value">{{ num(ttLeadsReport.totals.importados) }}</span>
+                <span class="trace-summary-label">Importados</span>
+              </div>
+              <div v-if="ttLeadsReport.aplicado" class="trace-summary-item">
+                <span class="trace-summary-value">{{ num(ttLeadsReport.totals.adjuntados) }}</span>
+                <span class="trace-summary-label">Adjuntados</span>
+              </div>
+            </div>
+
+            <!--
+              "Adjuntado" se dice aparte de "importado" porque no es lo mismo
+              para quien lee esto: un importado es una persona más para
+              trabajar, y un adjuntado es un formulario que se sumó a una ficha
+              que el equipo ya tenía (mismo teléfono).
+            -->
+            <p v-if="ttLeadsReport.aplicado" class="trace-hint">
+              Los <strong>adjuntados</strong> no son gente nueva: esa persona ya era un lead y el
+              formulario se sumó a su ficha en vez de abrirle una segunda.
+            </p>
+
+            <p v-if="!ttLeadsReport.aplicado && ttLeadsReport.totals.faltantes === 0" class="trace-hint">
+              ✅ No falta ninguno: todos los leads de los formularios de TikTok ya están en el CRM.
+            </p>
+
+            <table v-if="ttLeadsReport.forms.length" class="data-table tt-forms-table">
+              <thead>
+                <tr>
+                  <th>Formulario</th>
+                  <th>En TikTok</th>
+                  <th>En el CRM</th>
+                  <th>Faltan</th>
+                  <th v-if="ttLeadsReport.aplicado">Importados</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="f in ttLeadsReport.forms" :key="f.page_id">
+                  <td>
+                    {{ f.nombre || 'Formulario sin nombre' }}
+                    <span class="data-mono tt-form-id">{{ f.page_id }}</span>
+                  </td>
+                  <td>{{ num(f.en_tiktok) }}</td>
+                  <td>{{ num(f.en_crm) }}</td>
+                  <td>{{ num(f.faltantes) }}</td>
+                  <td v-if="ttLeadsReport.aplicado">{{ num(f.importados + f.adjuntados) }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p v-if="ttLeadsReport.errores.length" class="state-banner state-hint">
+              ⚠️ {{ ttLeadsReport.errores.length }} formulario(s) no se pudieron leer:
+              {{ ttLeadsReport.errores.map(e => e.error).join(' · ') }}
+            </p>
+          </template>
+        </div>
+
+        <div class="cmp-modal-actions tt-leads-actions">
+          <button type="button" class="btn-secondary" @click="closeTikTokLeads">Cerrar</button>
+          <button
+            type="button"
+            class="btn-primary"
+            :disabled="ttLeadsLoading || ttLeadsImporting || !ttLeadsReport || !ttLeadsReport.totals.faltantes"
+            @click="importTikTokLeads"
+          >{{ ttLeadsImporting ? '⏳ Importando…' : `Importar ${ttLeadsReport ? ttLeadsReport.totals.faltantes : 0} lead(s)` }}</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showModal" class="cmp-modal-overlay" @click.self="closeModal">
       <div class="cmp-modal">
         <div class="cmp-modal-head">
@@ -795,6 +1075,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { apiFetch } from '../apiClient.js';
 import { loadApiImage } from '../apiImage.js';
 import BrandIcon from '../components/BrandIcon.vue';
+import AppLoader from '../components/AppLoader.vue';
 
 /**
  * "Hoy" no son las últimas 24 h: es desde las 00:00 de hoy, que es lo que se
@@ -827,6 +1108,9 @@ function rangeFrom() {
 }
 const traceCampaign = ref(null);
 const expandedId = ref(null);
+const showExtraKpis = ref(false);
+const detailTab = ref('crm');
+const showAllAdColumns = ref(false);
 const assignSelection = reactive({});
 
 // ─────────────────────── Búsqueda, filtros y paginación ───────────────────
@@ -932,6 +1216,27 @@ const metaStatus = ref(null);
 const tiktokStatus = ref(null);
 const syncing = ref(false);
 const syncingTikTok = ref(false);
+
+/*
+ * Leads de formulario instantáneo de TikTok. El modal se abre comparando (el
+ * GET no escribe nada) y el botón de adentro es el que importa: ver la nota
+ * del template.
+ */
+/**
+ * De qué Administrador de anuncios salen las métricas de esta campaña.
+ *
+ * Las dos integraciones escriben en las mismas columnas (`meta_insights`),
+ * así que el origen no se deduce del dato: lo dice `campaigns.source`.
+ */
+function adsSourceLabel(campaign) {
+  return campaign?.source === 'tiktok' ? 'TikTok' : 'Meta';
+}
+
+const showTikTokLeads = ref(false);
+const ttLeadsReport = ref(null);
+const ttLeadsLoading = ref(false);
+const ttLeadsImporting = ref(false);
+const ttLeadsError = ref('');
 // El mensaje de resultado es uno solo: las dos sincronizaciones no corren a la
 // vez y así el usuario no acumula banners de la plataforma que ya revisó.
 const syncMsg = ref('');
@@ -1096,6 +1401,60 @@ async function syncTikTok() {
 }
 
 /**
+ * Abre el modal y compara: qué leads tiene cada formulario instantáneo de
+ * TikTok contra los que están en el CRM. No escribe nada.
+ */
+async function openTikTokLeads() {
+  showTikTokLeads.value = true;
+  ttLeadsReport.value = null;
+  ttLeadsError.value = '';
+  ttLeadsLoading.value = true;
+  try {
+    const res = await apiFetch('/api/campaigns/tiktok/leads');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'No se pudo consultar a TikTok.');
+    ttLeadsReport.value = data;
+  } catch (err) {
+    ttLeadsError.value = err.message;
+  } finally {
+    ttLeadsLoading.value = false;
+  }
+}
+
+/**
+ * Trae al CRM los que faltan.
+ *
+ * Al terminar se recarga el reporte de Campañas: los leads recién importados
+ * ya traen su `ad_id`, así que la trazabilidad de la campaña —que es lo que
+ * estaba vacío— pasa a tener contactos sin que haya que recargar la página.
+ */
+async function importTikTokLeads() {
+  ttLeadsImporting.value = true;
+  ttLeadsError.value = '';
+  try {
+    const res = await apiFetch('/api/campaigns/tiktok/leads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'No se pudieron importar los leads.');
+    ttLeadsReport.value = data;
+    await loadReport();
+  } catch (err) {
+    ttLeadsError.value = err.message;
+  } finally {
+    ttLeadsImporting.value = false;
+  }
+}
+
+function closeTikTokLeads() {
+  showTikTokLeads.value = false;
+  ttLeadsReport.value = null;
+  ttLeadsError.value = '';
+}
+
+/**
  * Trazabilidad de una campaña en un modal: el recorrido de cada lead agrupado
  * por el anuncio del que llegó. Se apoya en `sampleContacts`, que ya viene en
  * el informe, así que no hace falta pedir nada más al abrirlo — sólo las
@@ -1156,6 +1515,7 @@ const rangeLabel = computed(() => RANGE_OPTIONS.find((o) => o.value === rangeDay
 function toggleExpand(id) {
   expandedId.value = expandedId.value === id ? null : id;
   if (expandedId.value == null) return;
+  detailTab.value = 'crm';
   const campaign = (report.value?.campaigns || []).find((c) => c.id === expandedId.value);
   if (campaign) hydrateAdImages(campaign);
 }
@@ -1579,6 +1939,243 @@ onMounted(() => {
 
 .kpi-meta { border-color: rgba(24, 119, 242, 0.28); }
 .metric-meta { background: rgba(24, 119, 242, 0.06); border-color: rgba(24, 119, 242, 0.2); }
+
+/* Tira de conexiones activas */
+.connections-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.conn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-sub);
+  box-shadow: var(--shadow-sm);
+}
+
+.conn-pill .data-mono { opacity: 0.75; font-size: 0.72rem; }
+
+.conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  box-shadow: 0 0 6px var(--accent-emerald);
+}
+
+/* KPIs Hero (6 tarjetas principales) */
+.kpi-hero-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
+  gap: 0.85rem;
+}
+
+.kpi-hero {
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.kpi-hero:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.kpi-hero::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3.5px;
+  background: var(--primary);
+}
+
+.kpi-hero.is-primary::before { background: var(--primary); }
+.kpi-hero.is-cyan::before { background: var(--accent-cyan); }
+.kpi-hero.is-amber::before { background: var(--accent-amber); }
+.kpi-hero.is-emerald::before { background: var(--accent-emerald); }
+.kpi-hero.is-rose::before { background: var(--accent-rose); }
+
+.kpi-top-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.kpi-mini-badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+.kpi-mini-badge.is-roas {
+  background: rgba(46, 125, 70, 0.14);
+  color: var(--accent-emerald);
+}
+
+/* Cajón secundario plegable de KPIs */
+.kpi-secondary-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.kpi-drawer-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.65rem 1rem;
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-sub);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.kpi-drawer-toggle:hover,
+.kpi-drawer-toggle.is-open {
+  border-color: var(--border-strong);
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+}
+
+.kpi-drawer-Chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 400;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.kpi-inline-preview strong {
+  color: var(--text-main);
+  font-family: var(--font-mono);
+}
+
+.kpi-secondary-grid {
+  padding: 0.85rem;
+  background: var(--surface-1);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+/* Sub-pestañas dentro del detalle de campaña */
+.detail-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.detail-nav-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  background: var(--surface-2);
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.detail-nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.detail-nav-tab:hover {
+  color: var(--text-main);
+}
+
+.detail-nav-tab.is-active {
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+  box-shadow: var(--shadow-sm);
+}
+
+.detail-tab-count {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.38rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--primary);
+}
+
+.crm-overview-split {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.crm-funnel-card,
+.crm-metrics-card {
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.15rem;
+}
+
+.col-density-btn {
+  padding: 0.32rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card-solid);
+  color: var(--text-sub);
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.col-density-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+@media (max-width: 980px) {
+  .crm-overview-split {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* KPIs */
 .kpi-row {

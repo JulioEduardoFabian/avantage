@@ -175,7 +175,13 @@
 
     <!-- La lista por cliente: el tablero de siempre. -->
     <template v-if="isList">
-      <p v-if="isLoading && overview.projects.length === 0" class="dv-empty">Cargando entregables…</p>
+      <AppLoader
+        v-if="isLoading && overview.projects.length === 0"
+        variant="cards"
+        icon="📦"
+        title="Cargando tablero de entregables…"
+        subtitle="Sincronizando entregas pactadas, fechas y estado de cobro."
+      />
 
       <div v-else-if="visibleProjects.length === 0" class="dv-empty">
         <template v-if="overview.projects.length === 0">
@@ -383,6 +389,64 @@
         >📍 Volver a hoy</button>
       </header>
 
+      <!-- GOOGLE CALENDAR
+           Las mismas entregas, en el calendario de la cuenta de la empresa:
+           quien entrega las mira desde su celular, con los recordatorios de
+           Google. Va ACÁ y no en la pestaña "Por cliente" porque es lo mismo
+           que esta vista muestra, visto desde otro lado.
+
+           Es de ida (del panel a Google) y no toca nada que no haya creado el
+           panel, así que apretarlo no puede estropear el calendario de nadie. -->
+      <section v-if="gcal.configured" class="dv-gcal" :class="{ 'is-linked': gcal.connected }">
+        <div class="dv-gcal-text">
+          <template v-if="gcal.connected">
+            <strong class="dv-gcal-title">📅 Conectado con {{ gcal.email }}</strong>
+            <span class="dv-gcal-note">
+              Los eventos de ese calendario se ven acá abajo, en gris. Y el botón manda las
+              entregas del panel para allá: cada una con fecha pactada es un evento de todo el
+              día, las entregadas con ✅.
+              <template v-if="gcal.lastSyncedAt"> Última vez: {{ formatDateTime(gcal.lastSyncedAt) }}.</template>
+              <template v-else> Todavía no se mandó nada.</template>
+            </span>
+          </template>
+          <template v-else>
+            <strong class="dv-gcal-title">📅 Llevá estas entregas a Google Calendar</strong>
+            <span class="dv-gcal-note">
+              Conectá la cuenta de Google de la empresa y las dos cosas pasan: los eventos que ya
+              tenés ahí se ven en este calendario, y las fechas de entrega del panel aparecen en el
+              de Google. Es una sola cuenta para todo el equipo.
+            </span>
+          </template>
+        </div>
+
+        <div class="dv-gcal-actions">
+          <button
+            v-if="gcal.connected"
+            type="button"
+            class="dv-btn dv-btn-primary"
+            :disabled="gcalBusy"
+            @click="syncCalendar"
+          >{{ gcalBusy ? 'Sincronizando…' : '🔄 Sincronizar con Google' }}</button>
+          <button
+            v-else
+            type="button"
+            class="dv-btn dv-btn-primary"
+            :disabled="gcalBusy"
+            @click="connectCalendar"
+          >🔗 Conectar cuenta de Google</button>
+          <button
+            v-if="gcal.connected"
+            type="button"
+            class="dv-btn dv-btn-ghost"
+            :disabled="gcalBusy"
+            @click="disconnectCalendar"
+          >Desconectar</button>
+        </div>
+      </section>
+
+      <p v-if="gcalError" class="dv-gcal-msg is-error">⚠️ {{ gcalError }}</p>
+      <p v-else-if="gcalFlash" class="dv-gcal-msg is-ok">✔️ {{ gcalFlash }}</p>
+
       <!-- Los colores del calendario son los mismos de las tarjetas y de los
            recuadros de arriba. La leyenda está porque un color sin nombre
            obliga a adivinar, y esta pantalla no se adivina. -->
@@ -390,6 +454,14 @@
         <li v-for="key in CAL_LEGEND" :key="key" class="dv-cal-legend-item">
           <span class="dv-cal-dot" :class="`is-${stateTone(key)}`" aria-hidden="true"></span>
           {{ stateIcon(key) }} {{ stateLabel(key) }}
+        </li>
+        <!-- Los eventos de Google se nombran aparte porque NO son entregas: no
+             cuentan en los recuadros de arriba y no se pueden marcar como
+             entregadas. Sin decirlo, un "Fecha Tentativa" en la cuadrícula se
+             lee como una entrega más. -->
+        <li v-if="gcal.connected" class="dv-cal-legend-item">
+          <span class="dv-cal-dot is-google" aria-hidden="true"></span>
+          📅 De tu Google Calendar
         </li>
       </ul>
 
@@ -432,14 +504,29 @@
             <span v-if="cell.items.length > 3" class="dv-cal-more">
               +{{ cell.items.length - 3 }} más
             </span>
+            <!-- Debajo de las entregas, y en gris: lo del calendario de Google
+                 acompaña, no compite. -->
+            <span
+              v-for="event in cell.events.slice(0, 2)"
+              :key="event.id"
+              class="dv-cal-chip is-google"
+            >{{ event.time ? `${event.time} ` : '' }}{{ event.title }}</span>
+            <span v-if="cell.events.length > 2" class="dv-cal-more">
+              +{{ cell.events.length - 2 }} de Google
+            </span>
           </span>
 
-          <span v-if="cell.items.length > 0" class="dv-cal-dots" aria-hidden="true">
+          <span v-if="cell.items.length > 0 || cell.events.length > 0" class="dv-cal-dots" aria-hidden="true">
             <span
               v-for="item in cell.items.slice(0, 4)"
               :key="item.row.id"
               class="dv-cal-dot"
               :class="`is-${rowTone(item.row)}`"
+            ></span>
+            <span
+              v-for="event in cell.events.slice(0, 2)"
+              :key="event.id"
+              class="dv-cal-dot is-google"
             ></span>
             <span v-if="cell.items.length > 4" class="dv-cal-dotmore">+{{ cell.items.length - 4 }}</span>
           </span>
@@ -456,8 +543,11 @@
             <p class="dv-cal-detail-count">{{ dayCountText }}</p>
           </header>
 
-          <p v-if="selectedDayItems.length === 0" class="dv-note">
+          <p v-if="selectedDayItems.length === 0 && selectedDayEvents.length === 0" class="dv-note">
             Ese día no hay nada pactado.
+          </p>
+          <p v-else-if="selectedDayItems.length === 0" class="dv-note">
+            Ese día no hay entregas pactadas, solo lo que tenés en Google.
           </p>
 
           <article
@@ -510,6 +600,25 @@
               >✎ Cambiar la fecha</button>
             </div>
           </article>
+
+          <!-- Lo que ese día ya estaba en Google. Va DESPUÉS de las entregas y
+               sin botones: no son entregas del panel, no se pueden marcar como
+               entregadas y no cuentan en ningún total. -->
+          <div v-if="selectedDayEvents.length > 0" class="dv-cal-gevents">
+            <h5 class="dv-cal-gevents-title">📅 Ese día en tu Google Calendar</h5>
+            <a
+              v-for="event in selectedDayEvents"
+              :key="event.id"
+              class="dv-cal-gevent"
+              :href="event.link || undefined"
+              target="_blank"
+              rel="noopener"
+            >
+              <span class="dv-cal-gevent-when">{{ event.time ? event.time : 'Todo el día' }}</span>
+              <span class="dv-cal-gevent-title">{{ event.title }}</span>
+              <span v-if="event.location" class="dv-cal-gevent-place">📍 {{ event.location }}</span>
+            </a>
+          </div>
         </template>
 
         <p v-else class="dv-note">Toca un día del calendario para ver qué se entrega.</p>
@@ -666,8 +775,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted, watch } from 'vue';
 import { apiFetch } from '../apiClient.js';
+import AppLoader from '../components/AppLoader.vue';
 
 /**
  * Módulo Entregables: CRUD sobre la tabla `deliverables` más el cruce con el
@@ -1353,6 +1463,11 @@ const monthCells = computed(() => {
       inMonth: iso.slice(0, 7) === calendarMonth.value,
       isToday: iso === today,
       items,
+      // Los eventos del calendario de Google de ese día. Van aparte de `items`
+      // y no mezclados: no son entregas, no tienen estado y no cuentan en los
+      // recuadros de arriba — mezclarlos haría que los totales dijeran otra
+      // cosa que la lista.
+      events: eventsByDay.value.get(iso) || [],
       overdue: items.filter((item) => item.row.is_overdue).length
     });
   }
@@ -1427,12 +1542,208 @@ function longDate(iso) {
 
 const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : '');
 
+/* ------------------------------------------------- GOOGLE CALENDAR (de ida)
+ *
+ * Las mismas entregas, volcadas al calendario de la cuenta de Google de la
+ * empresa: una sola cuenta para todo el equipo, como el correo de avisos. Es
+ * de ida y no toca nada que no haya creado el panel, así que el botón no puede
+ * estropear el calendario de nadie.
+ */
+
+const gcal = ref({ configured: false, connected: false, email: null, lastSyncedAt: null });
+const gcalBusy = ref(false);
+const gcalError = ref('');
+const gcalFlash = ref('');
+
+async function fetchCalendarStatus() {
+  try {
+    const response = await apiFetch('/api/deliverable-calendar');
+    const data = await response.json();
+    if (response.ok) gcal.value = data;
+  } catch (error) {
+    // Que no se pueda leer el estado no puede romper la pantalla: sin esto, la
+    // banda no aparece y el calendario se sigue usando igual.
+    console.warn('No se pudo leer el estado del calendario de Google:', error);
+  }
+  // Conectado: se traen los eventos del mes que se está mirando.
+  if (gcal.value.connected) fetchCalendarEvents();
+}
+
+/**
+ * Los eventos que el equipo ya tiene en ese calendario, para el mes a la vista.
+ *
+ * Se piden por mes y no de una vez: el calendario se mueve de a un mes y traer
+ * el año entero es pedirle a Google trescientos eventos que nadie va a mirar.
+ * No se guardan en ninguna parte — son de Google, y una copia se desactualiza
+ * sola.
+ */
+const gcalEvents = ref([]);
+
+async function fetchCalendarEvents() {
+  if (!gcal.value.connected) {
+    gcalEvents.value = [];
+    return;
+  }
+  // El rango es el del mes con sus días de relleno, que son los que la
+  // cuadrícula dibuja: pedir solo del 1 al 30 deja sin eventos las celdas del
+  // mes anterior y del siguiente, que se ven igual.
+  const celdas = monthCells.value;
+  const from = celdas[0]?.iso;
+  const to = celdas[celdas.length - 1]?.iso;
+  if (!from || !to) return;
+
+  try {
+    const response = await apiFetch(`/api/deliverable-calendar/events?from=${from}&to=${to}`);
+    const data = await response.json();
+    gcalEvents.value = data.events || [];
+    // Un fallo de lectura se avisa pero no vacía la pantalla: las entregas son
+    // lo principal y los eventos de Google, una capa encima.
+    if (data.error) gcalError.value = data.error;
+  } catch (error) {
+    console.warn('No se pudieron leer los eventos de Google:', error);
+  }
+}
+
+/** Los eventos de Google agrupados por día, como `itemsByDay` con las entregas. */
+const eventsByDay = computed(() => {
+  const map = new Map();
+  for (const event of gcalEvents.value) {
+    for (const day of event.days || []) {
+      if (!map.has(day)) map.set(day, []);
+      map.get(day).push(event);
+    }
+  }
+  // Dentro de un día: primero los de todo el día y después por hora, que es
+  // como los ordena cualquier agenda.
+  for (const list of map.values()) {
+    list.sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+  }
+  return map;
+});
+
+const selectedDayEvents = computed(() => eventsByDay.value.get(selectedDay.value) || []);
+
+// El calendario se mueve de a un mes y los eventos se piden por mes: sin esto,
+// pasar a diciembre mostraría los de noviembre.
+watch(calendarMonth, () => fetchCalendarEvents());
+
+async function connectCalendar() {
+  gcalBusy.value = true;
+  gcalError.value = '';
+  try {
+    const response = await apiFetch('/api/deliverable-calendar/auth-url');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo iniciar la conexión con Google.');
+    // Navegación completa del navegador: Google vuelve al callback y de ahí a
+    // esta pantalla con ?google=connected.
+    window.location.href = data.url;
+  } catch (error) {
+    gcalError.value = error.message;
+    gcalBusy.value = false;
+  }
+}
+
+async function syncCalendar() {
+  gcalBusy.value = true;
+  gcalError.value = '';
+  gcalFlash.value = '';
+  try {
+    const response = await apiFetch('/api/deliverable-calendar/sync', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo sincronizar con Google.');
+
+    gcalFlash.value = syncSummary(data);
+    await fetchCalendarStatus();
+  } catch (error) {
+    gcalError.value = error.message;
+  } finally {
+    gcalBusy.value = false;
+  }
+}
+
+/**
+ * Qué hizo la sincronización, dicho en palabras. "Nada que cambiar" también se
+ * dice: un botón que no contesta obliga a abrir Google para ver si pasó algo.
+ */
+function syncSummary(report) {
+  const partes = [];
+  if (report.creados) partes.push(plural(report.creados, 'entrega agregada', 'entregas agregadas'));
+  if (report.actualizados) partes.push(plural(report.actualizados, 'actualizada', 'actualizadas'));
+  if (report.quitados) partes.push(plural(report.quitados, 'quitada', 'quitadas'));
+
+  const base = partes.length
+    ? `Listo: ${partes.join(', ')}.`
+    : 'Ya estaba todo al día en Google: no hubo nada que cambiar.';
+
+  if (report.errores?.length) {
+    const nombres = report.errores.slice(0, 3).map((e) => e.title).join(', ');
+    return `${base} ${plural(report.errores.length, 'entrega no se pudo mandar', 'entregas no se pudieron mandar')} (${nombres}).`;
+  }
+  return base;
+}
+
+async function disconnectCalendar() {
+  if (!confirm('¿Desconectar la cuenta de Google? Los eventos que ya están en el calendario se quedan ahí; lo que deje de actualizarse es el panel.')) return;
+  gcalBusy.value = true;
+  gcalError.value = '';
+  gcalFlash.value = '';
+  try {
+    const response = await apiFetch('/api/deliverable-calendar', { method: 'DELETE' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo desconectar la cuenta.');
+    gcal.value = data;
+    gcalFlash.value = 'Cuenta desconectada.';
+  } catch (error) {
+    gcalError.value = error.message;
+  } finally {
+    gcalBusy.value = false;
+  }
+}
+
+/** Fecha y hora cortitas, para el "última vez" de la banda. */
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('es-PE', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'America/Lima'
+  });
+}
+
+/**
+ * El rebote de Google vuelve a esta pantalla con `?google=…`. Se lee una vez y
+ * se borra de la URL: dejándolo, recargar volvería a mostrar el mismo aviso y
+ * cualquier enlace que alguien copie arrastraría un resultado viejo. Misma
+ * regla que el `?lead=` de los dos tableros.
+ */
+function consumeGoogleParam() {
+  const params = new URLSearchParams(window.location.search);
+  const resultado = params.get('google');
+  if (!resultado) return;
+
+  if (resultado === 'connected') {
+    gcalFlash.value = 'Cuenta de Google conectada. Ahora apretá "Sincronizar con Google".';
+    // Se vuelve a la pestaña desde la que se conectó, que es donde está el
+    // botón de sincronizar y el aviso que acaba de escribirse.
+    view.value = 'calendario';
+  } else if (resultado === 'denied') {
+    gcalError.value = 'No se autorizó el acceso a Google, así que la cuenta quedó sin conectar.';
+  } else {
+    gcalError.value = 'No se pudo completar la conexión con Google. Probá de nuevo.';
+  }
+
+  params.delete('google');
+  const query = params.toString();
+  window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''));
+}
+
 onMounted(() => {
   restoreView();
   fetchOverview();
   // La configuración se lee aunque el panel esté plegado: el encabezado muestra
   // la dirección guardada, y ahí es donde se comprueba de un vistazo.
   fetchSettings();
+  fetchCalendarStatus();
+  consumeGoogleParam();
 });
 </script>
 
@@ -2180,6 +2491,119 @@ textarea.dv-input { min-height: 80px; resize: vertical; }
   background: var(--primary);
   border-color: var(--primary);
   color: #FFFFFF;
+}
+
+/* --- Google Calendar ------------------------------------------------------ */
+
+.dv-gcal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.9rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg, 14px);
+  background: var(--bg-card-solid);
+}
+
+/* Conectado se ve distinto de "falta conectar": es la diferencia entre una
+   invitación y un estado, y se mira de reojo. */
+.dv-gcal.is-linked {
+  border-color: rgba(46, 125, 70, 0.4);
+  background: rgba(46, 125, 70, 0.06);
+}
+
+.dv-gcal-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 15rem;
+  flex: 1 1 22rem;
+}
+
+.dv-gcal-title {
+  font-size: 1rem;
+  color: var(--text-main);
+}
+
+.dv-gcal-note {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.dv-gcal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.dv-gcal-msg {
+  margin: -0.4rem 0 0.9rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.dv-gcal-msg.is-error { color: var(--accent-rose); }
+.dv-gcal-msg.is-ok { color: var(--accent-emerald); }
+
+/* Lo que viene del calendario de Google: gris y sin el color de ningún
+   estado, porque no tiene estado. Acompaña a las entregas, no compite. */
+.dv-cal-chip.is-google {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-left-color: var(--text-muted);
+  font-style: italic;
+}
+
+.dv-cal-dot.is-google { background: var(--text-muted); }
+
+.dv-cal-gevents {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.dv-cal-gevents-title {
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.dv-cal-gevent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 10px);
+  margin-bottom: 0.4rem;
+  text-decoration: none;
+  color: inherit;
+  background: var(--surface-2);
+}
+
+.dv-cal-gevent:hover { border-color: var(--primary); }
+
+.dv-cal-gevent-when {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  min-width: 5.5rem;
+}
+
+.dv-cal-gevent-title {
+  font-size: 0.98rem;
+  color: var(--text-main);
+  flex: 1 1 12rem;
+}
+
+.dv-cal-gevent-place {
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 /* --- Calendario ---------------------------------------------------------- */

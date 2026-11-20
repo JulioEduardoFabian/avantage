@@ -2,6 +2,41 @@ import { db } from '../db/connection.js';
 import { firstRealName } from './contactName.js';
 
 /**
+ * Los desenlaces de asistencia que el panel admite hoy.
+ *
+ * Es un conjunto y no un booleano porque esto crece: "reprogramada en el
+ * acto" y "asistió tarde" son desenlaces que el equipo distingue al hablar, y
+ * agregarlos a un booleano obliga a una migración de datos. El tercer estado
+ * —nadie lo registró— es el null y no vive acá.
+ */
+export const ATTENDANCE_VALUES = new Set(['asistio', 'no_asistio']);
+
+/**
+ * ¿Este lead tiene una reunión viva en el panel?
+ *
+ * Una sola función para la única pregunta, porque la hacen dos sitios que
+ * tienen que contestar lo mismo: el aviso que ve el setter antes de pasar el
+ * lead al closer y el motivo que queda escrito en la bitácora cuando el pase
+ * se hace igual. Con una consulta en cada uno, el día que una empiece a mirar
+ * las canceladas el panel diría que hay cita y la bitácora que no — la misma
+ * razón por la que `delivery_blocked` de Entregables sale de la función que
+ * aplica la regla y no de una copia en la pantalla.
+ *
+ * Una reunión cancelada no cuenta: cancelar es que la reunión ya no existe.
+ *
+ * Devuelve la fila o `null`, nunca un booleano: quien avisa necesita además
+ * decir para cuándo es.
+ */
+export function activeMeetingForLead(leadId) {
+  if (!leadId) return Promise.resolve(null);
+  return db('scheduled_meetings')
+    .where({ lead_id: leadId })
+    .whereNull('cancelled_at')
+    .orderBy('start_time', 'asc')
+    .first();
+}
+
+/**
  * Registro propio de las reuniones que Avan agenda automáticamente (además
  * del evento real que ya vive en Google Calendar), para poder listarlas
  * dentro del panel de Avantage sin depender de una consulta en vivo a la API
@@ -89,6 +124,11 @@ export class ScheduledMeetingService {
     let evento = null;
     let calendarError = null;
     let calendarOwner = null;
+    // Por qué el calendario del asesor no aceptó el evento, si no lo aceptó.
+    // `calendarError` se limpia cuando el respaldo funciona, y sin esto la
+    // pantalla decía "agendada en el calendario del asesor" con el evento en
+    // el calendario de otra persona (caso del 12/11/2026).
+    let advisorCalendarError = null;
 
     if (this.google) {
       for (const candidato of candidatos) {
@@ -108,6 +148,7 @@ export class ScheduledMeetingService {
           break;
         } catch (error) {
           calendarError = error.message;
+          if (candidato.userId === advisorUserId) advisorCalendarError = error.message;
         }
       }
     } else {
@@ -147,7 +188,17 @@ export class ScheduledMeetingService {
       calendarError = 'Google creó el evento pero no generó el enlace de Meet; revisa los permisos de Meet de esa cuenta.';
     }
 
-    return { meeting: await this.getById(meeting.id), calendarError, calendarOwner };
+    /*
+     * Dónde quedó el evento, dicho para la pantalla. Si no fue en el
+     * calendario del asesor, el que agenda tiene que enterarse de que lo va a
+     * encontrar en el SUYO (y de por qué), o lo busca en el del asesor y
+     * concluye que no se agendó.
+     */
+    const calendarFallback = evento && calendarOwner !== advisorUserId
+      ? { reason: advisorCalendarError || 'El asesor no tiene su Google Calendar conectado.' }
+      : null;
+
+    return { meeting: await this.getById(meeting.id), calendarError, calendarOwner, calendarFallback };
   }
 
   /**
@@ -288,6 +339,7 @@ export class ScheduledMeetingService {
       .leftJoin('leads', 'leads.id', 'scheduled_meetings.lead_id')
       .leftJoin('users as asesor', 'asesor.id', 'scheduled_meetings.advisor_user_id')
       .leftJoin('users as autor', 'autor.id', 'scheduled_meetings.created_by')
+      .leftJoin('users as asistencia', 'asistencia.id', 'scheduled_meetings.attendance_by')
       .select(
         'scheduled_meetings.*',
         'leads.full_name as lead_full_name',
@@ -296,7 +348,11 @@ export class ScheduledMeetingService {
         'leads.topic as lead_topic',
         'asesor.name as advisor_name',
         'asesor.email as advisor_email',
-        'autor.name as created_by_name'
+        'autor.name as created_by_name',
+        // Quién registró la asistencia: es un juicio de una persona sobre lo que
+        // pasó en esa reunión, así que la agenda tiene que poder decir a quién
+        // preguntarle (misma razón que created_by).
+        'asistencia.name as attendance_by_name'
       )
       .orderBy('scheduled_meetings.start_time', 'asc');
 
@@ -305,6 +361,50 @@ export class ScheduledMeetingService {
     if (advisorUserId) query.where('scheduled_meetings.advisor_user_id', advisorUserId);
 
     return withContactLabel(await query);
+  }
+
+
+  /**
+   * Registra si el contacto **asistió** a la reunión.
+   *
+   * Una cita agendada no es una cita asistida, y hasta ahora el CRM solo sabía
+   * decir si la reunión se había cancelado (el evento desapareció del Google
+   * Calendar del asesor). Con eso, un anuncio que trae gente que agenda y no
+   * aparece se leía exactamente igual que uno que trae gente que se presenta —
+   * y es la diferencia entre un público bueno y uno que hay que dejar de
+   * comprar.
+   *
+   * Tres estados, por la misma razón que `leads.qualified`: vaciarlo es
+   * "nadie lo registró todavía", que separa la reunión que aún no ocurrió de la
+   * que se sabe que se cayó. Lo marca una PERSONA y nunca un automatismo:
+   * Google Calendar no sabe quién entró a la sala, y deducirlo de que la
+   * reunión ya pasó convertiría esto en un campo que dice lo mismo en el 100%
+   * de las filas, que es de lo que hubo que rescatar a `qualified`.
+   *
+   * No toca `cancelled_at`: cancelar es que la reunión no existe más, y no
+   * asistir es que existió y el contacto no fue. Mezclarlas haría imposible
+   * contar las dos.
+   */
+  async setAttendance(id, value, { actor = null } = {}) {
+    const meeting = await db('scheduled_meetings').where({ id }).first();
+    if (!meeting) return null;
+
+    const vacio = value === null || value === undefined || value === '';
+    if (!vacio && !ATTENDANCE_VALUES.has(value)) {
+      const error = new Error(`Asistencia no válida: ${value}. Los valores son ${[...ATTENDANCE_VALUES].join(' o ')}.`);
+      error.code = 'INVALID_ATTENDANCE';
+      throw error;
+    }
+
+    await db('scheduled_meetings').where({ id }).update({
+      attendance: vacio ? null : value,
+      attendance_at: vacio ? null : new Date(),
+      // Sin autor cuando se borra la marca: lo que no está registrado no lo
+      // registró nadie.
+      attendance_by: vacio ? null : (actor?.id || null)
+    });
+
+    return this.getById(id);
   }
 
   async getById(id) {

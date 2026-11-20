@@ -16,13 +16,22 @@ import { MetaLeadReconciliationService } from '../metaLeadReconciliationService.
 
 const originalFetch = globalThis.fetch;
 
-/** Respuestas de la Graph API por ruta, sin red. */
-function stubGraph({ forms, leadsByForm }) {
+/**
+ * Respuestas de la Graph API por ruta, sin red. `apps` es la suscripción al
+ * webhook de la Página; sin pasarla, esa ruta no se simula y la conciliación
+ * tiene que seguir funcionando igual (el estado queda en "desconocido"), que
+ * es lo que pasa cuando al token le falta `pages_manage_metadata`.
+ */
+function stubGraph({ forms, leadsByForm, apps = null }) {
   globalThis.fetch = async (url) => {
     const path = new URL(url).pathname;
     const json = (body) => ({ ok: true, json: async () => body });
 
     if (path.endsWith('/me/accounts')) return json({ data: [{ id: 'PAGE_1', name: 'Avantage Group' }] });
+    if (path.endsWith('/subscribed_apps')) {
+      if (!apps) throw new Error('sin permiso para leer la suscripción');
+      return json({ data: apps });
+    }
     if (path.endsWith('/leadgen_forms')) return json({ data: forms });
 
     const formId = path.split('/').filter(Boolean).at(-2);
@@ -32,12 +41,19 @@ function stubGraph({ forms, leadsByForm }) {
   };
 }
 
-/** leadService mínimo: solo lo que toca la conciliación. */
-function fakeLeadService(knownIds = [], knownFormIds = []) {
+/**
+ * leadService mínimo: solo lo que toca la conciliación. `idsConAnuncio` son
+ * los leads que además guardaron su `meta_ad_id`; por defecto son todos los
+ * conocidos, porque lo que entra por el webhook lo trae.
+ */
+function fakeLeadService(knownIds = [], knownFormIds = [], idsConAnuncio = knownIds) {
   return {
     creados: [],
     async getKnownMetaLeadgenIds() {
       return new Set(knownIds.map(String));
+    },
+    async getMetaLeadgenIdsWithAd() {
+      return new Set(idsConAnuncio.map(String));
     },
     async getKnownMetaFormIds() {
       return knownFormIds;
@@ -237,4 +253,116 @@ test('un envio de un telefono que ya es lead se cuelga de esa ficha, no abre otr
   // Y se cuenta aparte: no es una persona nueva para trabajar.
   assert.equal(report.totals.importados, 0);
   assert.equal(report.totals.adjuntados, 1);
+});
+
+/*
+ * Lo que sigue es la otra mitad de la comprobación que pide el equipo: no solo
+ * "¿llegaron los mismos leads que registró Meta?" sino "¿cada uno con su
+ * anuncio?", y antes de eso "¿Meta está avisando?". Las tres se contestan en el
+ * mismo reporte porque la primera explica a las otras dos.
+ */
+
+test('el reporte dice si la Página está suscrita al campo leadgen', async () => {
+  stubGraph({
+    forms: [{ id: 'F1', name: 'Bachiller', status: 'ACTIVE' }],
+    leadsByForm: { F1: [] },
+    apps: [{ id: 'APP_1', name: 'CRM Avantage', subscribed_fields: ['leadgen', 'feed'] }]
+  });
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false });
+  assert.equal(report.suscripcion.estado, 'conectado');
+  assert.equal(report.suscripcion.leadgen, true);
+});
+
+test('sin leadgen suscrito lo dice, que es la causa de que no llegue ninguno', async () => {
+  stubGraph({
+    forms: [{ id: 'F1', name: 'Bachiller', status: 'ACTIVE' }],
+    leadsByForm: { F1: [lead('11', 'fb', '2026-10-25T10:00:00+0000')] },
+    apps: [{ id: 'APP_1', name: 'CRM Avantage', subscribed_fields: ['feed'] }]
+  });
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false });
+  assert.equal(report.suscripcion.estado, 'sin_leadgen');
+  // Y el síntoma que esa causa explica: el lead está en Meta y no en el CRM.
+  assert.equal(report.totals.faltantes, 1);
+});
+
+test('no poder leer la suscripción no tumba la conciliación', async () => {
+  // Leerla exige pages_manage_metadata, que el token puede no tener; recuperar
+  // los leads perdidos —que es para lo que existe esto— no lo necesita.
+  stubGraph({
+    forms: [{ id: 'F1', name: 'Bachiller', status: 'ACTIVE' }],
+    leadsByForm: { F1: [lead('11', 'fb', '2026-10-25T10:00:00+0000')] }
+  });
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false });
+  assert.equal(report.suscripcion.estado, 'desconocido');
+  assert.equal(report.totals.en_meta, 1);
+});
+
+test('un lead que está en el CRM pero sin su anuncio no cuenta como conciliado', async () => {
+  /*
+   * Es la ficha anterior a la columna de atribución: su leadgen_id está en las
+   * notas pero nunca se le guardó el ad_id, así que no aparece en el reporte de
+   * Campañas. Contarla solo en `en_crm` daría por cerrada una comparación que
+   * no cerró; se arregla con el botón de completar datos del formulario.
+   */
+  stubGraph({
+    forms: [{ id: 'F1', name: 'Bachiller', status: 'ACTIVE' }],
+    leadsByForm: {
+      F1: [lead('11', 'fb', '2026-10-25T10:00:00+0000'), lead('12', 'fb', '2026-10-25T11:00:00+0000')]
+    }
+  });
+
+  // Los dos están en el CRM; solo el 12 tiene su anuncio.
+  const report = await new MetaLeadReconciliationService(
+    fakeLeadService(['11', '12'], [], ['12'])
+  ).reconcile({ apply: false });
+
+  assert.equal(report.totals.en_crm, 2);
+  assert.equal(report.totals.faltantes, 0);
+  assert.equal(report.totals.sin_anuncio, 1);
+  assert.equal(report.forms[0].sin_anuncio, 1);
+});
+
+test('lo que la conciliación acaba de importar no se reporta como sin anuncio', async () => {
+  // La Graph API manda el ad_id junto al lead y `persistMetaLead` lo guarda:
+  // contarlo como incompleto en la misma corrida que lo completó mandaría a
+  // revisar algo que ya está bien.
+  stubGraph({
+    forms: [{ id: 'F1', name: 'Bachiller', status: 'ACTIVE' }],
+    leadsByForm: { F1: [{ ...lead('13', 'fb', '2026-10-25T10:00:00+0000'), ad_id: '120210000000123456' }] }
+  });
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: true });
+  assert.equal(report.totals.importados, 1);
+  assert.equal(report.totals.sin_anuncio, 0);
+});
+
+test('un formulario activo sin un solo lead en el CRM se señala aparte', async () => {
+  // En una lista de treinta formularios (la mayoría viejos y vacíos) ese es el
+  // que hay que ir a revisar, y se pierde entre los demás.
+  stubGraph({
+    forms: [
+      { id: 'F1', name: 'FORM | Confianza | contrato | Jair | 25Oct', status: 'ACTIVE' },
+      { id: 'F2', name: 'Formulario viejo', status: 'ARCHIVED' }
+    ],
+    leadsByForm: { F1: [lead('21', 'fb', '2026-10-25T10:00:00+0000')], F2: [] }
+  });
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false });
+
+  assert.equal(report.formularios_activos_sin_leads.length, 1);
+  assert.equal(report.formularios_activos_sin_leads[0].form_id, 'F1');
+  assert.equal(report.formularios_activos_sin_leads[0].en_meta, 1);
+});
+
+test('un formulario archivado y vacío no se señala: no es una falla', async () => {
+  stubGraph({
+    forms: [{ id: 'F2', name: 'Formulario viejo', status: 'ARCHIVED' }],
+    leadsByForm: { F2: [] }
+  });
+
+  const report = await new MetaLeadReconciliationService(fakeLeadService()).reconcile({ apply: false });
+  assert.deepEqual(report.formularios_activos_sin_leads, []);
 });

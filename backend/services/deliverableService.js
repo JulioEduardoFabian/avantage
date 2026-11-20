@@ -150,9 +150,16 @@ export class DeliverableService {
    * lugar y tiene que seguir así. `taskService` es quien sabe contar las tareas
    * de cada entregable — acá solo se pegan al plan.
    */
-  constructor({ projectService, taskService } = {}) {
+  constructor({ projectService, taskService, calendarSync = null } = {}) {
     this.projectService = projectService;
     this.taskService = taskService;
+    /*
+     * El volcado del calendario a Google, para poder quitar el evento de una
+     * entrega que se borra. Llega como función porque ese servicio se
+     * construye después que este (necesita el cliente OAuth): la dependencia
+     * se resuelve al usarla, no al armar el servicio.
+     */
+    this.calendarSync = calendarSync;
   }
 
   // ------------------------------------------------------------------ LECTURA
@@ -466,6 +473,22 @@ export class DeliverableService {
     const existing = await db('deliverables').where({ id }).first();
     if (!existing) return null;
     await db('deliverables').where({ id }).del();
+
+    /*
+     * Y se quita del calendario de Google, si estaba. Tiene que ser acá y no
+     * en la sincronización: el id del evento vive en la fila, así que borrada
+     * la fila no queda forma de saber cuál era — el barrido solo mira las
+     * entregas que existen, y en Google quedaría una entrega fantasma que
+     * nadie va a limpiar. No se espera ni puede fallar el borrado: lo que se
+     * pidió fue borrar la entrega.
+     */
+    const sync = typeof this.calendarSync === 'function' ? this.calendarSync() : this.calendarSync;
+    if (existing.google_event_id && sync) {
+      sync.removeEventFor(existing).catch((error) => {
+        console.warn('⚠️ [Entregables] No se pudo quitar del calendario la entrega borrada:', error.message);
+      });
+    }
+
     return existing;
   }
 

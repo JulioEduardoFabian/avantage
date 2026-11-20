@@ -36,7 +36,7 @@
             <label class="form-label">Banco</label>
             <select v-model="form.banco" class="form-select">
               <option value="">— Sin especificar —</option>
-              <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+              <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
             </select>
           </div>
           <div class="form-group ledger-form-wide">
@@ -51,7 +51,13 @@
       </form>
     </section>
 
-    <div v-if="isLoading" class="empty-state"><p>Cargando gastos fijos...</p></div>
+    <AppLoader
+      v-if="isLoading"
+      variant="table"
+      icon="🏢"
+      title="Cargando gastos fijos…"
+      subtitle="Sincronizando el control mensual de servicios recurrentes."
+    />
     <div v-else-if="rows.length === 0" class="empty-state">
       <p class="empty-state-title">Sin gastos fijos registrados</p>
       <p class="empty-state-text">Usa "+ Registrar gasto fijo" para anotar el primero.</p>
@@ -66,14 +72,43 @@
             Clic en cada celda para alternar entre pagado y pendiente.
             Clic en el nombre del servicio para ver su detalle.
           </p>
+          <!-- Los meses que se nombran son los que el servidor DEVOLVIÓ, no los
+               que se pidieron: un extremo abierto lo cierra él en hoy, y un
+               tramo largo se queda con los últimos. -->
+          <p v-if="hasDateRange" class="ledger-range-notice">
+            <span>
+              Mostrando <strong>{{ panelMonthsLabel }}</strong>.
+              <template v-if="panel.periods.length === MAX_PANEL_MONTHS">
+                El tramo se recortó a los últimos {{ MAX_PANEL_MONTHS }} meses:
+                una matriz más ancha no se lee.
+              </template>
+            </span>
+            <button type="button" class="ledger-range-notice-btn" @click="clearDateRange()">
+              Volver a los últimos {{ panelMonths }} meses
+            </button>
+          </p>
         </div>
         <div class="fx-range">
+          <!--
+            Los dos caminos conviven: los atajos de 6/12 meses para la revisión
+            de siempre, y el rango para ir a buscar un tramo concreto ("¿pagamos
+            el hosting entre marzo y mayo?"). Con rango puesto los botones
+            quedan apagados porque no deciden nada: la matriz dibuja los meses
+            que el servidor dice que consultó (`panel.periods`), no los que la
+            pantalla pidió.
+          -->
+          <LedgerDateRange
+            v-model:desde="desde"
+            v-model:hasta="hasta"
+            noun="Meses del panel"
+          />
           <button
             v-for="opt in RANGE_OPTIONS"
             :key="opt"
             type="button"
             class="tab-item"
-            :class="{ 'is-active': panelMonths === opt }"
+            :class="{ 'is-active': !hasDateRange && panelMonths === opt }"
+            :disabled="hasDateRange"
             @click="setPanelRange(opt)"
           >{{ opt }} meses</button>
         </div>
@@ -148,7 +183,7 @@
               <label class="form-label">Banco</label>
               <select v-model="editForm.banco" class="form-select">
                 <option value="">— Sin especificar —</option>
-                <option v-for="b in BANCOS" :key="b" :value="b">{{ b }}</option>
+                <option v-for="b in bancos" :key="b" :value="b">{{ b }}</option>
               </select>
             </div>
             <div class="form-group fx-edit-wide">
@@ -181,11 +216,18 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { apiFetch } from '../../apiClient.js';
-import { BANCOS } from './incomeOptions.js';
+import { bancos } from './incomeOptions.js';
+import LedgerDateRange from './LedgerDateRange.vue';
+import AppLoader from '../../components/AppLoader.vue';
+import './ledger.css';
 
 const RANGE_OPTIONS = [6, 12];
+/** Tope de columnas de la matriz. Tiene que coincidir con `MAX_WINDOW_MONTHS`
+ *  del servidor (`backend/services/financeDateRange.js`): solo se usa para
+ *  explicar en pantalla por qué un tramo largo salió recortado. */
+const MAX_PANEL_MONTHS = 24;
 
 const isFormOpen = ref(false);
 const isSaving = ref(false);
@@ -196,6 +238,15 @@ const successMessage = ref('');
 const rows = ref([]);
 const panel = ref({ periods: [], expenses: [] });
 const panelMonths = ref(6);
+/*
+ * El rango de meses del panel. A diferencia de las otras pestañas, acá el
+ * recorte lo resuelve el SERVIDOR: la matriz no es una lista de filas que se
+ * puedan filtrar en el navegador, sino una columna por mes con el estado de
+ * pago de cada servicio, y esos estados hay que ir a buscarlos.
+ */
+const desde = ref('');
+const hasta = ref('');
+const hasDateRange = computed(() => Boolean(desde.value || hasta.value));
 const panelSavingKey = ref(null);
 const detailExpense = ref(null);
 const isDeleting = ref(false);
@@ -291,8 +342,11 @@ async function fetchRows() {
 }
 
 async function fetchPanel() {
+  const params = new URLSearchParams({ months: String(panelMonths.value) });
+  if (desde.value) params.set('desde', desde.value);
+  if (hasta.value) params.set('hasta', hasta.value);
   try {
-    const response = await apiFetch(`/api/finance/fixed-expenses/panel?months=${panelMonths.value}`);
+    const response = await apiFetch(`/api/finance/fixed-expenses/panel?${params}`);
     const data = await response.json();
     if (response.ok) panel.value = data;
   } catch (error) {
@@ -305,6 +359,24 @@ function setPanelRange(value) {
   panelMonths.value = value;
   fetchPanel();
 }
+
+function clearDateRange() {
+  desde.value = '';
+  hasta.value = '';
+}
+
+/** Los meses que de verdad trae la matriz, nombrados de corrido. */
+const panelMonthsLabel = computed(() => {
+  const periods = panel.value.periods || [];
+  if (periods.length === 0) return 'ningún mes';
+  const primero = monthLabel(periods[0]);
+  const ultimo = monthLabel(periods[periods.length - 1]);
+  return periods.length === 1 ? primero : `de ${primero} a ${ultimo}`;
+});
+
+// Cada extremo del rango vuelve a pedir el panel: los estados de pago de un mes
+// que no se consultó no están en memoria.
+watch([desde, hasta], fetchPanel);
 
 async function togglePayment(expense, period) {
   const nextEstado = expense.payments[period].estado === 'pagado' ? 'pendiente' : 'pagado';
@@ -432,8 +504,18 @@ onMounted(() => {
 
 .fx-panel-sub { font-size: 0.76rem; color: var(--text-muted); margin: 0.2rem 0 0; }
 
-.fx-range { display: flex; gap: 0.25rem; flex-shrink: 0; }
+/* El filtro de fechas es más alto que las dos pastillas de meses, así que se
+   alinean al centro y el grupo puede partirse en dos filas en una pantalla
+   angosta en vez de empujar la cabecera del panel. */
+.fx-range {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .fx-range .tab-item { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+.fx-range .tab-item:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .fx-matrix th,
 .fx-matrix td { white-space: nowrap; }

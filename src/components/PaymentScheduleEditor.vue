@@ -29,7 +29,7 @@
           class="form-input ps-input"
           :disabled="row.locked"
           placeholder="0.00"
-          @input="emitRows"
+          @input="onMontoInput(row)"
         />
         <input
           v-model="row.dueDate"
@@ -72,6 +72,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import { cuotaLabel } from '../views/finance/incomeOptions.js';
+import { addMonths, splitEvenly, todayISO } from '../paymentSchedulePlan.js';
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
@@ -92,7 +93,14 @@ let nextKey = 0;
 const rows = ref([]);
 
 watch(() => props.modelValue, (value) => {
-  const incoming = (value || []).map((row) => ({ key: row.key ?? `r${nextKey++}`, ...row }));
+  const incoming = (value || []).map((row) => ({
+    key: row.key ?? `r${nextKey++}`,
+    ...row,
+    // Una cuota que llega de afuera (un contrato ya guardado, un cronograma
+    // que Finanzas ya registró) se respeta tal cual: el reparto automático
+    // solo toca las que propuso este editor y nadie corrigió.
+    manual: row.manual ?? true
+  }));
   if (JSON.stringify(strip(incoming)) === JSON.stringify(strip(rows.value))) return;
   rows.value = incoming;
 }, { immediate: true, deep: true });
@@ -122,31 +130,87 @@ function lockedTitle(row) {
 }
 
 /**
- * La cuota nueva se propone un mes después de la última y por el saldo que
- * falte: el caso frecuente es "el resto en una sola cuota el mes que viene",
- * y así se resuelve sin escribir nada.
+ * Cuándo vence la cuota que se está agregando.
+ *
+ * La PRIMERA del plan vence hoy: es la que se cobra al firmar, y proponerla
+ * para el mes siguiente obligaba a corregir la fecha en todos los cierres. Las
+ * demás se proponen un mes después de la anterior, que es como se pactan.
+ * `offset > 0` significa que este editor solo lleva la cola del cronograma (el
+ * modal de cierre, donde el primer pago se registra arriba): ahí la de acá no
+ * es la primera y le toca el mes siguiente.
  */
-function addRow() {
+function nextDueDate() {
   const last = rows.value[rows.value.length - 1];
-  const base = last?.dueDate ? new Date(`${last.dueDate}T12:00:00`) : new Date();
-  base.setMonth(base.getMonth() + 1);
-  const pending = props.total === null ? 0 : Math.max(0, Math.round(remaining.value * 100) / 100);
+  if (last?.dueDate) return addMonths(last.dueDate, 1);
+  if (rows.value.length === 0 && props.offset === 0) return todayISO();
+  return addMonths(todayISO(), 1);
+}
 
+/**
+ * Reparte el precio total entre las cuotas que propuso este editor.
+ *
+ * Lo que está bloqueado (ya cobrado) y lo que alguien escribió a mano se
+ * respeta y se descuenta primero; el saldo se divide en partes iguales entre
+ * las demás. Así, con un total de S/ 1500, agregar una cuota da 1500, agregar
+ * la segunda deja 750 y 750, y la tercera 500/500/500 — que es como se pacta,
+ * y era justo lo que había que escribir a mano cuota por cuota.
+ *
+ * Respetar lo escrito a mano no es un detalle: sin eso, agregar la última
+ * cuota le borraría al vendedor el monto que acaba de pactar con el cliente.
+ */
+function redistribute() {
+  if (props.total === null) return;
+  const autoRows = rows.value.filter((row) => !row.locked && !row.manual);
+  if (autoRows.length === 0) return;
+
+  const fixed = props.baseAmount + rows.value
+    .filter((row) => row.locked || row.manual)
+    .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
+  const shares = splitEvenly(props.total - fixed, autoRows.length);
+  autoRows.forEach((row, index) => {
+    row.monto = shares[index] > 0 ? shares[index].toFixed(2) : '';
+  });
+}
+
+function addRow() {
   rows.value.push({
     key: `r${nextKey++}`,
     id: null,
-    monto: pending > 0 ? String(pending) : '',
-    dueDate: base.toISOString().slice(0, 10),
-    locked: false
+    monto: '',
+    dueDate: nextDueDate(),
+    locked: false,
+    manual: false
   });
+  redistribute();
   emitRows();
 }
 
 function removeRow(index) {
   if (rows.value[index]?.locked) return;
   rows.value.splice(index, 1);
+  // El dinero de la cuota que se fue tiene que volver a alguna parte: si no,
+  // quitar una deja el cronograma incompleto y hay que recalcularlo a mano.
+  redistribute();
   emitRows();
 }
+
+/**
+ * Tocar el monto de una cuota la saca del reparto automático: a partir de ahí
+ * manda lo que escribió la persona.
+ */
+function onMontoInput(row) {
+  row.manual = true;
+  emitRows();
+}
+
+// El precio total casi siempre se escribe DESPUÉS de armar el cronograma (o se
+// corrige al negociar), así que las cuotas propuestas lo siguen. `baseAmount`
+// entra por lo mismo: en el cierre es el primer pago, y lo que el cliente ya
+// puso cambia cuánto queda por repartir.
+watch([() => props.total, () => props.baseAmount], () => {
+  redistribute();
+  emitRows();
+});
 
 function emitRows() {
   emit('update:modelValue', rows.value.map((row) => ({ ...row })));

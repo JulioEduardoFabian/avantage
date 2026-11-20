@@ -1,5 +1,6 @@
 import { db } from '../db/connection.js';
-import { applyLeadVisibility } from './leadService.js';
+import { DNI_MATCH_KEY_SQL, PHONE_DIGITS_SQL, applyLeadVisibility } from './leadService.js';
+import { CHANNELS, LEAD_ORIGIN_COLUMNS, PLATFORMS, leadOrigin } from './leadOrigin.js';
 import { LeadStageChangeService } from './leadStageChangeService.js';
 import {
   buildStageResolver,
@@ -50,6 +51,15 @@ import {
  *    alguien hizo.
  */
 
+/**
+ * Las columnas de origen que se le piden a MySQL en la página de leads.
+ * `source` y `created_at` ya van en el select por su cuenta, así que se
+ * descuentan para no pedirlas dos veces.
+ */
+const ORIGIN_SELECT = LEAD_ORIGIN_COLUMNS
+  .filter((column) => column !== 'source' && column !== 'created_at')
+  .map((column) => `leads.${column}`);
+
 /** Cuántos leads por página. Es una pantalla de lectura, no un tablero. */
 export const DEFAULT_PAGE_SIZE = 25;
 export const MAX_PAGE_SIZE = 100;
@@ -94,6 +104,47 @@ export function actorLabel({ actorType, actorName } = {}) {
   return 'El sistema';
 }
 
+/**
+ * El filtro de origen, codificado como lo manda el desplegable: `platform:meta`
+ * o `channel:whatsapp`.
+ *
+ * Son las claves de `PLATFORMS` y `CHANNELS` y no sus etiquetas porque viajan
+ * en la URL: "Orgánico" y "Mensaje directo" ahí se escriben con escapes, y un
+ * acento mal codificado dejaría el filtro sin coincidencias sin que nada falle
+ * a la vista. Igual que `parseActor()`, lo que no es uno de los códigos
+ * posibles vuelve como `null` —o sea, sin filtro— en vez de llegar a la
+ * consulta como un pedazo de texto.
+ */
+export function parseOrigin(value) {
+  const raw = String(value || '').trim();
+  const [kind, key] = raw.split(':');
+  if (kind === 'platform' && PLATFORMS[key]) return { kind, key, label: PLATFORMS[key] };
+  if (kind === 'channel' && CHANNELS[key]) return { kind, key, label: CHANNELS[key] };
+  return null;
+}
+
+/** Las opciones del desplegable, agrupadas como se ven en la barra. */
+export const ORIGIN_OPTIONS = [
+  ...Object.entries(PLATFORMS).map(([key, label]) => ({ key: `platform:${key}`, label, group: 'Plataforma' })),
+  ...Object.entries(CHANNELS).map(([key, label]) => ({ key: `channel:${key}`, label, group: 'Canal' }))
+];
+
+/**
+ * ¿Este lead es del origen que pide el filtro?
+ *
+ * La respuesta sale de `leadOrigin()` y no de una condición propia: de dónde
+ * salió un lead se contesta en UN solo sitio (`leadOrigin.js`), porque la
+ * respuesta vive repartida en tres juegos de columnas más el texto libre de
+ * `source` y cada pantalla que la resolvía por su cuenta llegaba a otra cosa.
+ * Es la misma función con la que la hoja «Ruta de leads» arma su columna de
+ * plataforma, así que el reporte y el exportable no pueden discrepar.
+ */
+export function matchesOrigin(origin, filter) {
+  if (!filter) return true;
+  if (!origin) return false;
+  return filter.kind === 'platform' ? origin.platform === filter.label : origin.channel === filter.label;
+}
+
 /** El día siguiente a `YYYY-MM-DD`, para cerrar el rango por arriba. */
 export function nextDay(day) {
   const date = new Date(`${day}T00:00:00Z`);
@@ -128,6 +179,7 @@ export function normalizeFilters(query = {}) {
     search: String(query.search || '').trim().slice(0, 120),
     actor: parseActor(query.actor),
     status: String(query.status || '').trim().slice(0, 60),
+    origin: parseOrigin(query.origin),
     from,
     to,
     onlyBlocked: query.onlyBlocked === '1' || query.onlyBlocked === 'true' || query.onlyBlocked === true,
@@ -179,6 +231,54 @@ export function buildTimeline(lead, changes = [], labelStatus = () => null, boar
   return [alta, ...movimientos];
 }
 
+/**
+ * El filtro de texto del reporte.
+ *
+ * **Una consulta de puros dígitos no se compara contra el texto del teléfono**:
+ * se compara contra sus dígitos (`PHONE_DIGITS_SQL`, la misma limpieza del
+ * cruce por teléfono del resto del sistema) y contra el documento sin
+ * separadores. El mismo número está escrito de maneras distintas según la
+ * puerta por la que entró —el bot guarda "51982768859", el formulario de Meta
+ * guarda "+51 982 768 859", el alta manual lo que haya tecleado la persona—,
+ * así que un `LIKE '%982768859%'` sobre la columna cruda **no encuentra al lead
+ * de Meta**: los espacios caen justo en medio de lo que se buscó. Los dos
+ * tableros ya buscaban por dígitos (`src/leadSearch.js`), así que el mismo
+ * número aparecía ahí y no acá — y de las dos respuestas la del reporte es la
+ * que manda a revisar el webhook por un lead que estaba todo el tiempo.
+ *
+ * Con dígitos se miran solo id, teléfono y documento, que es la regla que ya
+ * tienen los tableros: en un número, un dígito de diferencia es otra persona,
+ * y nada bueno sale de que "982768859" encuentre un tema de tesis que
+ * casualmente contiene esa cifra.
+ */
+export function applySearch(query, search) {
+  const texto = String(search || '').trim();
+  if (!texto) return query;
+
+  const digits = texto.replace(/\D/g, '');
+  const soloNumeros = digits.length > 0 && digits === texto.replace(/\s/g, '');
+
+  if (soloNumeros) {
+    return query.where(function () {
+      this.whereRaw(`${PHONE_DIGITS_SQL} LIKE ?`, [`%${digits}%`])
+        .orWhereRaw(`${DNI_MATCH_KEY_SQL} LIKE ?`, [`%${digits}%`])
+        // El id es cómo se nombra un lead entre pantallas ("el #412").
+        .orWhere('leads.id', Number(digits));
+    });
+  }
+
+  const like = `%${texto}%`;
+  return query.where(function () {
+    this.where('leads.full_name', 'like', like)
+      .orWhere('leads.phone', 'like', like)
+      .orWhere('leads.email', 'like', like)
+      .orWhere('leads.dni', 'like', like)
+      .orWhere('leads.university', 'like', like)
+      .orWhere('leads.topic', 'like', like)
+      .orWhere('leads.assigned_to', 'like', like);
+  });
+}
+
 export class LeadReportService {
   constructor({ leadService, stageChangeService } = {}) {
     this.leads = leadService;
@@ -195,23 +295,22 @@ export class LeadReportService {
    * (la del servidor, Lima en producción), igual que el resto de los filtros
    * por día del panel.
    */
-  #matching(filters, visibility) {
+  #matching(filters, visibility, originIds = null) {
     const query = applyLeadVisibility(db('leads'), visibility);
 
-    if (filters.search) {
-      const like = `%${filters.search}%`;
-      query.where(function () {
-        this.where('leads.full_name', 'like', like)
-          .orWhere('leads.phone', 'like', like)
-          .orWhere('leads.email', 'like', like)
-          .orWhere('leads.dni', 'like', like)
-          .orWhere('leads.university', 'like', like)
-          .orWhere('leads.topic', 'like', like)
-          .orWhere('leads.assigned_to', 'like', like);
-        // El id es cómo se nombra un lead entre pantallas ("el #412").
-        if (/^\d+$/.test(filters.search)) this.orWhere('leads.id', Number(filters.search));
-      });
-    }
+    /*
+     * El origen NO se pregunta en SQL: lo resuelve `leadOrigin()` sobre una
+     * docena de columnas y con reglas de prioridad (el sello manda, el bloque
+     * más antiguo gana, el texto de `source` es el último recurso). Escrito
+     * como un `where` sería una segunda versión de esas reglas, y el día que
+     * se separen el reporte diría una plataforma y el exportable otra. Así que
+     * se resuelve aparte, sobre este mismo conjunto, y vuelve como una lista de
+     * ids — que es lo que mantiene mirando lo mismo al total, a la página y al
+     * resumen. Una lista vacía filtra a cero, que es la respuesta correcta.
+     */
+    if (originIds) query.whereIn('leads.id', originIds);
+
+    if (filters.search) applySearch(query, filters.search);
 
     if (filters.status) query.where('leads.status', filters.status);
 
@@ -233,6 +332,21 @@ export class LeadReportService {
   }
 
   /**
+   * Los ids de los leads que son del origen pedido, calculados sobre el MISMO
+   * conjunto que el resto de los filtros ya eligió. Sin filtro de origen
+   * devuelve `null` y no se consulta nada: es una pasada extra sobre los leads
+   * visibles y solo la paga quien usa el filtro.
+   */
+  async #originIds(filters, visibility) {
+    if (!filters.origin) return null;
+    const rows = await this.#matching(filters, visibility)
+      .select('leads.id', ...LEAD_ORIGIN_COLUMNS.map((column) => `leads.${column}`));
+    return rows
+      .filter((row) => matchesOrigin(leadOrigin(row), filters.origin))
+      .map((row) => row.id);
+  }
+
+  /**
    * Una página del reporte: los leads, su trazabilidad, el resumen de lo
    * filtrado y las opciones de los desplegables.
    *
@@ -248,10 +362,12 @@ export class LeadReportService {
     const stageOf = buildStageResolver(index);
     const labelStatus = buildStatusLabeler(index);
 
-    const [{ total = 0 } = {}] = await this.#matching(filters, visibility)
+    const originIds = await this.#originIds(filters, visibility);
+
+    const [{ total = 0 } = {}] = await this.#matching(filters, visibility, originIds)
       .countDistinct({ total: 'leads.id' });
 
-    const rows = await this.#matching(filters, visibility)
+    const rows = await this.#matching(filters, visibility, originIds)
       .leftJoin('users as asesor', 'asesor.id', 'leads.assigned_user_id')
       .leftJoin('users as setter', 'setter.id', 'leads.setter_user_id')
       .leftJoin('users as closer', 'closer.id', 'leads.closer_user_id')
@@ -274,6 +390,11 @@ export class LeadReportService {
         'setter.name as setter_name',
         'closer.name as closer_name',
         'autor.name as created_by_name',
+        // De dónde salió el lead: las mismas columnas que lee `leadOrigin()`,
+        // para poder decirlo en cada fila y no solo filtrar por ello (un
+        // filtro de canal sin el canal escrito al lado no se puede comprobar).
+        // `source` y `created_at` ya están arriba.
+        ...ORIGIN_SELECT,
         // El único dato de la bitácora que hace falta en SQL es el del ORDEN:
         // los movimientos se traen después, en una sola consulta para toda la
         // página, y de ahí salen los conteos de cada fila.
@@ -293,6 +414,7 @@ export class LeadReportService {
       const movimientos = historias.get(row.id) || [];
       const stage = stageOf(row);
       const board = stage?.board || 'setter';
+      const origin = leadOrigin(row);
       const ultimo = movimientos[movimientos.length - 1] || null;
 
       return {
@@ -306,6 +428,18 @@ export class LeadReportService {
         status: row.status,
         stage,
         source: row.source,
+        // Lo que la fila necesita del origen: la plataforma y el canal, y el
+        // nombre de la campaña y del anuncio para el detalle. Los ids no
+        // viajan: acá no se concilia nada contra el Ads Manager.
+        origin: {
+          platform: origin.platform,
+          channel: origin.channel,
+          network: origin.network,
+          paid: origin.paid,
+          campaignName: origin.campaignName,
+          adName: origin.adName,
+          conflict: origin.conflict
+        },
         created_at: row.created_at,
         created_by_name: row.created_by_name || null,
         // El nombre vivo manda sobre la copia, y la copia sostiene al asesor
@@ -348,7 +482,11 @@ export class LeadReportService {
       scope: visibility.scope,
       // Lo normalizado vuelve a la pantalla (el actor, como el código que ella
       // manda) para que los filtros que se ven sean los que se aplicaron.
-      filters: { ...filters, actor: query.actor ? String(query.actor) : '' },
+      filters: {
+        ...filters,
+        actor: query.actor ? String(query.actor) : '',
+        origin: filters.origin ? `${filters.origin.kind}:${filters.origin.key}` : ''
+      },
       summary: {
         leads: Number(total || 0),
         moves: Number(resumen.moves || 0),
@@ -364,7 +502,10 @@ export class LeadReportService {
           type: actor.actorType,
           moves: actor.moves
         })),
-        stages: stageOptions(index)
+        stages: stageOptions(index),
+        // Fijas y no sacadas de los datos: una opción que desaparece porque
+        // hoy nadie entró por ahí se lee como que el filtro está roto.
+        origins: ORIGIN_OPTIONS
       }
     };
   }

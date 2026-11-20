@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <main class="container-fluid kanban-page-wrapper">
     <!-- Header y Acciones Principales -->
     <header class="kanban-header">
@@ -12,6 +12,32 @@
       </div>
 
       <div class="header-actions">
+        <!--
+          Dos vistas sobre los MISMOS leads: el tablero por etapas (cómo va el
+          funnel) y la tabla (la lista de a quién llamar, que en el tablero
+          obliga a recorrer columna por columna). La elegida se recuerda, así
+          que quien trabaja en lista no la vuelve a elegir cada mañana.
+        -->
+        <div class="view-switch" role="group" aria-label="Modo de vista">
+          <button
+            type="button"
+            class="view-switch-btn"
+            :class="{ active: viewMode === 'funnel' }"
+            title="Ver el tablero por etapas"
+            @click="setViewMode('funnel')"
+          >
+            🗂 Funnel
+          </button>
+          <button
+            type="button"
+            class="view-switch-btn"
+            :class="{ active: viewMode === 'tabla' }"
+            title="Ver todos los leads en una sola lista"
+            @click="setViewMode('tabla')"
+          >
+            📋 Tabla
+          </button>
+        </div>
         <button class="btn-action-primary" @click="openCreateLeadModal">
           <span class="btn-icon">👤</span> Nuevo Lead
         </button>
@@ -89,123 +115,153 @@
       </div>
     </section>
 
-    <!-- Barra de Filtros, Canales, Búsqueda y Paginación -->
+    <!--
+      Barra de filtros. Va en DOS filas y con cada grupo rotulado porque antes
+      era una sola tira: la búsqueda quedaba cortada a media frase y el "Todos"
+      de Viabilidad caía pegado a "Instagram", así que los dos grupos de
+      píldoras se leían como uno solo y no se sabía qué apagaba cada botón.
+      Cada grupo es un control segmentado (una sola opción a la vez) y lleva su
+      conteo al lado, que es lo que permite ver que un canal está vacío sin
+      tener que elegirlo.
+    -->
     <div class="kanban-toolbar">
-      <div class="search-filter-box">
-        <span class="search-icon">🔍</span>
-        <input
-          v-model="searchQuery"
-          type="text"
-          class="search-input"
-          placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
-        />
-        <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
-      </div>
+      <div class="toolbar-row">
+        <div class="search-filter-box">
+          <span class="search-icon">🔍</span>
+          <input
+            v-model="searchQuery"
+            type="text"
+            class="search-input"
+            placeholder="Buscar por cliente, #ID, teléfono, tema, universidad... (tolera tildes y dedazos)"
+          />
+          <button v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''" title="Limpiar búsqueda">✕</button>
+        </div>
 
-      <!-- Filtro por Canal de Origen (WhatsApp, Facebook, Instagram) -->
-      <div class="channel-filter-group">
-        <button
-          class="channel-pill"
-          :class="{ active: selectedChannelFilter === 'all' }"
-          @click="selectedChannelFilter = 'all'"
+        <!--
+          Cuántos leads quedan a la vista. Sin esto, un filtro que esconde medio
+          tablero se ve igual que un tablero vacío.
+        -->
+        <span
+          class="toolbar-count"
+          :class="{ filtered: activeFilterCount > 0 }"
+          title="Leads de este tablero. Los que ya pasaron al Funnel de Ventas no se cuentan acá."
         >
-          🌐 Todos ({{ totalLeadsCount }})
-        </button>
+          <strong>{{ visibleLeadsCount }}</strong>
+          <template v-if="activeFilterCount > 0"> de {{ boardLeadsCount }}</template>
+          {{ visibleLeadsCount === 1 ? 'lead' : 'leads' }}
+        </span>
+
         <button
-          class="channel-pill whatsapp-pill"
-          :class="{ active: selectedChannelFilter === 'whatsapp' }"
-          @click="selectedChannelFilter = 'whatsapp'"
+          v-if="activeFilterCount > 0"
+          class="clear-filters-btn"
+          title="Quitar todos los filtros de la barra"
+          @click="clearAllFilters"
         >
-          💚 WhatsApp ({{ whatsappCount }})
-        </button>
-        <button
-          class="channel-pill fb-pill"
-          :class="{ active: selectedChannelFilter === 'facebook' }"
-          @click="selectedChannelFilter = 'facebook'"
-        >
-          📘 Facebook ({{ fbCount }})
-        </button>
-        <button
-          class="channel-pill ig-pill"
-          :class="{ active: selectedChannelFilter === 'instagram' }"
-          @click="selectedChannelFilter = 'instagram'"
-        >
-          📸 Instagram ({{ igCount }})
+          ✕ Limpiar filtros ({{ activeFilterCount }})
         </button>
       </div>
 
-      <!-- Filtros por Viabilidad -->
-      <div class="filter-pills">
-        <button
-          v-for="pill in VIABILITY_FILTERS"
-          :key="pill.id"
-          class="filter-pill"
-          :class="{ active: selectedViabilityFilter === pill.id }"
-          @click="selectedViabilityFilter = pill.id"
-        >
-          {{ pill.label }}
-        </button>
-      </div>
+      <div class="toolbar-row toolbar-row-filters">
+        <!-- Filtro por Canal de Origen (WhatsApp, Facebook, Instagram, TikTok) -->
+        <div class="filter-group">
+          <span class="filter-group-label">Canal:</span>
+          <div class="segmented" role="group" aria-label="Filtrar por canal de origen">
+            <button
+              v-for="ch in channelFilters"
+              :key="ch.id"
+              class="segmented-btn"
+              :class="[ch.cls, { active: selectedChannelFilter === ch.id }]"
+              :aria-pressed="selectedChannelFilter === ch.id"
+              :title="ch.title"
+              @click="selectedChannelFilter = ch.id"
+            >
+              <span class="segmented-icon" aria-hidden="true">{{ ch.icon }}</span>
+              <span class="segmented-text">{{ ch.label }}</span>
+              <span class="segmented-count">{{ ch.count }}</span>
+            </button>
+          </div>
+        </div>
 
-      <!--
-        Filtro por responsable: el tablero tal como lo tiene cada persona (sus
-        leads asignados). Solo para quien ve quien tiene el permiso
-        `setter.filter_assignee`; trabaja sobre los leads que el servidor ya le
-        manda a esa persona, no abre ninguno.
-      -->
-      <div v-if="canFilterByAssignee" class="items-per-page-box">
-        <span class="toolbar-label">Responsable:</span>
-        <select v-model="selectedAssigneeFilter" class="items-select" title="Ver los leads asignados a una persona">
-          <option value="all">Todos</option>
-          <option v-for="option in assigneeOptions" :key="option.id" :value="option.id">
-            {{ option.name }} ({{ option.count }})
-          </option>
-          <option value="none">Sin asignar ({{ unassignedCount }})</option>
-        </select>
-      </div>
+        <!-- Filtros por Viabilidad -->
+        <div class="filter-group">
+          <span class="filter-group-label">Viabilidad:</span>
+          <div class="segmented" role="group" aria-label="Filtrar por nivel de viabilidad">
+            <button
+              v-for="pill in viabilityFilters"
+              :key="pill.id"
+              class="segmented-btn"
+              :class="[pill.cls, { active: selectedViabilityFilter === pill.id }]"
+              :aria-pressed="selectedViabilityFilter === pill.id"
+              :title="pill.title"
+              @click="selectedViabilityFilter = pill.id"
+            >
+              <span v-if="pill.icon" class="segmented-icon" aria-hidden="true">{{ pill.icon }}</span>
+              <span class="segmented-text">{{ pill.label }}</span>
+              <span class="segmented-count">{{ pill.count }}</span>
+            </button>
+          </div>
+        </div>
 
-      <!-- Filtro por fecha de registro del lead (día de Lima, ambos extremos incluidos) -->
-      <div class="items-per-page-box date-filter-box">
-        <span class="toolbar-label">Registrado:</span>
-        <input v-model="dateFrom" type="date" class="items-select date-input" :max="dateTo || undefined" title="Desde" />
-        <span class="toolbar-label">a</span>
-        <input v-model="dateTo" type="date" class="items-select date-input" :min="dateFrom || undefined" title="Hasta" />
-        <button
-          v-if="dateFrom || dateTo"
-          class="clear-search-btn"
-          title="Quitar el filtro de fecha"
-          @click="dateFrom = ''; dateTo = ''"
-        >✕</button>
-      </div>
+        <!--
+          Filtro por responsable: el tablero tal como lo tiene cada persona (sus
+          leads asignados). Solo para quien ve quien tiene el permiso
+          `setter.filter_assignee`; trabaja sobre los leads que el servidor ya le
+          manda a esa persona, no abre ninguno.
+        -->
+        <div v-if="canFilterByAssignee" class="filter-group">
+          <span class="filter-group-label">Responsable:</span>
+          <select v-model="selectedAssigneeFilter" class="items-select" title="Ver los leads asignados a una persona">
+            <option value="all">Todos</option>
+            <option v-for="option in assigneeOptions" :key="option.id" :value="option.id">
+              {{ option.name }} ({{ option.count }})
+            </option>
+            <option value="none">Sin asignar ({{ unassignedCount }})</option>
+          </select>
+        </div>
 
-      <!-- Control de Tarjetas por Columna -->
-      <div class="items-per-page-box">
-        <span class="toolbar-label">Por pág:</span>
-        <select v-model="itemsPerPage" class="items-select" title="Límite de tarjetas por columna">
-          <option :value="10">10 leads</option>
-          <option :value="20">20 leads</option>
-          <option :value="30">30 leads</option>
-          <option value="all">Ver todos</option>
-        </select>
-      </div>
+        <!-- Filtro por fecha de registro del lead (día de Lima, ambos extremos incluidos) -->
+        <div class="filter-group date-filter-box">
+          <span class="filter-group-label">Registrado:</span>
+          <input v-model="dateFrom" type="date" class="items-select date-input" :max="dateTo || undefined" title="Desde" />
+          <span class="filter-group-label">a</span>
+          <input v-model="dateTo" type="date" class="items-select date-input" :min="dateFrom || undefined" title="Hasta" />
+          <button
+            v-if="dateFrom || dateTo"
+            class="clear-search-btn"
+            title="Quitar el filtro de fecha"
+            @click="dateFrom = ''; dateTo = ''"
+          >✕</button>
+        </div>
 
-      <!-- Flechas de desplazamiento horizontal del tablero -->
-      <div class="board-nav-arrows">
-        <button
-          class="board-nav-btn"
-          @click="scrollBoard('left')"
-          title="Desplazar tablero a la izquierda"
-        >
-          ◀
-        </button>
-        <span class="board-nav-hint">{{ columns.length }} etapas</span>
-        <button
-          class="board-nav-btn"
-          @click="scrollBoard('right')"
-          title="Desplazar tablero a la derecha"
-        >
-          ▶
-        </button>
+        <!-- Control de Tarjetas por Columna -->
+        <div class="filter-group">
+          <span class="filter-group-label">Por pág:</span>
+          <select v-model="itemsPerPage" class="items-select" title="Límite de tarjetas por columna">
+            <option :value="10">10 leads</option>
+            <option :value="20">20 leads</option>
+            <option :value="30">30 leads</option>
+            <option value="all">Ver todos</option>
+          </select>
+        </div>
+
+        <!-- Flechas de desplazamiento horizontal del tablero (solo en el funnel) -->
+        <div v-if="viewMode === 'funnel'" class="board-nav-arrows">
+          <button
+            class="board-nav-btn"
+            @click="scrollBoard('left')"
+            title="Desplazar tablero a la izquierda"
+          >
+            ◀
+          </button>
+          <span class="board-nav-hint">{{ columns.length }} etapas</span>
+          <button
+            class="board-nav-btn"
+            @click="scrollBoard('right')"
+            title="Desplazar tablero a la derecha"
+          >
+            ▶
+          </button>
+        </div>
       </div>
     </div>
 
@@ -213,6 +269,11 @@
     <div v-if="loadError" class="info-box alert-box">
       <h4>⚠️ No se pudo cargar el Setter Funnel</h4>
       <p>{{ loadError }}</p>
+    </div>
+
+    <!-- Se entró por un enlace a una ficha que no está en este tablero. -->
+    <div v-if="deepLinkNotice" class="info-box">
+      <p>🔗 {{ deepLinkNotice }}</p>
     </div>
 
     <!--
@@ -259,8 +320,17 @@
       </div>
     </transition>
 
+    <!-- Pantalla de carga del Setter Funnel -->
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      :variant="viewMode === 'funnel' ? 'kanban' : 'table'"
+      icon="🎯"
+      title="Cargando Setter Funnel…"
+      subtitle="Sincronizando conversaciones de WhatsApp, Meta, TikTok y citas agendadas."
+    />
+
     <!-- Tablero Kanban Dinámico con Scroll Suave -->
-    <div class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
+    <div v-else-if="viewMode === 'funnel'" class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
       <div class="kanban-columns-container">
         <template v-for="(col, colIndex) in columns" :key="col.key">
         <!-- Insertador rápido de etapa (antes de esta columna) -->
@@ -375,6 +445,14 @@
                    espacio y es como el setter distingue el canal de origen. -->
               <h4 class="card-lead-name" :title="getLeadFullName(lead)">
                 <span v-if="cameFromForm(lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
+                <!-- Pasaron 24 h y nadie le contestó. Va como marca en el
+                     renglón del nombre y no como una línea propia: la tarjeta
+                     tiene alto fijo y una línea más deja de entrar. -->
+                <span
+                  v-if="needsFirstResponse(lead)"
+                  class="card-alert-mark"
+                  :title="`Nadie le respondió todavía (${waitingLabel(lead)})`"
+                >⏰</span>
                 {{ getLeadFullName(lead) }}
               </h4>
               <!-- La fecha de registro comparte renglón con el celular: una
@@ -518,6 +596,121 @@
       </div>
     </div>
 
+    <!--
+      Vista de tabla: los MISMOS leads del tablero, en una sola lista.
+
+      No pide otra ruta ni vuelve a filtrar por su cuenta: se arma sobre
+      `filteredLeadsByColumn`, así que la búsqueda, el canal, la viabilidad, el
+      responsable y el rango de fechas de la barra filtran las dos vistas por
+      igual. Dos listas con criterios propios es como se llega a que cada
+      pantalla diga un número distinto.
+
+      La etapa es un desplegable y no una etiqueta: en una tabla no se puede
+      arrastrar, y mover el lead es lo que se viene a hacer acá. Escribe por el
+      mismo camino que el tablero (`updateLeadStatusFromSelect`).
+    -->
+    <section v-else class="sf-table-section">
+      <div v-if="tableLeads.length === 0" class="empty-state sf-table-empty">
+        <span class="empty-icon">{{ searchQuery ? '🔍' : '📭' }}</span>
+        <p class="empty-text">
+          {{ searchQuery ? 'Ningún lead coincide con la búsqueda' : 'No hay leads en el Setter Funnel con estos filtros' }}
+        </p>
+        <button v-if="searchQuery" class="clear-search-link" @click="searchQuery = ''">Limpiar búsqueda</button>
+      </div>
+
+      <div v-else class="data-table-wrapper sf-table-wrapper">
+        <table class="data-table sf-table">
+          <thead>
+            <tr>
+              <th class="sf-sortable" title="Ordenar por nombre" @click="sortTableBy('name')">Lead {{ sortMark('name') }}</th>
+              <th>Celular</th>
+              <th class="sf-sortable" title="Ordenar por etapa" @click="sortTableBy('stage')">Etapa {{ sortMark('stage') }}</th>
+              <th class="sf-sortable" title="Ordenar por viabilidad" @click="sortTableBy('viability')">Viab. {{ sortMark('viability') }}</th>
+              <th>Responsable</th>
+              <th class="sf-sortable" title="Ordenar por fecha de registro" @click="sortTableBy('created')">Registrado {{ sortMark('created') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in pagedTableLeads"
+              :key="row.lead.id"
+              class="sf-row"
+              :class="{
+                'channel-whatsapp-border': row.channel.type === 'whatsapp',
+                'channel-fb-border': row.channel.type === 'facebook',
+                'channel-ig-border': row.channel.type === 'instagram'
+              }"
+              @click="selectedLead = row.lead"
+            >
+              <td data-label="Lead">
+                <span class="sf-name">
+                  <span v-if="cameFromForm(row.lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
+                  {{ getLeadFullName(row.lead) }}
+                </span>
+                <span class="sf-sub">#{{ row.lead.id }} · {{ row.channel.icon }} {{ row.channel.label }}</span>
+              </td>
+
+              <!-- El celular es un enlace a WhatsApp: desde esta lista lo que
+                   sigue es escribirle, y copiar el número a mano es el paso
+                   que sobra. -->
+              <td data-label="Celular" @click.stop>
+                <a
+                  v-if="row.lead.phone"
+                  class="sf-phone"
+                  :href="waLink(row.lead.phone)"
+                  target="_blank"
+                  rel="noopener"
+                  :title="`Escribir por WhatsApp a ${row.lead.phone}`"
+                >💬 {{ row.lead.phone }}</a>
+                <span v-else class="sf-sub">Sin celular</span>
+              </td>
+
+              <td data-label="Etapa" @click.stop>
+                <select
+                  class="sf-stage-select"
+                  :value="row.col.key"
+                  :style="{ borderColor: (row.col.color || '#56624A') + '66' }"
+                  title="Mover el lead a otra etapa"
+                  @change="updateLeadStatusFromSelect(row.lead.id, $event.target.value)"
+                >
+                  <option v-for="col in columns" :key="col.key" :value="col.key">
+                    {{ col.icon || '📌' }} {{ col.label }}
+                  </option>
+                </select>
+              </td>
+
+              <td data-label="Viabilidad">
+                <span :class="['viability-pill', getLevelClass(row.lead.viability_level)]">
+                  {{ row.lead.overall_viability_score ?? '—' }}%
+                </span>
+              </td>
+
+              <td data-label="Responsable" @click.stop>
+                <LeadAssignee :lead="row.lead" @assigned="onLeadAssigned" />
+              </td>
+
+              <td data-label="Registrado">
+                <span class="sf-date" :title="`Registrado: ${formatDate(row.lead.created_at)}`">
+                  {{ formatCardDate(row.lead.created_at) }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="tableLeads.length > 0" class="sf-table-footer">
+        <span class="sf-table-range">{{ tableRangeText }}</span>
+        <div v-if="tableTotalPages > 1" class="sf-table-pager">
+          <button class="col-page-btn" :disabled="tablePage <= 1" title="Primera página" @click="tablePage = 1">⏮</button>
+          <button class="col-page-btn" :disabled="tablePage <= 1" title="Página anterior" @click="tablePage--">◀</button>
+          <span class="sf-table-page">{{ tablePage }} / {{ tableTotalPages }}</span>
+          <button class="col-page-btn" :disabled="tablePage >= tableTotalPages" title="Página siguiente" @click="tablePage++">▶</button>
+          <button class="col-page-btn" :disabled="tablePage >= tableTotalPages" title="Última página" @click="tablePage = tableTotalPages">⏭</button>
+        </div>
+      </div>
+    </section>
+
     <!-- ================================================================= -->
     <!-- MODAL 1: Crear Nueva Columna / Etapa                              -->
     <!-- ================================================================= -->
@@ -645,6 +838,10 @@
                 <option value="WhatsApp Directo" />
                 <option value="Instagram Ads" />
                 <option value="Facebook Ads" />
+                <!-- El mismo texto que escribe `persistTikTokLead()`, para que
+                     un alta a mano caiga en el filtro de TikTok como las que
+                     trae la importación. -->
+                <option value="TikTok Ads" />
                 <option value="Referido" />
                 <option value="Manual" />
               </datalist>
@@ -780,7 +977,14 @@
     <!-- ================================================================= -->
     <!-- MODAL 4: Ficha Completa del Lead / Setter Drawer                  -->
     <!-- ================================================================= -->
-    <div v-if="selectedLead" class="modal-overlay" @click.self="selectedLead = null">
+    <!--
+      La ficha NO se cierra al hacer clic afuera, a diferencia de los modales
+      de columnas: acá adentro hay un formulario con los datos del lead a medio
+      corregir, notas sin guardar y la conversación de WhatsApp. Un clic fuera
+      —el que se da para volver a mirar el tablero— tiraba todo eso sin
+      preguntar. Se cierra con la ✕ o con "Cerrar", que son deliberados.
+    -->
+    <div v-if="selectedLead" class="modal-overlay">
       <div class="modal-content lead-modal-card" :class="{ 'has-chat': showBotChat }">
         <div class="modal-header">
           <div class="lead-modal-title-group">
@@ -953,6 +1157,12 @@
               <span class="detail-label">🤝 Closer:</span>
               <LeadAssignee :lead="selectedLead" role="closer" show-name @assigned="onLeadAssigned" />
             </div>
+            <!-- La calificación la pone una persona y empieza vacía: de ella
+                 cuelga la medición de la calidad de cada anuncio. -->
+            <div class="detail-item">
+              <span class="detail-label">✅ Calificado:</span>
+              <LeadQualification :lead="selectedLead" @qualified="onLeadAssigned" />
+            </div>
             <div class="detail-item">
               <span class="detail-label">🎓 Grado Académico:</span>
               <span class="detail-value">{{ selectedLead.academic_level || 'No especificado' }}</span>
@@ -1025,14 +1235,20 @@
 </template>
 
 <script setup>
+import { meetingCreatedNotice } from '../meetingNotice.js';
 import { ref, reactive, computed, watch, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { apiFetch } from '../apiClient.js';
+import { consumeLeadParam } from '../leadDeepLink.js';
 import LeadNotes from '../components/LeadNotes.vue';
 import LeadConversation from '../components/LeadConversation.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
+import LeadQualification from '../components/LeadQualification.vue';
+import { needsFirstResponse, waitingLabel } from '../leadFirstResponse.js';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
+import AppLoader from '../components/AppLoader.vue';
 import { formatCardDate, formatLeadDate as formatDate, limaDay } from '../leadCardDate.js';
 import { matchesLeadSearch } from '../leadSearch.js';
 import { changedIdentityFields, useLeadDuplicateCheck } from '../leadDuplicateCheck.js';
@@ -1064,13 +1280,6 @@ const PRESET_COLORS = [
   { name: 'Naranja', hex: '#BF5A2A' }
 ];
 
-const VIABILITY_FILTERS = [
-  { id: 'all', label: 'Todos' },
-  { id: 'alta', label: '🌟 Alta' },
-  { id: 'media', label: '⚖️ Media' },
-  { id: 'baja', label: '🔻 Baja' }
-];
-
 // Estado de Columnas
 const columns = ref([]);
 const kanbanBoardRef = ref(null);
@@ -1080,6 +1289,33 @@ const leads = ref([]);
 // 'all' = se ven todos (administrador comercial); 'mine' = solo los propios.
 const leadScope = ref('all');
 const selectedLead = ref(null);
+
+/*
+ * Enlace directo a una ficha (`?lead=666`): es por donde entra el Reporte de
+ * Leads, que muestra los dos tableros a la vez y hasta ahora obligaba a
+ * anotarse el nombre, venir acá y buscarlo a mano. El parámetro se consume una
+ * sola vez y se borra de la URL (ver `leadDeepLink.js`).
+ */
+const route = useRoute();
+const router = useRouter();
+const deepLinkNotice = ref('');
+
+function openLeadFromLink() {
+  const id = consumeLeadParam(route, router);
+  if (!id) return;
+
+  const lead = leads.value.find((item) => Number(item.id) === id);
+  if (lead) {
+    selectedLead.value = lead;
+    return;
+  }
+  // Pudo cambiar de tablero entre que el reporte se cargó y alguien hizo
+  // clic, o ser de otra persona: decirlo es la diferencia entre una pantalla
+  // que se explica y un enlace que no hace nada.
+  deepLinkNotice.value = `No se encontró el lead #${id} en este tablero: puede haber cambiado de etapa, o no estar entre los que ves.`;
+  setTimeout(() => { deepLinkNotice.value = ''; }, 12000);
+}
+
 // Copia editable de los datos del lead abierto (null = la ficha se está leyendo,
 // no editando).
 const leadEdit = ref(null);
@@ -1096,10 +1332,24 @@ function openMeeting(lead) {
 }
 
 function onMeetingCreated(data) {
-  meetingNotice.value = data.calendarError
-    ? `Reunión guardada, pero sin evento en Google Calendar (${data.calendarError}).`
-    : '✅ Reunión agendada en el calendario del asesor.';
-  setTimeout(() => { meetingNotice.value = ''; }, 8000);
+  meetingNotice.value = meetingCreatedNotice(data);
+  setTimeout(() => { meetingNotice.value = ''; }, 14000);
+}
+
+/**
+ * El lead entró a "Cita Agendada" sin reunión cargada en el panel.
+ *
+ * Avisa y no frena: el movimiento ya se hizo (el servidor lo deja pasar desde
+ * el 02/11/2026 y deja el motivo en la bitácora). Va como aviso de la barra y
+ * no como `alert` porque arrastrar tarjetas es trabajo en serie — un diálogo
+ * por tarjeta se aprende a cerrar sin leerlo, y entonces deja de avisar nada.
+ */
+function noticeIfAppointmentWithoutMeeting(lead) {
+  if (!lead?.appointment_without_meeting) return;
+  meetingNotice.value = '⚠ Cita agendada sin reunión en el panel: no aparecerá en el '
+    + 'Calendario del closer ni contará en el reporte por anuncio. Cargala con "Agendar '
+    + 'reunión" en la ficha del lead.';
+  setTimeout(() => { meetingNotice.value = ''; }, 12000);
 }
 
 // Conversación de WhatsApp del lead dentro de su ficha. El panel entero vive
@@ -1277,6 +1527,28 @@ function getLeadChannelInfo(lead) {
   const notes = (lead.additional_notes || '').toLowerCase();
   const topic = (lead.topic || '').toLowerCase();
 
+  // TikTok va PRIMERO porque es el único canal que se reconoce por evidencia
+  // dura y no por texto: las columnas de atribución que escribe
+  // `persistTikTokLead()` (ver `tiktokLeadsService.js`) y el sello de origen.
+  // Los demás se deducen de lo que diga `source`/`notes`, que es más flojo, y
+  // un lead de TikTok que además escribió por WhatsApp tiene las dos cosas en
+  // la ficha; de qué plataforma salió lo decide el id que ELLA emitió.
+  if (
+    lead.tiktok_lead_id ||
+    lead.tiktok_ad_id ||
+    lead.tiktok_campaign_id ||
+    (lead.origin_platform || '').toLowerCase() === 'tiktok' ||
+    source.includes('tiktok') ||
+    topic.includes('tiktok') ||
+    notes.includes('tiktok')
+  ) {
+    return {
+      type: 'tiktok',
+      label: lead.source || 'TikTok Ads',
+      icon: '🎵',
+      cssClass: 'channel-tiktok'
+    };
+  }
   if (source.includes('whatsapp') || topic.includes('whatsapp') || notes.includes('whatsapp')) {
     return {
       type: 'whatsapp',
@@ -1343,6 +1615,65 @@ const igCount = computed(() => {
 });
 
 const igFbCount = computed(() => fbCount.value + igCount.value);
+
+/**
+ * Los conteos de los FILTROS salen de `setterFunnelLeads` —los leads que este
+ * tablero puede mostrar— y no de `leads.value`, que es el total de la
+ * consulta. Un número al lado de un botón promete cuántas tarjetas van a
+ * quedar: contando también a los que ya graduaron a Ventas, "WhatsApp (670)"
+ * dejaba a la vista bastantes menos y parecía que el filtro se había comido
+ * media pantalla. Las tarjetas de arriba siguen contando sobre el total, que
+ * es otra pregunta ("¿cuánto entró?") y por eso dan otro número.
+ */
+const boardLeadsCount = computed(() => setterFunnelLeads.value.length);
+
+const boardChannelCounts = computed(() => {
+  const tally = { all: 0, whatsapp: 0, facebook: 0, instagram: 0, tiktok: 0 };
+  for (const lead of setterFunnelLeads.value) {
+    tally.all += 1;
+    const type = getLeadChannelInfo(lead).type;
+    // El canal `chat` (sin plataforma reconocida) suma en "Todos" y en ninguna
+    // de las cuatro: es a propósito, no todo lead entró por un anuncio.
+    if (type !== 'all' && type in tally) tally[type] += 1;
+  }
+  return tally;
+});
+
+/**
+ * Los botones del filtro de canal, con su conteo. Se arman acá y no sueltos en
+ * el template para que agregar una plataforma sea una fila más y no otro
+ * bloque de markup copiado (que es como el de TikTok terminó faltando).
+ */
+const channelFilters = computed(() => [
+  { id: 'all', label: 'Todos', icon: '🌐', cls: 'ch-all', count: boardChannelCounts.value.all, title: 'Todos los canales' },
+  { id: 'whatsapp', label: 'WhatsApp', icon: '💚', cls: 'ch-whatsapp', count: boardChannelCounts.value.whatsapp, title: 'Solo leads que llegaron por WhatsApp' },
+  { id: 'facebook', label: 'Facebook', icon: '📘', cls: 'ch-facebook', count: boardChannelCounts.value.facebook, title: 'Solo leads que llegaron por Facebook / Meta' },
+  { id: 'instagram', label: 'Instagram', icon: '📸', cls: 'ch-instagram', count: boardChannelCounts.value.instagram, title: 'Solo leads que llegaron por Instagram' },
+  { id: 'tiktok', label: 'TikTok', icon: '🎵', cls: 'ch-tiktok', count: boardChannelCounts.value.tiktok, title: 'Solo leads que llegaron por TikTok (formulario instantáneo)' }
+]);
+
+/**
+ * Cuántos leads hay de cada nivel de viabilidad, con el MISMO criterio con el
+ * que después se filtra (`lvl.includes(...)`): un conteo que no se pueda
+ * comprobar eligiendo el botón es peor que no tenerlo.
+ */
+const viabilityCounts = computed(() => {
+  const tally = { alta: 0, media: 0, baja: 0 };
+  for (const lead of setterFunnelLeads.value) {
+    const lvl = (lead.viability_level || '').toLowerCase();
+    if (lvl.includes('alta')) tally.alta += 1;
+    else if (lvl.includes('media')) tally.media += 1;
+    else if (lvl.includes('baja')) tally.baja += 1;
+  }
+  return tally;
+});
+
+const viabilityFilters = computed(() => [
+  { id: 'all', label: 'Todos', icon: '', cls: 'vi-all', count: boardLeadsCount.value, title: 'Cualquier nivel de viabilidad' },
+  { id: 'alta', label: 'Alta', icon: '🌟', cls: 'vi-alta', count: viabilityCounts.value.alta, title: 'Solo viabilidad alta' },
+  { id: 'media', label: 'Media', icon: '⚖️', cls: 'vi-media', count: viabilityCounts.value.media, title: 'Solo viabilidad media' },
+  { id: 'baja', label: 'Baja', icon: '🔻', cls: 'vi-baja', count: viabilityCounts.value.baja, title: 'Solo viabilidad baja' }
+]);
 
 const scheduledAppointmentsCount = computed(() => {
   return leads.value.filter(l => l.status === 'cita_agendada').length;
@@ -1495,6 +1826,43 @@ const filteredLeadsByColumn = computed(() => {
   return grouped;
 });
 
+/**
+ * Cuántos leads quedaron a la vista con los filtros puestos. Se cuenta sobre
+ * `filteredLeadsByColumn` —lo que el tablero y la tabla ya muestran— y no con
+ * una segunda pasada propia: dos recuentos con criterios propios es como se
+ * llega a que la barra diga un número y el tablero otro.
+ */
+const visibleLeadsCount = computed(() => {
+  let total = 0;
+  for (const list of Object.values(filteredLeadsByColumn.value)) total += list.length;
+  return total;
+});
+
+/**
+ * Cuántos filtros hay puestos. De esto cuelga el botón de "Limpiar filtros":
+ * con cinco controles repartidos en la barra, un tablero casi vacío por un
+ * filtro de fecha que alguien dejó puesto ayer se ve igual que un tablero sin
+ * leads, y hay que ir apagándolos de a uno para descubrirlo.
+ */
+const activeFilterCount = computed(() => {
+  let n = 0;
+  if (searchQuery.value.trim()) n += 1;
+  if (selectedChannelFilter.value !== 'all') n += 1;
+  if (selectedViabilityFilter.value !== 'all') n += 1;
+  if (canFilterByAssignee.value && selectedAssigneeFilter.value !== 'all') n += 1;
+  if (dateFrom.value || dateTo.value) n += 1;
+  return n;
+});
+
+function clearAllFilters() {
+  searchQuery.value = '';
+  selectedChannelFilter.value = 'all';
+  selectedViabilityFilter.value = 'all';
+  selectedAssigneeFilter.value = 'all';
+  dateFrom.value = '';
+  dateTo.value = '';
+}
+
 // Leads paginados por columna
 const paginatedLeadsByColumn = computed(() => {
   const result = {};
@@ -1511,6 +1879,125 @@ const paginatedLeadsByColumn = computed(() => {
     }
   }
   return result;
+});
+
+/* ------------------------------------------------------------------ */
+/* Vista de tabla                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * El tablero contesta "¿cómo va el funnel?" y la tabla "¿a quién llamo?". Son
+ * los mismos leads y los mismos filtros: la tabla se arma sobre
+ * `filteredLeadsByColumn` justamente para que no pueda decir otra cosa que el
+ * tablero.
+ */
+const VIEW_STORAGE_KEY = 'setterFunnel.view';
+
+function readStoredView() {
+  // En una ventana privada el solo acceso a localStorage lanza.
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === 'tabla' ? 'tabla' : 'funnel';
+  } catch {
+    return 'funnel';
+  }
+}
+
+const viewMode = ref(readStoredView());
+
+function setViewMode(mode) {
+  viewMode.value = mode;
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, mode);
+  } catch {
+    // Sin dónde guardarla, la vista vale para esta sesión y ya.
+  }
+}
+
+function waLink(phone) {
+  return `https://wa.me/${String(phone || '').replace(/\D/g, '')}`;
+}
+
+// El orden por defecto es el más nuevo primero: en una lista, lo que se
+// trabaja es lo que acaba de entrar.
+const tableSort = reactive({ field: 'created', dir: 'desc' });
+
+function sortTableBy(field) {
+  if (tableSort.field === field) {
+    tableSort.dir = tableSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    tableSort.field = field;
+    // El nombre se lee de la A a la Z; la fecha y la viabilidad, de mayor a menor.
+    tableSort.dir = field === 'name' || field === 'stage' ? 'asc' : 'desc';
+  }
+  tablePage.value = 1;
+}
+
+function sortMark(field) {
+  if (tableSort.field !== field) return '';
+  return tableSort.dir === 'asc' ? '▲' : '▼';
+}
+
+/**
+ * Las filas de la tabla: los leads de cada columna, aplanados y ordenados.
+ *
+ * Cada fila recuerda la columna en la que el tablero lo ubica (`col`) y no el
+ * `status` crudo: un lead cuyo estado no es ninguna columna cae en la primera
+ * (misma regla que el tablero), y el desplegable tiene que decir dónde está
+ * de verdad y no quedarse en blanco.
+ */
+const tableLeads = computed(() => {
+  const rows = [];
+  columns.value.forEach((col, colIndex) => {
+    for (const lead of filteredLeadsByColumn.value[col.key] || []) {
+      rows.push({ lead, col, colIndex, channel: getLeadChannelInfo(lead) });
+    }
+  });
+
+  const dir = tableSort.dir === 'asc' ? 1 : -1;
+  const sortValue = (row) => {
+    if (tableSort.field === 'name') return getLeadFullName(row.lead).toLowerCase();
+    if (tableSort.field === 'stage') return row.colIndex;
+    if (tableSort.field === 'viability') return Number(row.lead.overall_viability_score) || 0;
+    return row.lead.created_at || '';
+  };
+
+  return rows.sort((a, b) => {
+    const va = sortValue(a);
+    const vb = sortValue(b);
+    if (va < vb) return -dir;
+    if (va > vb) return dir;
+    // Desempate por id: sin él, dos leads con la misma fecha se intercambian
+    // de lugar en cada repintado.
+    return a.lead.id - b.lead.id;
+  });
+});
+
+const tablePage = ref(1);
+
+// La tabla usa el mismo "Por pág" de la barra: es el mismo control y no hay
+// razón para que el tablero y la lista tengan dos.
+const tablePageSize = computed(() =>
+  (itemsPerPage.value === 'all' ? Math.max(1, tableLeads.value.length) : Number(itemsPerPage.value)));
+
+const tableTotalPages = computed(() =>
+  Math.max(1, Math.ceil(tableLeads.value.length / tablePageSize.value)));
+
+const pagedTableLeads = computed(() => {
+  const start = (tablePage.value - 1) * tablePageSize.value;
+  return tableLeads.value.slice(start, start + tablePageSize.value);
+});
+
+const tableRangeText = computed(() => {
+  const total = tableLeads.value.length;
+  if (total === 0) return 'Sin leads';
+  const start = (tablePage.value - 1) * tablePageSize.value + 1;
+  const end = Math.min(start + tablePageSize.value - 1, total);
+  return `${start}-${end} de ${total} lead${total === 1 ? '' : 's'}`;
+});
+
+// Al filtrar, la página en la que estaba el usuario puede dejar de existir.
+watch([tableLeads, itemsPerPage], () => {
+  if (tablePage.value > tableTotalPages.value) tablePage.value = tableTotalPages.value;
 });
 
 // Reajuste de páginas al cambiar filtros
@@ -1632,10 +2119,14 @@ async function onDrop(targetColKey) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: targetColKey })
     });
-    if (!res.ok) {
-      throw new Error('Error al actualizar estado');
-    }
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    /*
+     * El mensaje del servidor y no uno propio: hay movimientos que se rechazan
+     * por una razón concreta y accionable, y "no se pudo guardar el cambio de
+     * etapa" deja a quien arrastró la tarjeta sin saber qué hacer.
+     */
+    if (!res.ok) throw new Error(data.error || 'Error al actualizar estado');
+    noticeIfAppointmentWithoutMeeting(data.lead);
     if (data.project) {
       projectToast.value = {
         id: data.project.id,
@@ -1645,7 +2136,7 @@ async function onDrop(targetColKey) {
   } catch (err) {
     console.error('Error al mover lead:', err);
     leadToMove.status = oldStatus;
-    alert('No se pudo guardar el cambio de etapa.');
+    alert(err.message || 'No se pudo guardar el cambio de etapa.');
   }
 }
 
@@ -1661,8 +2152,10 @@ async function updateLeadStatusFromSelect(leadId, newStatus) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: newStatus })
     });
-    if (!res.ok) throw new Error('Error al actualizar');
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    // Ídem que al arrastrar: el desplegable es el mismo camino.
+    if (!res.ok) throw new Error(data.error || 'Error al actualizar');
+    noticeIfAppointmentWithoutMeeting(data.lead);
     if (data.project) {
       projectToast.value = {
         id: data.project.id,
@@ -1672,7 +2165,7 @@ async function updateLeadStatusFromSelect(leadId, newStatus) {
   } catch (err) {
     console.error('Error al actualizar status:', err);
     lead.status = oldStatus;
-    alert('No se pudo actualizar el estado del lead.');
+    alert(err.message || 'No se pudo actualizar el estado del lead.');
   }
 }
 
@@ -1685,20 +2178,48 @@ const handoffToast = ref(null);
  * deja el lead en `cita_agendada`, que es el único estado que gradúa al Funnel
  * de Ventas.
  *
- * NO crea una reunión en `scheduled_meetings` a propósito: esa tabla alimenta
- * los recordatorios que el bot manda por WhatsApp, y una cita coordinada a
- * mano ya la está siguiendo la persona que la agendó — inventar ahí una fila
- * haría que el bot le escribiera al contacto por su cuenta.
+ * El pase **avisa pero nunca frena**. Entre el 01 y el 02/11/2026 exigió que la
+ * reunión estuviera cargada (409), y eso frenaba de más: cargarla es "Agendar
+ * reunión", que pide `calendar.view`, y el setter puede no tenerlo — con lo que
+ * el pase le quedaba cerrado sin nada que pudiera hacer. Lo que sí hace falta
+ * es que la diferencia se note, porque un lead en la columna de cita sin fecha
+ * ni hora no aparece en el Calendario del closer, no recibe recordatorio y en
+ * el reporte cuenta como una cita que nadie puede ir a buscar. Así que el aviso
+ * sale antes (acá) y el motivo queda escrito en la bitácora (`updateLeadStatus`).
+ *
+ * La reunión se carga desde la misma ficha ("Agendar reunión"), queda con
+ * `source: 'manual'` y sin `wa_id`, así que el bot no tiene a quién escribirle
+ * — que era el temor por el que este pase no creaba ninguna fila.
  */
 async function handOffToCloser(lead) {
   if (!lead || handingOff.value) return;
   const name = getLeadFullName(lead);
-  const ok = window.confirm(
-    `¿Pasar a "${name}" al Funnel de Ventas?
 
-`
-    + 'Úsalo cuando ya coordinaste la reunión por tu cuenta. El lead sale del Setter Funnel '
-    + 'y el closer lo ve en la columna "Nuevo".'
+  /*
+   * Si la consulta falla no se da por hecho que falta la reunión: un aviso que
+   * nombra un problema que no existe enseña a ignorar el aviso. Ante la duda
+   * se pregunta lo de siempre.
+   */
+  let meeting = null;
+  let meetingUnknown = false;
+  try {
+    const res = await apiFetch(`/api/leads/${lead.id}/meeting`);
+    if (!res.ok) throw new Error('consulta rechazada');
+    ({ meeting } = await res.json());
+  } catch (err) {
+    meetingUnknown = true;
+    console.warn('No se pudo comprobar si el lead tiene reunión agendada:', err);
+  }
+
+  const ok = window.confirm(
+    `¿Pasar a "${name}" al Funnel de Ventas?\n\n`
+    + (meeting || meetingUnknown
+      ? ''
+      : '⚠ Este lead no tiene reunión cargada en el panel. El closer no la verá en su '
+        + 'Calendario y no contará como cita en el reporte por anuncio. '
+        + 'Podés cargarla con "Agendar reunión" en esta misma ficha.\n\n')
+    + 'Úsalo cuando ya coordinaste la reunión por tu cuenta. El lead sale del Setter '
+    + 'Funnel y el closer lo ve en la columna "Nuevo".'
   );
   if (!ok) return;
 
@@ -1724,7 +2245,12 @@ async function handOffToCloser(lead) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          body: 'Pasado manualmente al Funnel de Closer desde el Setter Funnel: la reunión se coordinó fuera del bot.'
+          // Si no hay reunión en el panel, la nota lo dice: el closer abre la
+          // ficha y necesita saber que la hora de esa cita no está en ningún
+          // lado más que en lo que el setter coordinó por su cuenta.
+          body: 'Pasado manualmente al Funnel de Closer desde el Setter Funnel: '
+            + 'la reunión se coordinó fuera del bot.'
+            + (meeting || meetingUnknown ? '' : ' No tiene reunión cargada en el panel.')
         })
       });
     } catch (noteError) {
@@ -2146,7 +2672,7 @@ watch(selectedLead, () => {
 onMounted(() => {
   loadSetterColumns();
   fetchSalesColumns();
-  fetchAll();
+  fetchAll().then(openLeadFromLink);
   // Para el filtro por responsable. Si falla, el desplegable se arma igual con
   // los responsables que traen los leads.
   if (canFilterByAssignee.value) loadCommercialTeam().catch(() => {});
@@ -2402,7 +2928,14 @@ onMounted(() => {
   line-height: 1.2;
 }
 
-/* Toolbar */
+/* Toolbar
+ *
+ * Dos filas: la búsqueda arriba (necesita el ancho entero: su placeholder
+ * nombra los cinco campos por los que se puede buscar y antes quedaba cortado
+ * en "tema") y los filtros abajo, cada uno rotulado y dentro de su propio
+ * control segmentado. Lo que se arregló es que las píldoras de Canal y las de
+ * Viabilidad estaban pegadas, con dos "Todos" idénticos a dos dedos de
+ * distancia, y nada decía qué apagaba cada botón. */
 .kanban-toolbar {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -2410,10 +2943,22 @@ onMounted(() => {
   padding: 0.7rem 0.9rem;
   margin-bottom: 0.9rem;
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.6rem;
   backdrop-filter: blur(12px);
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.toolbar-row-filters {
+  gap: 0.5rem 1.1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border-color);
 }
 
 .search-filter-box {
@@ -2424,8 +2969,14 @@ onMounted(() => {
   border-radius: 10px;
   padding: 0.45rem 0.85rem;
   flex: 1;
-  min-width: 240px;
+  min-width: 260px;
   gap: 0.5rem;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.search-filter-box:focus-within {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(86, 98, 74, 0.15);
 }
 
 .search-input {
@@ -2435,6 +2986,7 @@ onMounted(() => {
   font-size: 0.88rem;
   width: 100%;
   outline: none;
+  text-overflow: ellipsis;
 }
 
 .clear-search-btn {
@@ -2443,89 +2995,151 @@ onMounted(() => {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.15rem 0.25rem;
+  border-radius: 6px;
 }
 
-/* Filtros por Canales */
-.channel-filter-group {
+.clear-search-btn:hover {
+  color: var(--text-main);
+  background: var(--surface-3);
+}
+
+/* Cuántos leads quedan a la vista, y el escape para soltar todo de una vez. */
+.toolbar-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbar-count strong {
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+.toolbar-count.filtered strong {
+  color: var(--accent-amber);
+}
+
+.clear-filters-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border-color);
+  color: var(--text-sub, var(--text-main));
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.clear-filters-btn:hover {
+  background: var(--surface-4);
+  color: var(--text-main);
+  border-color: var(--surface-5);
+}
+
+/* Grupos de filtros: rótulo + control */
+.filter-group {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
   flex-wrap: wrap;
 }
 
-.channel-pill {
-  background: var(--surface-2);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  padding: 0.45rem 0.85rem;
-  border-radius: 20px;
-  font-size: 0.82rem;
+.filter-group-label {
+  font-size: 0.78rem;
   font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
-.channel-pill:hover {
+/*
+ * Control segmentado: una sola opción a la vez. El riel compartido es lo que
+ * dice de un vistazo que esos botones son UN filtro, que es justo lo que no se
+ * entendía cuando eran píldoras sueltas.
+ */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  flex-wrap: wrap;
+}
+
+.segmented-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.segmented-btn:hover {
   background: var(--surface-3);
   color: var(--text-main);
 }
 
-.channel-pill.active {
-  background: rgba(158, 186, 75, 0.2);
-  border-color: #2C8C99;
-  color: #5AAEB8;
+.segmented-btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 1px;
 }
 
-.channel-pill.whatsapp-pill.active {
-  background: rgba(46, 125, 70, 0.22);
-  border-color: #2F7D5A;
-  color: var(--accent-emerald);
-}
-
-.channel-pill.fb-pill.active {
-  background: rgba(111, 129, 37, 0.22);
-  border-color: #56624A;
-  color: var(--accent-cyan);
-}
-
-.channel-pill.ig-pill.active {
-  background: rgba(138, 63, 40, 0.22);
-  border-color: #8A3F28;
-  color: var(--accent-pink);
-}
-
-/* Filtros por Viabilidad */
-.filter-pills {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.filter-pill {
-  background: var(--surface-2);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  padding: 0.4rem 0.75rem;
-  border-radius: 20px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.filter-pill.active {
-  background: var(--surface-4);
+/*
+ * Lo elegido no se distingue SOLO por el color: cambia el fondo, se le dibuja
+ * el borde y se levanta del riel. El tinte de cada canal es la guinda, no la
+ * marca — verde y ámbar son el mismo color con deuteranopía.
+ */
+.segmented-btn.active {
+  background: var(--bg-card-solid);
   border-color: var(--surface-5);
+  color: var(--text-main);
+  box-shadow: 0 1px 2px rgba(16, 20, 20, 0.12);
+}
+
+.segmented-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.segmented-count {
+  background: var(--surface-3);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.segmented-btn.active .segmented-count {
+  background: var(--surface-4);
   color: var(--text-main);
 }
 
-.items-per-page-box {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  color: var(--text-muted);
-}
+.segmented-btn.ch-whatsapp.active { color: var(--accent-emerald); }
+.segmented-btn.ch-facebook.active { color: var(--accent-cyan); }
+.segmented-btn.ch-instagram.active { color: var(--accent-pink); }
+.segmented-btn.ch-tiktok.active { color: var(--accent-silver); }
+.segmented-btn.vi-alta.active { color: var(--accent-emerald); }
+.segmented-btn.vi-media.active { color: var(--accent-amber); }
+.segmented-btn.vi-baja.active { color: var(--accent-rose); }
 
 .items-select {
   background: var(--surface-2);
@@ -2535,6 +3149,10 @@ onMounted(() => {
   padding: 0.35rem 0.6rem;
   font-size: 0.82rem;
   outline: none;
+}
+
+.items-select:focus-visible {
+  border-color: var(--accent-cyan);
 }
 
 .board-nav-arrows {
@@ -3010,6 +3628,15 @@ onMounted(() => {
 /* Marca de "llegó por formulario": va dentro del renglón del nombre para no
    sumar alto a la tarjeta. */
 .card-form-mark {
+  font-size: 0.72rem;
+  margin-right: 0.15rem;
+  cursor: help;
+}
+
+/* 24 h sin respuesta. Mismo tamaño que la marca de formulario: es una marca
+   en el renglón del nombre y no puede robarle ancho al nombre, que es lo
+   único que identifica al lead en la tarjeta. */
+.card-alert-mark {
   font-size: 0.72rem;
   margin-right: 0.15rem;
   cursor: help;
@@ -3688,10 +4315,128 @@ button.setter-btn {
  * tablero del celular es para mirar y entrar a la ficha, y mover se hace desde
  * ahí.
  */
+/* ---- Conmutador de vista (Funnel / Tabla) ---- */
+.view-switch {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.view-switch-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.view-switch-btn + .view-switch-btn { border-left: 1px solid var(--border-color); }
+.view-switch-btn:hover { color: var(--text-main); background: var(--surface-1); }
+
+.view-switch-btn.active {
+  background: var(--surface-2, var(--surface-1));
+  color: var(--text-main);
+}
+
+/* ---- Vista de tabla ---- */
+.sf-table-section { margin-top: 0.5rem; }
+
+.sf-table-empty {
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 2rem 1rem;
+  text-align: center;
+}
+
+.sf-table th.sf-sortable { cursor: pointer; user-select: none; }
+.sf-table th.sf-sortable:hover { color: var(--text-main); }
+
+.sf-row { cursor: pointer; }
+
+/* El borde de color del canal es el mismo recurso de la tarjeta: identifica
+   de dónde salió el lead sin gastar una columna. */
+.sf-row.channel-whatsapp-border td:first-child { box-shadow: inset 3px 0 0 var(--accent-emerald, #25D366); }
+.sf-row.channel-fb-border td:first-child { box-shadow: inset 3px 0 0 #1877F2; }
+.sf-row.channel-ig-border td:first-child { box-shadow: inset 3px 0 0 #C13584; }
+
+.sf-name {
+  display: block;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.sf-sub {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.sf-phone {
+  font-size: 0.82rem;
+  color: var(--text-sub);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.sf-phone:hover { color: var(--primary); }
+
+.sf-stage-select {
+  max-width: 13rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.78rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.sf-date { white-space: nowrap; font-size: 0.82rem; }
+
+.sf-table-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.sf-table-range { font-size: 0.75rem; color: var(--text-muted); }
+
+.sf-table-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.sf-table-page {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-sub);
+  padding: 0 0.35rem;
+}
+
 @media (max-width: 760px) {
   .kanban-header { flex-direction: column; gap: 0.75rem; }
   .kanban-header .header-actions { width: 100%; flex-wrap: wrap; }
-  .kanban-toolbar { flex-direction: column; align-items: stretch; gap: 0.6rem; }
+  /*
+   * En el celular los grupos se apilan y cada riel ocupa el ancho: las
+   * píldoras envuelven en vez de salirse de pantalla, así ningún canal queda
+   * escondido detrás de un desplazamiento lateral que nadie descubre.
+   */
+  .toolbar-row { align-items: stretch; }
+  .toolbar-row-filters { flex-direction: column; align-items: stretch; gap: 0.7rem; }
+  .filter-group { align-items: flex-start; }
+  .filter-group .segmented { width: 100%; }
+  .filter-group .segmented-btn { flex: 1 1 auto; justify-content: center; }
+  .filter-group .items-select { flex: 1; min-width: 0; }
+  .board-nav-arrows { margin-left: 0; justify-content: space-between; }
   .funnel-stats-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; }
 
   .kanban-viewport {
@@ -3707,5 +4452,57 @@ button.setter-btn {
     max-width: 86vw;
     scroll-snap-align: start;
   }
+
+  .view-switch { width: 100%; }
+  .view-switch-btn { flex: 1; padding: 0.5rem; }
+
+  /* La tabla no se achica: se vuelve tarjetas con los rótulos adentro. Seis
+     columnas en 380 px solo se leen arrastrándolas de lado, y esta lista es
+     justo la que se usa con el teléfono en la mano. Mismo recurso que
+     Cobranzas. */
+  .sf-table-wrapper { overflow-x: visible; border: none; background: none; }
+
+  .sf-table,
+  .sf-table tbody,
+  .sf-table tr,
+  .sf-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .sf-table thead { display: none; }
+
+  .sf-table tr {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 0.6rem 0.7rem;
+    margin-bottom: 0.6rem;
+    background: var(--bg-card-solid, var(--bg-card));
+  }
+
+  .sf-table td { border: none; padding: 0.22rem 0; }
+
+  .sf-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+
+  /* El nombre es el título de la tarjeta: no necesita rótulo. */
+  .sf-table td[data-label="Lead"]::before { content: none; }
+  .sf-table td[data-label="Lead"] .sf-name { font-size: 0.95rem; }
+
+  .sf-row.channel-whatsapp-border td:first-child,
+  .sf-row.channel-fb-border td:first-child,
+  .sf-row.channel-ig-border td:first-child { box-shadow: none; }
+
+  .sf-row.channel-whatsapp-border { border-left: 3px solid var(--accent-emerald, #25D366); }
+  .sf-row.channel-fb-border { border-left: 3px solid #1877F2; }
+  .sf-row.channel-ig-border { border-left: 3px solid #C13584; }
+
+  .sf-stage-select { max-width: none; width: 100%; padding: 0.5rem; font-size: 1rem; }
 }
 </style>

@@ -19,10 +19,16 @@ import { downloadAdCreativeImage } from './adCreativeImage.js';
  * Diferencias de fondo con Meta que explican varias decisiones de este archivo:
  *
  *  - **No hay Click-to-WhatsApp.** TikTok no manda un `referral.source_id` al
- *    chat, así que NO se escriben filas en `campaign_ads`: mapear anuncios que
- *    nunca van a coincidir con una conversación sólo ensuciaría la tabla que
- *    usa la atribución de Meta. El desglose por anuncio de TikTok se ve igual,
- *    porque sale de `meta_ads_insights`, no del mapeo.
+ *    chat, así que por ese camino no hay nada que atribuir. Lo que sí hay
+ *    —desde el 30/10/2026— son los leads de **formulario instantáneo**, que
+ *    llegan con su `ad_id` (ver `tiktokLeadsService.js`), y por eso ahora sí
+ *    se escriben filas en `campaign_ads`: sin ellas, un lead importado de
+ *    TikTok no se podía acreditar a ninguna campaña y la trazabilidad salía
+ *    vacía con 21 conversiones en el Ads Manager. El `ad_source_id` va
+ *    prefijado con `tt:`, igual que el `external_id` de la campaña: los ids
+ *    de anuncio de las dos plataformas son numéricos y `ad_source_id` es
+ *    ÚNICO, así que sin el prefijo un anuncio de TikTok podría robarle la
+ *    fila a uno de Meta y mandar sus leads a la campaña equivocada.
  *  - **La campaña no tiene fechas.** El calendario vive en el grupo de
  *    anuncios (`schedule_start_time`/`schedule_end_time`), así que las fechas
  *    de la campaña se derivan del mínimo y el máximo de sus grupos.
@@ -39,6 +45,13 @@ const AUTH_PORTAL = 'https://business-api.tiktok.com/portal/auth';
 
 /** Cuántas páginas se siguen como máximo en un listado paginado. */
 const MAX_PAGES = 20;
+/*
+ * Tamaño de página por defecto. NO es el mismo para todos los endpoints:
+ * `campaign/get/`, `adgroup/get/` y `ad/get/` aceptan 1000, pero `page/get/`
+ * (los formularios instantáneos) topa en 100 y responde
+ * "page_size: number must be most 100" — un error de validación que parece de
+ * permisos si uno lo lee rápido. Por eso quien llama puede mandar el suyo.
+ */
 const PAGE_SIZE = 1000;
 
 /** Códigos de error de TikTok que significan "el token ya no sirve". */
@@ -428,6 +441,57 @@ export class TikTokAdsService {
   }
 
   /**
+   * Los dos `#get` abiertos al resto del backend.
+   *
+   * `tiktokLeadsService` necesita hablar con la MISMA API —mismo token, misma
+   * versión, mismo tratamiento de los errores que TikTok devuelve dentro de un
+   * HTTP 200 y mismo paginado— y la alternativa era copiar esas cuatro cosas
+   * en el otro archivo. Copiadas, el día que el token caducado deje de
+   * reconocerse en uno de los dos la importación fallaría diciendo cualquier
+   * otra cosa.
+   */
+  async api(path, params = {}) {
+    return this.#get(path, params);
+  }
+
+  /**
+   * @param {function} [onTruncate] se llama con `{ path, paginasLeidas,
+   *   paginasTotales, tope }` cuando el tope de páginas corta el recorrido.
+   *   Es un callback y no un campo en la instancia para no dejar estado
+   *   compartido entre corridas; y existe porque este paginador se detenía en
+   *   la página 20 aunque `total_page` dijera 35, **sin decírselo a nadie** —
+   *   una comparación recortada que devuelve un resultado con pinta de
+   *   completo.
+   */
+  async apiPaged(path, params = {}, { onTruncate = null } = {}) {
+    return this.#getPaged(path, params, { onTruncate });
+  }
+
+  /**
+   * POST a un endpoint de la API, con el cuerpo en JSON.
+   *
+   * Lo pide la creación de la tarea de descarga de leads, que no se puede
+   * hacer por GET. Mismo tratamiento del error que `#get`: TikTok responde
+   * HTTP 200 con el fallo adentro, salvo cuando el fallo es del gateway (404,
+   * 405) y el cuerpo ni siquiera es JSON — por eso se mira también el estado.
+   */
+  async apiPost(path, body = {}) {
+    const res = await this.fetch(`${API_BASE}/${path}`, {
+      method: 'POST',
+      headers: { 'Access-Token': this.accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const json = await res.json().catch(() => ({}));
+    if (json.code !== 0) {
+      const e = new Error(`TikTok Business API: ${json.message || `HTTP ${res.status}`}`);
+      e.tiktokCode = json.code || null;
+      e.httpStatus = res.status;
+      throw e;
+    }
+    return json.data;
+  }
+
+  /**
    * GET a un endpoint de la API. TikTok responde SIEMPRE HTTP 200: el error
    * real viene en `code` del cuerpo, así que hay que mirarlo siempre.
    */
@@ -440,20 +504,40 @@ export class TikTokAdsService {
     if (json.code !== 0) {
       const e = new Error(`TikTok Business API: ${json.message || `HTTP ${res.status}`}`);
       e.tiktokCode = json.code || null;
+      // El estado HTTP distingue "esta ruta no existe" (404) de "existe pero
+      // no por este método" (405), que es lo que deja elegir la variante
+      // correcta en `tiktokLeadsService`.
+      e.httpStatus = res.status;
       throw e;
     }
     return json.data;
   }
 
   /** GET paginado (`page`/`page_info.total_page`), acumulando `data.list`. */
-  async #getPaged(path, params = {}) {
+  async #getPaged(path, params = {}, { onTruncate = null } = {}) {
     const out = [];
+    let totalPages = 1;
+    let leidas = 0;
+
     for (let page = 1; page <= MAX_PAGES; page++) {
-      const data = await this.#get(path, { ...params, page: String(page), page_size: String(PAGE_SIZE) });
+      const data = await this.#get(path, {
+        ...params,
+        page: String(page),
+        page_size: String(params.page_size ?? PAGE_SIZE)
+      });
       out.push(...(data?.list || []));
-      const totalPages = Number(data?.page_info?.total_page || 1);
+      leidas = page;
+      totalPages = Number(data?.page_info?.total_page || 1);
       if (page >= totalPages) break;
     }
+
+    // El recorte se avisa, no se asume. Sin esto, un recorrido cortado en la
+    // página 20 de 35 devuelve una lista con pinta de completa.
+    if (totalPages > leidas) {
+      console.warn(`⚠️ [TikTok] ${path}: se leyeron ${leidas} de ${totalPages} páginas (tope ${MAX_PAGES}).`);
+      if (onTruncate) onTruncate({ path, paginasLeidas: leidas, paginasTotales: totalPages, tope: MAX_PAGES });
+    }
+
     return out;
   }
 
@@ -591,9 +675,9 @@ export class TikTokAdsService {
       summary.adgroups++;
     }
 
-    // 3) Anuncios. A diferencia de Meta NO se escriben en `campaign_ads`:
-    //    TikTok no manda `referral.source_id` al chat, así que no hay nada que
-    //    atribuir por ese camino (ver la nota de cabecera del archivo).
+    // 3) Anuncios. Se mapean en `campaign_ads` con el prefijo `tt:` para que
+    //    los leads de formulario instantáneo —que sí traen su `ad_id`— se
+    //    puedan acreditar a su campaña (ver la nota de cabecera del archivo).
     let ads = [];
     try {
       ads = await this.#getPaged('ad/get/', { advertiser_id: advertiser });
@@ -629,6 +713,20 @@ export class TikTokAdsService {
       });
 
       const localCampaignId = localIdByExternal.get(String(ad.campaign_id));
+
+      /*
+       * El mapeo anuncio -> campaña, que es de lo que cuelga la atribución de
+       * los leads de formulario. Se reescribe en cada sincronización
+       * (`onConflict().merge()`) y no sólo se inserta: un anuncio renombrado
+       * tiene que decir su nombre nuevo en la trazabilidad.
+       */
+      if (localCampaignId) {
+        await db('campaign_ads')
+          .insert({ campaign_id: localCampaignId, ad_source_id: `tt:${ad.ad_id}`, ad_label: ad.ad_name || null })
+          .onConflict('ad_source_id')
+          .merge({ campaign_id: localCampaignId, ad_label: ad.ad_name || null });
+      }
+
       if (localCampaignId && image && !imageSetForCampaign.has(localCampaignId)) {
         // La campaña se reconoce de un vistazo por el creativo de su primer
         // anuncio, igual que en Meta.

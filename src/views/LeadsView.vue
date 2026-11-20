@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <main class="container-fluid kanban-page-wrapper">
     <!-- Header y Acciones Principales -->
     <header class="kanban-header">
@@ -153,6 +153,11 @@
       <p>{{ loadError }}</p>
     </div>
 
+    <!-- Se entró por un enlace a una ficha que no está en este tablero. -->
+    <div v-if="deepLinkNotice" class="info-box">
+      <p>🔗 {{ deepLinkNotice }}</p>
+    </div>
+
     <!-- Toast de Proyecto Creado -->
     <transition name="toast-slide">
       <div v-if="projectToast" class="project-created-banner">
@@ -170,8 +175,17 @@
       </div>
     </transition>
 
+    <!-- Pantalla de carga del tablero Kanban -->
+    <AppLoader
+      v-if="isLoading && leads.length === 0"
+      variant="kanban"
+      icon="📇"
+      title="Cargando Funnel de Ventas…"
+      subtitle="Sincronizando etapas del tablero, leads y métricas de viabilidad."
+    />
+
     <!-- Tablero Kanban Dinámico con Scroll Suave -->
-    <div class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
+    <div v-else class="kanban-viewport custom-scrollbar" ref="kanbanBoardRef">
       <div class="kanban-columns-container">
         <!-- Columna de Kanban -->
         <div
@@ -262,6 +276,14 @@
                    columna, que es como se trabaja el tablero. -->
               <h4 class="card-lead-name" :title="getLeadFullName(lead)">
                 <span v-if="cameFromForm(lead)" class="card-form-mark" title="Llegó por formulario de Meta">📋</span>
+                <!-- Pasaron 24 h y nadie le contestó. Va como marca en el
+                     renglón del nombre y no como una línea propia: la tarjeta
+                     tiene alto fijo y una línea más deja de entrar. -->
+                <span
+                  v-if="needsFirstResponse(lead)"
+                  class="card-alert-mark"
+                  :title="`Nadie le respondió todavía (${waitingLabel(lead)})`"
+                >⏰</span>
                 {{ getLeadFullName(lead) }}
               </h4>
               <!-- La fecha de registro comparte renglón con el celular: una
@@ -650,7 +672,12 @@
     <!-- ================================================================= -->
     <!-- MODAL 4: Detalle del Lead y Acciones                              -->
     <!-- ================================================================= -->
-    <div v-if="selectedLead" class="modal-overlay" @click.self="selectedLead = null">
+    <!--
+      No se cierra al hacer clic afuera, igual que en el Setter Funnel: es la
+      misma ficha del mismo lead, con un formulario a medio corregir, notas sin
+      guardar y la conversación adentro. Se cierra con la ✕ del encabezado.
+    -->
+    <div v-if="selectedLead" class="modal-overlay">
       <div class="modal-content lead-detail-card" :class="{ 'has-chat': showBotChat }">
         <div class="modal-header">
           <div style="display: flex; align-items: center; gap: 0.6rem;">
@@ -677,6 +704,45 @@
             <p v-if="selectedLead.topic && selectedLead.topic.trim().toLowerCase() !== (selectedLead.full_name || '').trim().toLowerCase()" class="modal-lead-topic-sub">
               📄 {{ selectedLead.topic }}
             </p>
+          </div>
+
+          <!-- Barra de pestañas de la ficha del lead para evitar scroll excesivo -->
+          <div class="lead-modal-tabs" role="tablist" aria-label="Secciones de la ficha del lead">
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'ficha' }"
+              @click="leadModalTab = 'ficha'"
+            >
+              📋 Ficha y Etapa
+            </button>
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'seguimiento' }"
+              @click="leadModalTab = 'seguimiento'"
+            >
+              📝 Notas e Historial
+            </button>
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'documentos' }"
+              @click="leadModalTab = 'documentos'"
+            >
+              💰 Cotizaciones y Contratos
+              <span v-if="quoteHistory.length + signedContracts.length > 0" class="lead-tab-badge">
+                {{ quoteHistory.length + signedContracts.length }}
+              </span>
+            </button>
+            <button
+              type="button"
+              class="lead-modal-tab"
+              :class="{ 'is-active': leadModalTab === 'todo' }"
+              @click="leadModalTab = 'todo'"
+            >
+              📐 Ver todo
+            </button>
           </div>
 
           <!-- Edición de los datos del lead -->
@@ -737,7 +803,7 @@
             </div>
           </form>
 
-          <div v-else class="lead-info-grid">
+          <div v-else-if="leadModalTab === 'ficha' || leadModalTab === 'todo'" class="lead-info-grid">
             <div class="info-card-panel">
               <h5 class="panel-subtitle">👤 Contacto</h5>
               <div v-if="selectedLead.full_name" class="info-item">
@@ -760,9 +826,6 @@
                 <span class="info-label">Asignado a:</span>
                 <LeadAssignee :lead="selectedLead" show-name @assigned="onLeadAssigned" />
               </div>
-              <!-- Setter y closer del lead: se pueden dejar puestos desde antes
-                   del pase y del cierre (los sellos automáticos no pisan lo
-                   elegido). -->
               <div class="info-item">
                 <span class="info-label">Setter:</span>
                 <LeadAssignee :lead="selectedLead" role="setter" show-name @assigned="onLeadAssigned" />
@@ -770,6 +833,10 @@
               <div class="info-item">
                 <span class="info-label">Closer:</span>
                 <LeadAssignee :lead="selectedLead" role="closer" show-name @assigned="onLeadAssigned" />
+              </div>
+              <div class="info-item">
+                <span class="info-label">Calificado:</span>
+                <LeadQualification :lead="selectedLead" @qualified="onLeadAssigned" />
               </div>
             </div>
 
@@ -790,12 +857,12 @@
             </div>
           </div>
 
-          <div v-if="selectedLead.additional_notes" class="lead-notes-box">
+          <div v-if="(leadModalTab === 'seguimiento' || leadModalTab === 'todo') && selectedLead.additional_notes" class="lead-notes-box">
             <h5 class="panel-subtitle">📝 Notas Adicionales</h5>
             <p>{{ selectedLead.additional_notes }}</p>
           </div>
 
-          <div v-if="selectedLead.project_id" class="lead-project-badge-box">
+          <div v-if="(leadModalTab === 'ficha' || leadModalTab === 'todo') && selectedLead.project_id" class="lead-project-badge-box">
             <span style="font-size: 1.2rem;">🚀</span>
             <div>
               <strong>Proyecto Activo #{{ selectedLead.project_id }}</strong>
@@ -809,7 +876,7 @@
           </div>
 
           <!-- Selector de Estado del Funnel -->
-          <div class="form-group" style="margin-top: 1.25rem;">
+          <div v-if="leadModalTab === 'ficha' || leadModalTab === 'todo'" class="form-group" style="margin-top: 1.1rem;">
             <label class="form-label">Mover etapa en el Funnel</label>
             <select
               :value="selectedLead.status"
@@ -822,10 +889,8 @@
             </select>
           </div>
 
-          <!-- Historial de etapas: de dónde salió y quién lo movió. Está
-               junto al selector porque es la pregunta que se hace justo ahí
-               ("yo lo dejé en otra columna"). -->
-          <div class="stage-history-section">
+          <!-- Historial de etapas -->
+          <div v-if="leadModalTab === 'seguimiento' || leadModalTab === 'todo'" class="stage-history-section">
             <button
               type="button"
               class="stage-history-toggle"
@@ -863,10 +928,8 @@
             </div>
           </div>
 
-          <!-- Primer pago: el vendedor ve en qué va y sube el voucher sin
-               entrar a Finanzas. Vivía en la tarjeta del tablero, que ahora
-               solo lleva nombre y celular. -->
-          <div v-if="selectedLead.initial_payment_id" class="detail-payment-row">
+          <!-- Primer pago -->
+          <div v-if="(leadModalTab === 'ficha' || leadModalTab === 'todo') && selectedLead.initial_payment_id" class="detail-payment-row">
             <span :class="['payment-chip', paymentChipClass(selectedLead.initial_payment_estado)]">
               1er pago · {{ paymentChipLabel(selectedLead.initial_payment_estado) }}
             </span>
@@ -888,7 +951,7 @@
           </div>
 
           <!-- Bitácora del seguimiento: en qué se quedó este lead -->
-          <LeadNotes :lead-id="selectedLead.id" class="lead-notes-panel" />
+          <LeadNotes v-if="leadModalTab === 'seguimiento' || leadModalTab === 'todo'" :lead-id="selectedLead.id" class="lead-notes-panel" />
 
           <!-- Conversación con el bot de WhatsApp (Avan) -->
           <div v-if="selectedLead.phone" class="bot-chat-section">
@@ -903,7 +966,7 @@
             </button>
           </div>
 
-          <!-- Botones de Contacto y Cotización -->
+          <!-- Botones de Contacto y Cotización (siempre a mano) -->
           <div class="lead-action-buttons">
             <a
               :href="'mailto:' + selectedLead.email"
@@ -925,7 +988,7 @@
               v-if="!showQuoteForm"
               type="button"
               class="btn-action-primary"
-              @click="showQuoteForm = true"
+              @click="leadModalTab = 'documentos'; showQuoteForm = true"
             >
               💰 Generar Cotización
             </button>
@@ -937,6 +1000,18 @@
             >
               📄 Generar contrato
             </router-link>
+            <button
+              type="button"
+              class="btn-action-secondary"
+              :class="{ 'has-signed': signedContracts.length > 0 }"
+              :title="signedContracts.length
+                ? 'Ya hay contrato firmado guardado. Puedes agregar otro (una adenda, una versión corregida).'
+                : 'Guardar el PDF, el Word o el enlace de Drive del contrato que el cliente devolvió firmado'"
+              @click="showSignedModal = true"
+            >
+              {{ signedContracts.length ? '✅' : '📝' }} Contrato firmado
+              <span v-if="signedContracts.length > 1" class="signed-count">{{ signedContracts.length }}</span>
+            </button>
             <button
               v-if="hasPermission('calendar.view')"
               type="button"
@@ -950,7 +1025,7 @@
 
           <!-- Formulario de Cotización Integrado -->
           <transition name="fade">
-            <form v-if="showQuoteForm" class="quote-form-section" @submit.prevent="submitQuote">
+            <form v-if="showQuoteForm && (leadModalTab === 'documentos' || leadModalTab === 'todo')" class="quote-form-section" @submit.prevent="submitQuote">
               <h4 class="quote-heading">💰 Nueva Cotización Comercial</h4>
 
               <!-- Tipo de trabajo: elige qué se cotiza y con eso cambian los
@@ -1121,7 +1196,7 @@
 
           <!-- Historial: hasta ahora una cotización generada solo existía en la
                pestaña que se abría con el documento. -->
-          <div v-if="quoteHistory.length" class="quote-history">
+          <div v-if="(leadModalTab === 'documentos' || leadModalTab === 'todo') && quoteHistory.length" class="quote-history">
             <h4 class="quote-history-title">Cotizaciones emitidas ({{ quoteHistory.length }})</h4>
             <ul class="quote-history-list">
               <li v-for="q in quoteHistory" :key="q.id" class="quote-history-item">
@@ -1144,7 +1219,58 @@
               </li>
             </ul>
           </div>
-          <p v-else-if="quoteHistoryLoading" class="quote-history-empty">Cargando cotizaciones…</p>
+          <p v-else-if="(leadModalTab === 'documentos' || leadModalTab === 'todo') && quoteHistoryLoading" class="quote-history-empty">Cargando cotizaciones…</p>
+          <p v-else-if="leadModalTab === 'documentos' && !showQuoteForm && !quoteHistory.length && !signedContracts.length" class="quote-history-empty">
+            Este lead aún no tiene cotizaciones ni contratos firmados registrados. Usa «💰 Generar Cotización» o «📝 Contrato firmado».
+          </p>
+
+          <!-- Contratos firmados: el respaldo de la venta, en la misma ficha -->
+          <div v-if="(leadModalTab === 'documentos' || leadModalTab === 'todo') && signedContracts.length" class="quote-history signed-history">
+            <h4 class="quote-history-title">Contratos firmados ({{ signedContracts.length }})</h4>
+            <ul class="quote-history-list">
+              <li v-for="doc in signedContracts" :key="doc.id" class="quote-history-item signed-item">
+                <div class="quote-history-main">
+                  <span class="quote-history-number">
+                    {{ doc.source === 'archivo' ? '📎' : '🔗' }} {{ doc.title }}
+                  </span>
+                </div>
+                <div class="quote-history-meta">
+                  <span>{{ doc.signed_at ? `Firmado ${formatDateShort(doc.signed_at)}` : `Subido ${formatDateShort(doc.created_at)}` }}</span>
+                  <span v-if="doc.uploaded_by_name">· {{ doc.uploaded_by_name }}</span>
+                  <span v-if="doc.contract_title">· {{ doc.contract_title }}</span>
+                  <span v-if="doc.notes" class="signed-note">· {{ doc.notes }}</span>
+                </div>
+                <div class="signed-actions">
+                  <!--
+                    El enlace se abre en una pestaña y el archivo se descarga por
+                    la API: el `src` directo no lleva el token de sesión, así que
+                    un <a href> al archivo respondería 401.
+                  -->
+                  <a
+                    v-if="doc.source === 'enlace'"
+                    :href="doc.external_url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="quote-history-open"
+                  >🔗 Abrir</a>
+                  <button
+                    v-else
+                    type="button"
+                    class="quote-history-open"
+                    :disabled="signedDownloading === doc.id"
+                    @click="downloadSignedContract(doc)"
+                  >{{ signedDownloading === doc.id ? 'Abriendo…' : '📄 Descargar' }}</button>
+                  <button
+                    type="button"
+                    class="signed-delete"
+                    title="Quitar este documento de la ficha"
+                    @click="removeSignedContract(doc)"
+                  >🗑️</button>
+                </div>
+              </li>
+            </ul>
+            <p v-if="signedError" class="signed-error">{{ signedError }}</p>
+          </div>
          </div>
 
           <!-- Panel lateral: la conversación de WhatsApp del lead, para leerla y
@@ -1154,6 +1280,15 @@
         </div>
       </div>
     </div>
+
+    <!-- Contrato firmado: el PDF/Word/enlace que devuelve el cliente -->
+    <SignedContractModal
+      v-if="showSignedModal && selectedLead"
+      :lead="selectedLead"
+      :contracts="leadContracts"
+      @close="showSignedModal = false"
+      @saved="onSignedContractSaved"
+    />
 
     <!-- Cierre de venta: monto del primer pago al pasar el lead a la etapa ganadora -->
     <WinDealModal
@@ -1166,19 +1301,26 @@
 </template>
 
 <script setup>
+import { meetingCreatedNotice } from '../meetingNotice.js';
 import { ref, reactive, computed, watch, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { apiFetch } from '../apiClient.js';
-import { QUOTE_PACKAGES, DEFAULT_QUOTE_PACKAGE, findQuotePackage, deliverableLine } from '../data/quoteDeliverables.js';
+import { consumeLeadParam } from '../leadDeepLink.js';
+import { QUOTE_PACKAGES, DEFAULT_QUOTE_PACKAGE, findQuotePackage, defaultDeliverableKeys, deliverableLine } from '../data/quoteDeliverables.js';
 import { careerGroupsWith, DEFAULT_CAREER } from '../data/careers.js';
 import { hasPermission } from '../auth.js';
 import { cameFromForm } from '../leadOrigin.js';
 import WinDealModal from '../components/WinDealModal.vue';
 import LeadNotes from '../components/LeadNotes.vue';
+import SignedContractModal from '../components/SignedContractModal.vue';
 import LeadConversation from '../components/LeadConversation.vue';
 import MetaReconciliationModal from '../components/MetaReconciliationModal.vue';
 import LeadAssignee from '../components/LeadAssignee.vue';
+import LeadQualification from '../components/LeadQualification.vue';
+import { needsFirstResponse, waitingLabel } from '../leadFirstResponse.js';
 import BulkLeadTeamModal from '../components/BulkLeadTeamModal.vue';
 import DuplicateLeadsModal from '../components/DuplicateLeadsModal.vue';
+import AppLoader from '../components/AppLoader.vue';
 import MeetingModal from '../components/MeetingModal.vue';
 import LeadDuplicateAlert from '../components/LeadDuplicateAlert.vue';
 import { formatCardDate, formatLeadDate } from '../leadCardDate.js';
@@ -1226,6 +1368,33 @@ const leads = ref([]);
 // 'all' = se ven todos (administrador comercial); 'mine' = solo los propios.
 const leadScope = ref('all');
 const selectedLead = ref(null);
+
+/*
+ * Enlace directo a una ficha (`?lead=666`): es por donde entra el Reporte de
+ * Leads, que muestra los dos tableros a la vez y hasta ahora obligaba a
+ * anotarse el nombre, venir acá y buscarlo a mano. El parámetro se consume una
+ * sola vez y se borra de la URL (ver `leadDeepLink.js`).
+ */
+const route = useRoute();
+const router = useRouter();
+const deepLinkNotice = ref('');
+
+function openLeadFromLink() {
+  const id = consumeLeadParam(route, router);
+  if (!id) return;
+
+  const lead = leads.value.find((item) => Number(item.id) === id);
+  if (lead) {
+    selectedLead.value = lead;
+    return;
+  }
+  // Pudo cambiar de tablero entre que el reporte se cargó y alguien hizo
+  // clic, o ser de otra persona: decirlo es la diferencia entre una pantalla
+  // que se explica y un enlace que no hace nada.
+  deepLinkNotice.value = `No se encontró el lead #${id} en este tablero: puede haber cambiado de etapa, o no estar entre los que ves.`;
+  setTimeout(() => { deepLinkNotice.value = ''; }, 12000);
+}
+
 const isLoading = ref(false);
 const loadError = ref('');
 const draggedLead = ref(null);
@@ -1344,9 +1513,10 @@ const quoteServiceSubtitle = ref(INITIAL_QUOTE_DEFAULTS.serviceSubtitle);
 const quoteAmount = ref('');
 const quoteRegularAmount = ref('');
 const quoteCurrency = ref('PEN');
-// Entregables marcados (claves del catálogo): arrancan todos incluidos, que es
-// el paquete que se vende; quitar uno es la excepción.
-const quoteDeliverables = ref(findQuotePackage(DEFAULT_QUOTE_PACKAGE).deliverables.map((item) => item.key));
+// Entregables marcados (claves del catálogo): arrancan incluidos todos los del
+// paquete que se vende —quitar uno es la excepción— menos los `optIn`, que se
+// cotizan solo si el caso los pide.
+const quoteDeliverables = ref(defaultDeliverableKeys(findQuotePackage(DEFAULT_QUOTE_PACKAGE)));
 const quoteScope = ref('');
 const quoteCode = ref('');
 const quoteEstimatedTime = ref(INITIAL_QUOTE_DEFAULTS.estimatedTime);
@@ -1361,6 +1531,19 @@ const quoteDocLoading = ref(false);
 // Historial de cotizaciones del lead abierto. El registro siempre existió en
 // la base; lo que faltaba era traerlo al panel.
 const quoteHistory = ref([]);
+
+/*
+ * Contrato firmado: el PDF, el Word o el enlace de Drive que devuelve el
+ * cliente. `leadContracts` son los contratos EMITIDOS del lead, que vienen en
+ * la misma respuesta porque son las opciones del desplegable "¿a cuál
+ * corresponde?" — pedirlos aparte serían dos llamadas para dibujar un
+ * formulario.
+ */
+const signedContracts = ref([]);
+const leadContracts = ref([]);
+const showSignedModal = ref(false);
+const signedDownloading = ref(null);
+const signedError = ref('');
 const quoteHistoryLoading = ref(false);
 // Movimiento de etapa que disparó la última cotización, con la etapa previa
 // para poder deshacerlo. Se ofrece deshacer mientras el aviso siga visible en
@@ -1384,8 +1567,10 @@ const stageHistoryError = ref('');
 // Conversación de WhatsApp del lead dentro de su ficha. El panel entero vive
 // en `LeadConversation.vue`; acá solo queda si está desplegado o no.
 const showBotChat = ref(false);
+const leadModalTab = ref('ficha'); // 'ficha' | 'seguimiento' | 'documentos' | 'todo'
 
 watch(selectedLead, () => {
+  leadModalTab.value = 'ficha';
   leadEdit.value = null;
   leadEditError.value = '';
   showQuoteForm.value = false;
@@ -1393,7 +1578,14 @@ watch(selectedLead, () => {
   quoteSuccess.value = null;
   quoteMove.value = null;
   quoteHistory.value = [];
-  if (selectedLead.value) loadQuoteHistory();
+  signedContracts.value = [];
+  leadContracts.value = [];
+  showSignedModal.value = false;
+  signedError.value = '';
+  if (selectedLead.value) {
+    loadQuoteHistory();
+    loadSignedContracts();
+  }
 
   showStageHistory.value = false;
   stageHistory.value = [];
@@ -1859,10 +2051,24 @@ function openMeeting(lead) {
 }
 
 function onMeetingCreated(data) {
-  meetingNotice.value = data.calendarError
-    ? `Reunión guardada, pero sin evento en Google Calendar (${data.calendarError}).`
-    : '✅ Reunión agendada en el calendario del asesor.';
-  setTimeout(() => { meetingNotice.value = ''; }, 8000);
+  meetingNotice.value = meetingCreatedNotice(data);
+  setTimeout(() => { meetingNotice.value = ''; }, 14000);
+}
+
+/**
+ * El lead entró a "Cita Agendada" sin reunión cargada en el panel.
+ *
+ * Mismo aviso y mismas razones que en el Setter Funnel: el movimiento ya se
+ * hizo —el servidor lo deja pasar y deja el motivo en la bitácora— y lo que
+ * queda es que la diferencia se note. Una cita sin reunión no sale en el
+ * Calendario del closer ni cuenta en el reporte por anuncio.
+ */
+function noticeIfAppointmentWithoutMeeting(lead) {
+  if (!lead?.appointment_without_meeting) return;
+  meetingNotice.value = '⚠ Cita agendada sin reunión en el panel: no aparecerá en el '
+    + 'Calendario del closer ni contará en el reporte por anuncio. Cargala con "Agendar '
+    + 'reunión" en la ficha del lead.';
+  setTimeout(() => { meetingNotice.value = ''; }, 12000);
 }
 
 async function fetchAll() {
@@ -2062,6 +2268,7 @@ async function moveLeadToStatus(lead, newStatus) {
     if (!response.ok) throw new Error(data.error || 'Error al actualizar el estado.');
 
     lead.status = data.lead.status;
+    noticeIfAppointmentWithoutMeeting(data.lead);
     if (data.project) {
       lead.project_id = data.project.id;
       lead.project_status = data.project.status;
@@ -2120,6 +2327,85 @@ async function loadQuoteHistory() {
     if (selectedLead.value?.id === lead.id) quoteHistory.value = [];
   } finally {
     quoteHistoryLoading.value = false;
+  }
+}
+
+/**
+ * Trae los contratos firmados del lead abierto y, de paso, sus contratos
+ * emitidos (las opciones del desplegable del modal).
+ */
+async function loadSignedContracts() {
+  const lead = selectedLead.value;
+  if (!lead) return;
+  try {
+    const response = await apiFetch(`/api/leads/${lead.id}/signed-contracts`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Error al obtener los contratos firmados.');
+    // El lead pudo cambiar mientras la petición viajaba.
+    if (selectedLead.value?.id !== lead.id) return;
+    signedContracts.value = data.documents || [];
+    leadContracts.value = data.contracts || [];
+  } catch {
+    // Como el historial de cotizaciones: es informativo y no bloquea la ficha.
+    if (selectedLead.value?.id === lead.id) {
+      signedContracts.value = [];
+      leadContracts.value = [];
+    }
+  }
+}
+
+/** Lo recién guardado entra arriba sin volver a pedir la lista entera. */
+function onSignedContractSaved(doc) {
+  showSignedModal.value = false;
+  signedError.value = '';
+  if (doc) signedContracts.value = [doc, ...signedContracts.value];
+  // El contrato emitido pudo quedar marcado como firmado: se recarga para que
+  // el desplegable lo diga la próxima vez que se abra el modal.
+  loadSignedContracts();
+}
+
+/**
+ * Descarga el archivo por la API y no con un `<a href>`: la ruta exige el token
+ * de sesión, que un enlace directo del navegador no manda.
+ */
+async function downloadSignedContract(doc) {
+  const lead = selectedLead.value;
+  if (!lead || signedDownloading.value) return;
+  signedDownloading.value = doc.id;
+  signedError.value = '';
+  try {
+    const response = await apiFetch(`/api/leads/${lead.id}/signed-contracts/${doc.id}/file`);
+    if (!response.ok) throw new Error('No se pudo descargar el documento.');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    link.href = url;
+    link.download = doc.file_original_name || doc.title;
+    link.click();
+    // Se libera después del clic: revocarlo antes cancela la descarga.
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (error) {
+    signedError.value = error.message;
+  } finally {
+    signedDownloading.value = null;
+  }
+}
+
+async function removeSignedContract(doc) {
+  const lead = selectedLead.value;
+  if (!lead) return;
+  const aviso = doc.source === 'enlace'
+    ? `¿Quitar "${doc.title}" de la ficha? El documento en Drive no se toca.`
+    : `¿Quitar "${doc.title}" de la ficha? El archivo guardado se borra y no se puede recuperar.`;
+  if (!window.confirm(aviso)) return;
+  signedError.value = '';
+  try {
+    const response = await apiFetch(`/api/leads/${lead.id}/signed-contracts/${doc.id}`, { method: 'DELETE' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'No se pudo quitar el documento.');
+    signedContracts.value = signedContracts.value.filter((row) => row.id !== doc.id);
+  } catch (error) {
+    signedError.value = error.message;
   }
 }
 
@@ -2256,7 +2542,7 @@ function resetQuoteForm() {
   quoteAmount.value = '';
   quoteRegularAmount.value = '';
   quoteCurrency.value = 'PEN';
-  quoteDeliverables.value = activeDeliverables.value.map((item) => item.key);
+  quoteDeliverables.value = defaultDeliverableKeys(findQuotePackage(DEFAULT_QUOTE_PACKAGE));
   quoteScope.value = '';
   quoteCode.value = '';
   quoteEstimatedTime.value = defaults.estimatedTime;
@@ -2287,7 +2573,7 @@ function toggleAllDeliverables(selectAll) {
  * Cambia el tipo de trabajo cotizado. Los textos por defecto siguen al paquete
  * nuevo, pero solo si nadie los editó a mano (si el asesor escribió su propio
  * título, se respeta). Las marcas de los entregables compartidos se conservan,
- * y el entregable propio del paquete nuevo entra marcado.
+ * y el entregable propio del paquete nuevo entra marcado salvo que sea `optIn`.
  */
 function selectQuotePackage(key) {
   if (key === quotePackage.value) return;
@@ -2308,7 +2594,9 @@ function selectQuotePackage(key) {
 
   const sharedKeys = new Set(prev.deliverables.map((item) => item.key));
   quoteDeliverables.value = next.deliverables
-    .filter((item) => !sharedKeys.has(item.key) || quoteDeliverables.value.includes(item.key))
+    .filter((item) =>
+      sharedKeys.has(item.key) ? quoteDeliverables.value.includes(item.key) : !item.optIn
+    )
     .map((item) => item.key);
 
   quotePackage.value = key;
@@ -2422,7 +2710,17 @@ function normalizePhone(phone) {
 
 function formatDateShort(dateStr) {
   if (!dateStr) return '—';
-  const d = new Date(dateStr);
+  /*
+   * Un día suelto ("2026-10-20", como vienen `signed_at` o `valid_until`) lo
+   * parsea `new Date()` a medianoche UTC, y en Lima (UTC-5) eso se muestra como
+   * el día ANTERIOR. Se arma como fecha local para que el día que se escribió
+   * sea el día que se lee. Una marca de tiempo completa no tiene ese problema y
+   * se deja pasar tal cual.
+   */
+  const soloDia = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr));
+  const d = soloDia
+    ? new Date(Number(soloDia[1]), Number(soloDia[2]) - 1, Number(soloDia[3]))
+    : new Date(dateStr);
   return d.toLocaleDateString('es-PE', { day: '2-digit', month: 'short' });
 }
 
@@ -2444,7 +2742,7 @@ function getLevelClass(level) {
 }
 
 onMounted(() => {
-  fetchAll();
+  fetchAll().then(openLeadFromLink);
 });
 </script>
 
@@ -3403,6 +3701,15 @@ onMounted(() => {
   cursor: help;
 }
 
+/* 24 h sin respuesta. Mismo tamaño que la marca de formulario: es una marca
+   en el renglón del nombre y no puede robarle ancho al nombre, que es lo
+   único que identifica al lead en la tarjeta. */
+.card-alert-mark {
+  font-size: 0.72rem;
+  margin-right: 0.15rem;
+  cursor: help;
+}
+
 /* El celular y la fecha, en un solo renglón: la tarjeta tiene alto fijo. */
 .card-lead-meta {
   display: flex;
@@ -3751,6 +4058,50 @@ onMounted(() => {
 .quote-history-open:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .quote-history-empty { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.8rem; }
+
+/*
+ * Contratos firmados. Reusan la lista de las cotizaciones —es el mismo tipo de
+ * fila en la misma ficha— y solo agregan lo que es distinto: dos acciones en
+ * vez de una (abrir y quitar) y el borde verde que dice de un vistazo que la
+ * venta tiene su respaldo.
+ */
+.signed-history .quote-history-item { border-left: 3px solid var(--accent-emerald, #2e7d46); }
+.signed-item { grid-template-columns: 1fr auto; }
+.signed-note { font-style: italic; }
+.signed-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; align-items: center; gap: 0.35rem; }
+.signed-actions .quote-history-open { grid-column: auto; grid-row: auto; text-decoration: none; }
+
+.signed-delete {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  line-height: 1;
+}
+.signed-delete:hover { border-color: var(--accent-rose); }
+
+.signed-error { margin: 0.5rem 0 0; font-size: 0.76rem; color: var(--accent-rose); }
+
+/* El botón cambia de cara cuando ya hay contrato guardado: el ✅ solo no
+   alcanza para notarlo en una fila de seis botones. */
+.btn-action-secondary.has-signed {
+  border-color: var(--accent-emerald, #2e7d46);
+  color: var(--accent-emerald, #2e7d46);
+}
+.signed-count {
+  display: inline-block;
+  min-width: 1.1rem;
+  margin-left: 0.3rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: var(--accent-emerald, #2e7d46);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-align: center;
+}
 
 .final-tag {
   color: var(--accent-emerald);
@@ -4301,6 +4652,53 @@ onMounted(() => {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.85rem;
+}
+
+/* Pestañas dentro del modal de detalle del lead */
+.lead-modal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  background: var(--surface-2);
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  margin-bottom: 1rem;
+}
+
+.lead-modal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.42rem 0.8rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lead-modal-tab:hover {
+  color: var(--text-main);
+}
+
+.lead-modal-tab.is-active {
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+  box-shadow: var(--shadow-sm);
+}
+
+.lead-tab-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(111, 129, 37, 0.14);
+  color: var(--primary);
 }
 
 /* Transiciones */

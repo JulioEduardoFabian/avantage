@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { pickNext, simulateRouting } from '../leadRouting.js';
+import { pickNext, routesNow, simulateRouting } from '../leadRouting.js';
 import * as espejo from '../../../src/leadRouting.js';
 
 const SETTER = { id: 1, weight: 5, active: true, current_weight: 0 };
@@ -66,4 +66,55 @@ test('el reparto está activo exactamente cuando el bot global está apagado', a
 
   assert.equal(await conBot(false).isActive(), true, 'bot apagado → reparte');
   assert.equal(await conBot(true).isActive(), false, 'bot encendido → no reparte');
+});
+
+
+/* ─────────────── Qué se reparte, y cuándo ─────────────── */
+
+/**
+ * La regla no es el interruptor del bot sino **quién atiende al lead**. Vino
+ * de un agujero que se veía en el panel y no en el código: con el bot
+ * encendido, un lead de formulario de TikTok o de Meta nacía sin responsable —
+ * y un lead sin responsable no lo ve nadie salvo quien reparte—, así que la
+ * mayoría de lo que entra por anuncios quedaba en tierra de nadie justo
+ * mientras el bot estaba encendido, que es casi siempre.
+ */
+
+test('el lead de formulario se reparte aunque el bot esté encendido', () => {
+  // El bot no lo atiende nunca: contesta mensajes, no escribe primero.
+  assert.equal(routesNow({ botWillAttend: false, botEnabled: true }), true);
+});
+
+test('la conversación de WhatsApp espera a que el bot esté apagado', () => {
+  assert.equal(routesNow({ botWillAttend: true, botEnabled: true }), false);
+  assert.equal(routesNow({ botWillAttend: true, botEnabled: false }), true);
+});
+
+test('con el bot apagado se reparte todo', () => {
+  assert.equal(routesNow({ botWillAttend: true, botEnabled: false }), true);
+  assert.equal(routesNow({ botWillAttend: false, botEnabled: false }), true);
+});
+
+test('sin decir nada, un lead se reparte', () => {
+  // El valor por defecto es el que no hay que recordar: el camino de alta que
+  // tiene que acordarse de algo es el del bot, que es uno solo. Al revés, el
+  // próximo camino automático que se agregue deja sus leads sin dueño y nadie
+  // se entera, porque eso no falla.
+  assert.equal(routesNow(), true);
+  assert.equal(routesNow({}), true);
+});
+
+test('la pantalla y el servidor deciden lo mismo', () => {
+  // `src/leadRouting.js` es el espejo que usa la banda de la pantalla de
+  // Reparto: si dijera otra cosa, la pantalla afirmaría que algo se reparte
+  // cuando no.
+  for (const botWillAttend of [true, false]) {
+    for (const botEnabled of [true, false]) {
+      assert.equal(
+        espejo.routesNow({ botWillAttend, botEnabled }),
+        routesNow({ botWillAttend, botEnabled }),
+        `difieren con botWillAttend=${botWillAttend} botEnabled=${botEnabled}`
+      );
+    }
+  }
 });
