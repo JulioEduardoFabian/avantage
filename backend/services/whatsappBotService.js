@@ -2145,7 +2145,10 @@ export class WhatsappBotService {
       }
 
       this.logActivity({ type: 'unreadable_message', waId, messageType });
-      await this.send(waId, whatsappBotCopy.unreadableMessage(messageType));
+      // Se aprovecha el turno para pedir el dato que falta (casi siempre
+      // carrera y universidad): sin eso la respuesta no lleva a ningún lado.
+      const pendiente = nextDataQuestion(answers)?.replace(/^¡Perfecto!\s*/, '') ?? null;
+      await this.send(waId, whatsappBotCopy.unreadableMessage(messageType, pendiente));
 
       await this._deriveMediaForReview(waId, messageType, mediaFilename, { repetido: false });
     } catch (error) {

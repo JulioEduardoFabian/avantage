@@ -139,8 +139,8 @@ export class WhatsappWebhookService {
           // del placeholder "[Audio]" — ver resolveMessageBody()). Y solo si
           // el mensaje es realmente nuevo (Meta puede reenviar el mismo
           // evento por reintentos; sin este chequeo el bot lo procesaría dos veces).
-          const triggerText = message.type === 'text'
-            ? message.text?.body
+          const triggerText = ['text', 'button', 'interactive'].includes(message.type)
+            ? (record?.body || message.text?.body || null)
             : (message.type === 'audio' && record?.body !== '[Audio]' ? record?.body : null);
           if (isNew && isFreshMessage && this.botService && triggerText) {
             await this.botService.handleIncomingMessage(senderId, triggerText, message.id);

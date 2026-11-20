@@ -148,7 +148,12 @@ export class YCloudWebhookService {
       // Texto siempre; un audio solo si se pudo transcribir (ver
       // resolveMessageBody(), que ya dejó la transcripción en `body` en vez
       // del placeholder "[Audio]").
-      const triggerText = message.type === 'text' ? message.text?.body : (message.type === 'audio' && body !== '[Audio]' ? body : null);
+      // Un botón o una respuesta interactiva también es alguien escribiendo
+      // (su texto ya está en `body`): tratarlos como ilegibles le contestaba
+      // "no puedo abrirlo" a un mensaje que el bot sí podía leer.
+      const triggerText = ['text', 'button', 'interactive'].includes(message.type)
+        ? (body || null)
+        : (message.type === 'audio' && body !== '[Audio]' ? body : null);
       if (isNew && isFreshMessage && this.botService && triggerText) {
         // Se pasa el "id" interno de YCloud (no el "wamid") porque el
         // indicador de leído/escribiendo lo referencia así:

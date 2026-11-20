@@ -56,12 +56,21 @@ test('el aviso por un mensaje ilegible nombra lo que la persona mandó', () => {
   // Decir "no te entiendo" a quien mandó una foto le hace pensar que el
   // mensaje no llegó. Tiene que quedar claro que llegó y que no se puede abrir.
   const porImagen = unreadableMessage('image');
-  assert.match(porImagen, /la imagen/);
-  assert.match(porImagen, /escrito/);
+  assert.match(porImagen, /tu imagen/);
+  assert.match(porImagen, /carrera/);
+  assert.match(porImagen, /universidad/);
 
   const porAudio = unreadableMessage('audio');
   assert.match(porAudio, /tu audio/);
   assert.match(porAudio, /escuchar/);
+  assert.doesNotMatch(porAudio, /derivamos/);
+});
+
+test('el aviso por un mensaje ilegible pregunta lo que falta, o pide el caso por escrito', () => {
+  const soloUniversidad = unreadableMessage('image', '¿Y en qué universidad estudias?');
+  assert.match(soloUniversidad, /universidad/);
+  assert.doesNotMatch(soloUniversidad, /carrera/);
+  assert.match(unreadableMessage('image', null), /escrito/);
 });
 
 test('nunca le pide a la persona que vuelva a mandar lo mismo', () => {
@@ -75,9 +84,11 @@ test('nunca le pide a la persona que vuelva a mandar lo mismo', () => {
 test('un tipo desconocido igual produce un texto usable', () => {
   // La lista de tipos de Meta crece sola; un tipo nuevo no puede dejar el
   // mensaje a medias ni mostrar "undefined".
+  // Tampoco puede decir "Me llegó eso, pero no puedo abrirlo" (caso real del
+  // 20/11/2026, contestado a un texto): sin saber qué llegó, se pregunta.
   const texto = unreadableMessage('tipo_que_no_existe');
-  assert.doesNotMatch(texto, /undefined/);
-  assert.match(texto, /escrito/);
+  assert.doesNotMatch(texto, /undefined|eso|abrir/);
+  assert.match(texto, /^Gracias por escribirnos\. Para orientarte, ¿de qué carrera es tu tesis y en qué universidad estudias\?$/);
 });
 
 /* ------------------------------------------------------------------------ */

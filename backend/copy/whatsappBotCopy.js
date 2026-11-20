@@ -30,32 +30,50 @@ export function priceAnchor(contactName, durationLabel) {
 
 /**
  * El contacto mandó algo que el bot no puede abrir (una foto, un PDF, un audio
- * sin transcribir, un sticker).
+ * sin transcribir, un sticker) o un mensaje de un tipo que no trae texto.
  *
  * Tres reglas: se nombra lo que mandó —si no, parece que el mensaje ni llegó—,
- * se admite la limitación sin disfrazarla, y se pide por escrito lo mínimo
- * para poder seguir. Nunca se le pide que "lo vuelva a enviar": lo mandó bien,
- * el que no puede leerlo es el bot.
+ * se admite la limitación sin disfrazarla, y se aprovecha el turno para pedir
+ * el dato con el que se atiende el caso (carrera y universidad) en vez de un
+ * "¿me lo cuentas por escrito?" que no lleva a ningún lado. Nunca se le pide
+ * que "lo vuelva a enviar": lo mandó bien, el que no puede leerlo es el bot.
+ *
+ * Un tipo que no se reconoce NO se nombra: "Me llegó eso, pero por acá todavía
+ * no puedo abrirlo 🙈" fue la respuesta (20/11/2026) a un contacto de anuncio
+ * que había escrito "quiero saber cómo terminar mi tesis y cuánto cuesta".
+ * Ahí lo único útil es contestar y preguntar lo que falta.
+ *
+ * `pendingQuestion` es el dato que todavía falta (`nextDataQuestion()`): sin
+ * pasarlo se pregunta por carrera y universidad, y con `null` (ya están todos)
+ * se le pide que cuente lo que necesita.
  */
-export function unreadableMessage(messageType) {
+export function unreadableMessage(messageType, pendingQuestion = '¿De qué carrera es tu tesis y en qué universidad estudias?') {
   const QUE_MANDO = {
-    image: 'la imagen',
-    sticker: 'el sticker',
-    document: 'el archivo',
+    image: 'tu imagen',
+    sticker: 'tu sticker',
+    document: 'tu archivo',
     audio: 'tu audio',
     voice: 'tu audio',
-    video: 'el video',
+    video: 'tu video',
     location: 'tu ubicación',
     contacts: 'el contacto'
   };
-  const cosa = QUE_MANDO[messageType] || 'eso';
-  // En minúscula porque va incrustado a mitad de frase, después de "pero".
-  const detalle = messageType === 'audio' || messageType === 'voice'
-    ? 'por acá todavía no puedo escucharlo'
-    : 'por acá todavía no puedo abrirlo';
+  const pregunta = pendingQuestion || '¿Podrías contarnos por escrito qué necesitas para tu tesis?';
+  const cosa = QUE_MANDO[messageType];
+  if (!cosa) return `Gracias por escribirnos. Para orientarte, ${minusculaInicial(pregunta)}`;
 
-  return `Me llegó ${cosa}, pero ${detalle} 🙈 `
-    + '¿Me lo cuentas por escrito? Ya le avisé al equipo para que también lo revise.';
+  const verbo = messageType === 'audio' || messageType === 'voice' ? 'escucharlo' : 'abrirlo';
+  // Solo lo que alguien va a mirar se deriva (ver `isReviewableMedia`): decir
+  // "lo derivamos" de un sticker sería prometer algo que no pasa.
+  const derivado = ['image', 'document', 'video'].includes(messageType)
+    ? ' Ya lo derivamos al equipo para que lo revise.'
+    : '';
+  return `Recibimos ${cosa}, pero por este medio no podemos ${verbo}.${derivado}\n\n${pregunta}`;
+}
+
+// "¿De qué carrera…" → "¿de qué carrera…", para encadenarla tras una coma.
+function minusculaInicial(pregunta) {
+  return pregunta.replace(/^(¿?)(\p{Lu})/u, (_, signo, letra) => signo + letra.toLowerCase());
 }
 
 /** F1 — Segunda vez que insiste con el precio: texto distinto al de la 1ª + handoff. */
